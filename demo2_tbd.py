@@ -70,14 +70,14 @@ with fem.Simulation3D('Demo3', 'DEBUG') as m:
 
     data = m.physics.frequency_domain()
 
-    from fem.plotting.pyvista import Display
+    from fem.plotting.pyvista import PVDisplay
 
-    d = Display(m.mesh)
-    d.add_mesh(diel)
-    d.add_mesh(stripline, color='red')
-    d.add_mesh(p1, color='blue', opacity=0.3)
-    d.plot_portmode(port1, port1.modes[0].k0, 21)
-    d.plot_portmode(port2, port2.modes[0].k0, 21)
+    d = PVDisplay(m.mesh)
+    d.add_object(diel)
+    d.add_object(stripline, color='red')
+    d.add_object(p1, color='blue', opacity=0.3)
+    d.add_portmode(port1, port1.modes[0].k0, 21)
+    d.add_portmode(port2, port2.modes[0].k0, 21)
     d.show()
     
     f, S11 = data.ax('freq').S(1,1)

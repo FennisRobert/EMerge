@@ -60,7 +60,7 @@ with fem.Simulation3D('Combline_DEMO', 'DEBUG') as m:
     m.physics.modal_analysis(port1, 1, direct=True, TEM=True)
     m.physics.modal_analysis(port2, 1, direct=True, TEM=True)
 
-    from fem.plotting.pyvista import Display
+    from fem.plotting.pyvista import PVDisplay
     
     data = m.physics.frequency_domain()
 
@@ -85,10 +85,10 @@ with fem.Simulation3D('Combline_DEMO', 'DEBUG') as m:
                   ylim=[-50,5],marker_size=2)
     pe.plot_lines(pe.Line(S11.real, S11.imag), xlim=(-1.1, 1.1), ylim=(-1.1, 1.1))
 
-    d = Display(m.mesh)
-    d.add_mesh(box, opacity=0.1, show_edges=True)
-    d.plot_arrow(X,Y,Z, Ex.real, Ey.real, Ez.real)
-    d.add_mesh(feed1out, opacity=0.1)
-    d.plot_portmode(port1, port1.modes[0].k0, 21)
-    d.plot_portmode(port2, port2.modes[0].k0, 21)
+    d = PVDisplay(m.mesh)
+    d.add_object(box, opacity=0.1, show_edges=True)
+    d.add_quiver(X,Y,Z, Ex.real, Ey.real, Ez.real)
+    d.add_object(feed1out, opacity=0.1)
+    d.add_portmode(port1, port1.modes[0].k0, 21)
+    d.add_portmode(port2, port2.modes[0].k0, 21)
     d.show()

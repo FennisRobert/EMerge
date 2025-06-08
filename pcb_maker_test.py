@@ -41,10 +41,10 @@ with fem.Simulation3D('PCB Making test', 'DEBUG') as m:
 
     pe.plot_lines(pe.Line(f/1e9, S11, label='S11'), pe.Line(f/1e9, S21, label='S21'), transformation=pe.dB, grid=True, show_marker=True)
 
-    from fem.plotting.pyvista import Display
+    from fem.plotting.pyvista import PVDisplay
 
-    d = Display(m.mesh)
-    d.plot_portmode(p2, data.item(10).k0, 15, dv=(0.1e-3,0,0))
-    d.add_mesh(diel, opacity=0.3, color='green')
-    d.add_mesh(lines, color='red')
+    d = PVDisplay(m.mesh)
+    d.add_portmode(p2, data.item(10).k0, 15, dv=(0.1e-3,0,0))
+    d.add_object(diel, opacity=0.3, color='green')
+    d.add_object(lines, color='red')
     d.show()

@@ -3,10 +3,42 @@ from ...geo3d import GMSHObject, GMSHSurface, GMSHVolume
 from ...selection import FaceSelection, DomainSelection, EdgeSelection, Selection
 from ...bc import PortBC
 import numpy as np
-import pyvista as pv
 from typing import Iterable, Literal, Callable
 from functools import wraps
 from ..display import BaseDisplay
+from matplotlib.colors import Normalize
+from matplotlib import cm
+from collections import defaultdict
+
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D 
+
+def align_triangle_normals(nodes: np.ndarray, triangles: np.ndarray):
+    """
+    Flip triangle winding to align with given normals.
+
+    Parameters:
+    - nodes: (3, N) array of 3D points.
+    - triangles: (3, M) array of indices into nodes.
+    - normals: (3, M) array of desired triangle normals.
+
+    Returns:
+    - triangles_aligned: (3, M) array with consistent winding.
+    """
+     # Get triangle vertices
+    p0 = nodes[:, triangles[0,:]]
+    p1 = nodes[:, triangles[1,:]]
+    p2 = nodes[:, triangles[2,:]]
+
+    # Compute current normals (not normalized)
+    ns = np.cross(p1 - p0, p2 - p0, axis=0)
+    tris_out = np.zeros_like(triangles, dtype=np.int64)
+    for it in range(triangles.shape[1]):
+        if (-ns[0,it]-ns[1,it]-ns[2,it]) < 0:
+            tris_out[:,it] = triangles[:,it]
+        else:
+            tris_out[:,it] = triangles[(0,2,1),it]
+    return tris_out
 
 def _logscale(dx, dy, dz):
     """
@@ -54,6 +86,15 @@ def _logscale(dx, dy, dz):
     scaled_dz = unit_dz * new_mags
 
     return scaled_dx, scaled_dy, scaled_dz
+
+def _make_facecolors(C, cmap='viridis'):
+    """
+    Convert C (N, M) to facecolors (N-1, M-1, 4) using a colormap.
+    """
+    from matplotlib import cm
+    C_avg = 0.25 * (C[:-1, :-1] + C[1:, :-1] + C[:-1, 1:] + C[1:, 1:])
+    normed = (C_avg - np.min(C_avg)) / np.ptp(C_avg)
+    return plt.get_cmap(cmap)(normed)
 
 def _min_distance(xs, ys, zs):
     """
@@ -104,69 +145,54 @@ def _merge(lst: list[GMSHObject | Selection]) -> Selection:
     elif dim==3:
         return DomainSelection(all_tags)
 
-class PVDisplay(BaseDisplay):
-
-    def __init__(self, mesh: Mesh3D, plotter: pv.Plotter = None):
+class MPLDisplay(BaseDisplay):
+    COLORS: dict = {'green': (0,0.8,0), 'red': (0.8,0,0), 'blue': (0,0,0.8)}
+    def __init__(self, mesh: Mesh3D):
         self._mesh: Mesh3D = mesh
-        if plotter is None:
-            plotter = pv.Plotter()
-        self._plot: pv.Plotter = plotter
+        self._fig = None
+        self._ax = None
 
-    def show(self):
-        self._plot.show()
-    
-    ## CUSTOM METHODS
-    def mesh_volume(self, volume: DomainSelection) -> pv.UnstructuredGrid:
-        tets = self._mesh.get_tetrahedra(volume.tags)
-
-        ntets = tets.shape[0]
-
-        cells = np.zeros((ntets,5), dtype=np.int64)
-
-        cells[:,1:] = self._mesh.tets[:,tets].T
-
-        cells[:,0] = 4
-        celltypes = np.full(ntets, fill_value=pv.CellType.TETRA, dtype=np.uint8)
-        points = self._mesh.nodes.T
-
-        return pv.UnstructuredGrid(cells, celltypes, points)
-    
-    def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid:
-        tris = self._mesh.get_triangles(surface.tags)
-
-        ntris = tris.shape[0]
-
-        cells = np.zeros((ntris,4), dtype=np.int64)
-
-        cells[:,1:] = self._mesh.tris[:,tris].T
-
-        cells[:,0] = 3
-        celltypes = np.full(ntris, fill_value=pv.CellType.TRIANGLE, dtype=np.uint8)
-        points = self._mesh.nodes.T
-
-        return pv.UnstructuredGrid(cells, celltypes, points)
-    
-    def mesh(self, obj: GMSHObject | Selection | Iterable) -> pv.UnstructuredGrid:
-        if isinstance(obj, Iterable):
-            obj = _merge(obj)
-        else:
-            obj = _select(obj)
+    def init(self):
+        if self._fig is None or self._ax is None:
+            self._fig = plt.figure()
+            self._ax = self._fig.add_subplot(111, projection='3d')
+            self._ax.axis('equal')
+            self._ax.set_aspect('equal')
         
-        if isinstance(obj, DomainSelection):
-            return self.mesh_volume(obj)
-        elif isinstance(obj, FaceSelection):
-            return self.mesh_surface(obj)
+    def show(self):
+        plt.show()
+        self._fig = None
+        self._ax = None
 
     ## OBLIGATORY METHODS
-    def add_object(self, obj: GMSHObject | Selection | Iterable,*args, **kwargs):
-        self._plot.add_mesh(self.mesh(obj), *args, **kwargs)
+    def add_object(self, obj: GMSHObject | Selection | Iterable, opacity: float = 1, color: str = None, **kwargs):
+        self.init()
+
+        if color is not None:
+            color = self.COLORS.get(color,(0,0.5,0))
+
+        boundary_tris = self._mesh.boundary_triangles(obj.dimtags)
+        tris = self._mesh.tris[:,boundary_tris]
+        tris = align_triangle_normals(self._mesh.nodes, tris)
+        x = self._mesh.nodes[0,:]
+        y = self._mesh.nodes[1,:]
+        z = self._mesh.nodes[2,:]
+        surf = self._ax.plot_trisurf(
+                x, y, z,triangles=tris.T,
+                color=obj.color + (opacity,),
+                linewidth=0.2,
+                antialiased=True,
+                shade=True
+            )
+          # Equal aspect ratio
+
 
     def add_scatter(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
-        cloud = pv.PolyData(np.array([xs,ys,zs]).T)
-        self._plot.add_points(cloud)
+        self.init()
+        self._ax.scatter(xs,ys,zs)
 
-    def add_portmode(self, port: PortBC, k0: float, Npoints: int = 10, dv=(0,0,0), XYZ=None,
-                      field: Literal['E','H'] = 'E') -> pv.UnstructuredGrid:
+    def add_portmode(self, port: PortBC, k0: float, Npoints: int = 5, dv=(0,0,0), XYZ=None,
+                      field: Literal['E','H'] = 'E'):
         if XYZ:
             X,Y,Z = XYZ
         else:
@@ -187,43 +213,35 @@ class PVDisplay(BaseDisplay):
 
         F = port.port_mode_3d_global(xf,yf,zf, k0, which=field)
 
-        Fx = F[0,:].reshape(X.shape).T
-        Fy = F[1,:].reshape(X.shape).T
-        Fz = F[2,:].reshape(X.shape).T
+        Fx = F[0,:].reshape(X.shape)
+        Fy = F[1,:].reshape(X.shape)
+        Fz = F[2,:].reshape(X.shape)
 
         if field=='H':
-            F = np.imag(F.T)
+            F = np.imag(F)
             Fnorm = np.sqrt(Fx.imag**2 + Fy.imag**2 + Fz.imag**2)
         else:
-            F = np.real(F.T)
+            F = np.real(F)
             Fnorm = np.sqrt(Fx.real**2 + Fy.real**2 + Fz.real**2)
 
-        grid = pv.StructuredGrid(X,Y,Z)
-        self._plot.add_mesh(grid, scalars = Fnorm, opacity=0.8)
+        cmap = 'viridis'
 
-        Emag = F/np.max(Fnorm.flatten())*d*3
-        self._plot.add_arrows(np.array([xf,yf,zf]).T, Emag)
+        colors = _make_facecolors(Fnorm)
+        surf = self._ax.plot_surface(X, Y, Z,facecolors=colors,
+                           rstride=1, cstride=1, antialiased=True, linewidth=0)
+       
+
+
+        N = np.max(Fnorm.flatten())*d*3
+        self.add_quiver(xf, yf, zf, F[0,:].real/N, F[1,:].real/N, F[2,:].real/N)
 
     def add_quiver(self, x: np.ndarray, y: np.ndarray, z: np.ndarray,
               dx: np.ndarray, dy: np.ndarray, dz: np.ndarray,
               scale: float = 1,
               scalemode: Literal['lin','log'] = 'lin'):
         
-        x = x.flatten()
-        y = y.flatten()
-        z = z.flatten()
-        dx = dx.flatten().real
-        dy = dy.flatten().real
-        dz = dz.flatten().real
+        self.init()
+        dlmax = np.sqrt(dx**2+dy**2+dz**2)
         dmin = _min_distance(x,y,z)
-
-        dmax = np.max(_norm(dx,dy,dz))
-        
-        Vec = scale * np.array([dx,dy,dz]).T / dmax * dmin 
-        Coo = np.array([x,y,z]).T
-        if scalemode=='log':
-            dx, dy, dz = _logscale(Vec[:,0], Vec[:,1], Vec[:,2])
-            Vec[:,0] = dx
-            Vec[:,1] = dy
-            Vec[:,2] = dz
-        self._plot.add_arrows(Coo, Vec)
+        scale = dmin/max(dlmax)
+        self._ax.quiver(x,y,z,dx*scale,dy*scale,dz*scale, color='black')

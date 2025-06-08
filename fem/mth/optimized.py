@@ -423,7 +423,7 @@ ids = np.array([[0, 0, 1, 1, 2, 2],[1,2,0, 2, 0, 1]], dtype=np.int64)
 @njit(c16[:,:](c16[:,:]), cache=True, nogil=True)
 def matinv(s: np.ndarray) -> np.ndarray:
 
-    out = np.empty((3,3), dtype=np.complex128)
+    out = np.zeros((3,3), dtype=np.complex128)
    
     if s[0,1]==0 and s[0,2]==0 and s[1,0]==0 and s[1,2]==0 and s[2,0]==0 and s[2,1]==0:
         out[0,0] = 1/s[0,0]

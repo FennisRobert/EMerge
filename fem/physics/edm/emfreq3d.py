@@ -190,7 +190,7 @@ class Electrodynamics3D:
         logger.info('Assembling boundary mode analysic Matrices')
         
         Amatrix, Bmatrix, solve_ids, nlf = self.assembler.assemble_bma_matrices(self.basis, er, ur, k0, port, self.boundary_conditions)
-
+        
         logger.debug(f'Total of {Amatrix.shape[0]} Degrees of freedom.')
         logger.debug(f'Applied frequency: {freq/1e9:.2f}GHz')
         logger.debug(f'K0 = {k0} rad/m')

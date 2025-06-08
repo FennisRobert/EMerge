@@ -51,7 +51,7 @@ with fem.Simulation3D('Demo3', 'DEBUG') as m:
 
     m.physics.resolution = 0.2
 
-    m.physics.set_frequency(np.linspace(5.2e9,6.2e9,51))
+    m.physics.set_frequency(np.linspace(5.2e9,6.2e9,3))
 
     m.define_geometry(stripline, diel, p1, p2, air)
 
@@ -59,27 +59,37 @@ with fem.Simulation3D('Demo3', 'DEBUG') as m:
 
     m.generate_mesh('pcbmesh.msh')
 
-    m.preview()
+    
 
     port1 = fem.bc.ModalPort(p1, 1, True)
     port2 = fem.bc.ModalPort(p2, 2, False)
     pec = fem.bc.PEC(stripline)
 
     m.physics.assign(port1, port2, pec)
+    
 
     m.physics.modal_analysis(port1, 1, direct=True, TEM=True, freq=10e9)
     m.physics.modal_analysis(port2, 1, direct=True, TEM=True, freq=10e9)
 
+    from fem.plotting.matplotlib.mpldisplay import MPLDisplay
+    d = MPLDisplay(m.mesh)
+    #d.add_object(diel, color='green', opacity=0.5)
+    d.add_object(stripline, color='red')
+    d.add_object(p1, color='blue', opacity=0.3)
+    #d.add_portmode(port1, port1.modes[0].k0, 21)
+    #d.add_portmode(port2, port2.modes[0].k0, 21)
+    d.show()
+
     data = m.physics.frequency_domain()
 
-    from fem.plotting.pyvista import Display
+    
 
-    d = Display(m.mesh)
-    d.add_mesh(diel)
-    d.add_mesh(stripline, color='red')
-    d.add_mesh(p1, color='blue', opacity=0.3)
-    d.plot_portmode(port1, port1.modes[0].k0, 21)
-    d.plot_portmode(port2, port2.modes[0].k0, 21)
+    d = MPLDisplay(m.mesh)
+    d.add_object(diel, color='green', opacity=0.5)
+    d.add_object(stripline, color='red')
+    d.add_object(p1, color='blue', opacity=0.3)
+    d.add_portmode(port1, port1.modes[0].k0, 21)
+    d.add_portmode(port2, port2.modes[0].k0, 21)
     d.show()
     
     f, S11 = data.ax('freq').S(1,1)

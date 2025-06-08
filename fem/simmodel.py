@@ -11,7 +11,8 @@ from .selection import Selector, FaceSelection
 import sys
 from .logsettings import logger_format
 from .modeling.modeler import Modeler
-
+from .plotting.display import BaseDisplay
+from .plotting.pyvista import PVDisplay
 class Simulation3D:
 
     def __init__(self, modelname: str, loglevel: Literal['DEBUG','INFO','WARNING','ERROR'] = 'INFO'):

@@ -5,7 +5,7 @@ from .simmodel import Simulation3D
 from . import material
 from . import physics
 from . import bc
-from .solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, SolverAMG, Sorter, SolverPardiso, SolverSP
+from .solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, Sorter, SolverPardiso, SolverSP
 from .cs import CoordinateSystem, Plane, Axis, XAX, YAX, ZAX, XYPLANE, XZPLANE, YZPLANE, YXPLANE, ZXPLANE, ZYPLANE
 from .coord import Line
 from . import plot

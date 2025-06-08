@@ -10,7 +10,7 @@ class Material:
     _neff: float = None
     _fer: callable = None
     _fur: callable = None
-    
+    color: tuple[int,int,int] = (0.9,0.9,1)
     @property
     def ermat(self) -> np.ndarray:
         if isinstance(self.er, (float, complex, int, np.float64, np.complex128)):

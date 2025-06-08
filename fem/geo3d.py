@@ -16,6 +16,9 @@ class GMSHObject:
         self._embeddings: list[GMSHObject] = []
 
     @property
+    def color(self) -> tuple[int,int,int]:
+        return self.material.color
+    @property
     def select(self) -> FaceSelection | DomainSelection | EdgeSelection | None:
         '''Returns a corresponding Face/Domain or Edge Selection object'''
         if self.dim==1:

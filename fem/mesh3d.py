@@ -144,12 +144,24 @@ class Mesh3D:
         '''Return the tetrahedron index given the four node indices'''
         return self.inv_tets.get(tuple(sorted((int(i1), int(i2), int(i3), int(i4)))), None)
     
-    def boundary_triangles(self) -> np.ndarray:
-        domain_tag, face_tags, node_tags = gmsh.model.mesh.get_elements(2)
-        node_tags = [self.n_t2i[int(t)] for t in node_tags[0]]
-        node_tags = np.squeeze(np.array(node_tags)).reshape(-1,3).T
-        indices = [self.get_tri(node_tags[0,i], node_tags[1,i], node_tags[2,i]) for i in range(node_tags.shape[1])]
-        return np.array(indices)
+    def boundary_triangles(self, dimtags: list[tuple[int, int]] = None) -> np.ndarray:
+        if dimtags is None:
+            domain_tag, face_tags, node_tags = gmsh.model.mesh.get_elements(2)
+            node_tags = [self.n_t2i[int(t)] for t in node_tags[0]]
+            node_tags = np.squeeze(np.array(node_tags)).reshape(-1,3).T
+            indices = [self.get_tri(node_tags[0,i], node_tags[1,i], node_tags[2,i]) for i in range(node_tags.shape[1])]
+            return np.array(indices)
+        else:
+            dts = []
+            for dimtag in dimtags:
+                if dimtag[0]==2:
+                    dts.append(dimtag)
+                elif dimtag[0]==3:
+                    dts.extend(gmsh.model.get_boundary(dimtags))
+                
+            return self.get_triangles([tag[1] for tag in dts])
+
+        
 
     def get_tetrahedra(self, vol_tags: Union[int, list[int]]) -> np.ndarray:
         if isinstance(vol_tags, int):
@@ -292,7 +304,6 @@ class Mesh3D:
         # The algorithm assumes that only one domain tag is returned in this function. 
         # Hence the use of tri_node_tags[0] in the next line. If domains are missing.
         # Make sure to combine all the entries in the tri-node-tags list
-        
         tri_node_tags = [self.n_t2i[int(t)] for t in tri_node_tags[0]]
         tri_tags = np.squeeze(np.array(tri_tags))
 

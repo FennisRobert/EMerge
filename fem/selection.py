@@ -72,6 +72,9 @@ class Selection:
                 raise TypeError(f'Argument tags must be of type list, instead its {type(tags)}')
             self.tags = tags
 
+    @property
+    def color(self) -> tuple[int,int,int]:
+        return (0.5,0.5,1)
     ####### DUNDER METHODS
     def __repr__(self) -> str:
         return f'{type(self).__name__}({self.tags})'

@@ -56,14 +56,14 @@ with fem.Simulation3D('Demo1_SIF', 'DEBUG') as m:
     m.physics.modal_analysis(port1, 1, True, TEM=True, freq=0.5e9)
     m.physics.modal_analysis(port2, 1, True, TEM=True, freq=0.5e9)
 
-    from fem.plotting.pyvista import Display
+    from fem.plotting.pyvista import PVDisplay
 
-    d = Display(m.mesh)
-    d.add_mesh(pcb)
-    d.add_mesh(polies, color='red')
-    d.add_mesh(p1, color='blue', opacity=0.3)
-    d.plot_portmode(port1, port1.modes[0].k0, 21)
-    d.plot_portmode(port2, port2.modes[0].k0, 21)
+    d = PVDisplay(m.mesh)
+    d.add_object(pcb)
+    d.add_object(polies, color='red')
+    d.add_object(p1, color='blue', opacity=0.3)
+    d.add_portmode(port1, port1.modes[0].k0, 21)
+    d.add_portmode(port2, port2.modes[0].k0, 21)
     d.show()
 
     sol = m.physics.frequency_domain()

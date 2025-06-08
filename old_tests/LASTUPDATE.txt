@@ -1,0 +1,3 @@
+Last thing I did was improve the assembler of the boundary mode and I fucked something up and now the port modes don't work.
+
+Check the assembler with the duvanant points thing

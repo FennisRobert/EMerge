@@ -1,1 +1,0 @@
-from .stratton_chu import compute_farfield

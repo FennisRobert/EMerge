@@ -87,3 +87,9 @@ Thumbs.db
 OLD_CRAP/
 old_tests/
 meshes/
+symbollic_work/
+symbollic_work_2/
+tests_2D/
+
+# Meshes
+.msh

@@ -2,7 +2,7 @@ from loguru import logger
 import sys
 
 from .simmodel import Simulation3D
-from . import material
+from .material import Material, FR4, AIR, VACUUM
 from . import physics
 from . import bc
 from .solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, Sorter, SolverPardiso, SolverSP

@@ -4,7 +4,8 @@ from .material import Material, AIR
 from .selection import FaceSelection, DomainSelection, EdgeSelection
 
 class GMSHObject:
-
+    """A generalization of any OpenCASCADE entity described by a dimension and a set of tags.
+    """
     dim: int = -1
     def __init__(self):
         self.old_tags: list[int] = []
@@ -18,6 +19,11 @@ class GMSHObject:
     @property
     def color(self) -> tuple[int,int,int]:
         return self.material.color
+    
+    @property
+    def opacity(self) -> float:
+        return self.material.opacity
+    
     @property
     def select(self) -> FaceSelection | DomainSelection | EdgeSelection | None:
         '''Returns a corresponding Face/Domain or Edge Selection object'''
@@ -91,7 +97,7 @@ class GMSHSurface(GMSHObject):
             self.tags: list[int] = [tag,]
 
 class Polygon(GMSHSurface):
-
+    
     def __init__(self,
                  tags: list[int]):
         super().__init__([])

@@ -2,10 +2,20 @@ from __future__ import annotations
 import gmsh
 import numpy as np
 from scipy.spatial import ConvexHull
-from .cs import Axis, Plane, CoordinateSystem
+from .cs import Axis, Plane, CoordinateSystem, _parse_vector
 from typing import Callable
 
-def align_rectangle_frame(pts3d, normal):
+def align_rectangle_frame(pts3d: np.ndarray, normal: np.ndarray) -> dict[str, np.ndarray]:
+    """Tries to find a rectangle as convex-hull of a set of points with a given normal vector.
+
+    Args:
+        pts3d (np.ndarray): The points (N,3)
+        normal (np.ndarray): The normal vector.
+
+    Returns:
+        dict[str, np.ndarray]: The output data
+    """
+    
     # 1. centroid
     O = np.squeeze(np.mean(pts3d, axis=0))
 
@@ -63,6 +73,9 @@ def align_rectangle_frame(pts3d, normal):
     }
 
 class Selection:
+    """A generalized class representing a slection of tags.
+
+    """
     dim: int = -1
     def __init__(self, tags: list[int] = None):
 
@@ -132,6 +145,17 @@ class Selection:
     #         raise TypeError(f'Object {obj} is not a GMSHSurface or GMSHVolume')
     
     def exclude(self, xyz_excl_function: Callable) -> Selection:
+        """Exclude points by evaluating a function(x,y,z)-> bool
+
+        This modifies the selection such that the selection does not contain elements
+        of this selection of which the center of mass is excluded by the exclusion function.
+
+        Args:
+            xyz_excl_function (Callable): A callable for (x,y,z) that returns True if the point should be excluded.
+
+        Returns:
+            Selection: This Selection modified without the excluded points.
+        """
         include = [xyz_excl_function(*gmsh.model.occ.getCenterOfMass(*tag)) for tag in self.dimtags]
         
         self.tags = [t for incl, t in zip(include, self.tags) if incl]
@@ -139,25 +163,29 @@ class Selection:
 
 
 class PointSelection(Selection):
+    """A Class representing a selection of points.
+
+    """
     dim: int = 0
     def __init__(self, tags: list[int] = None):
         super().__init__(tags)
 
 class EdgeSelection(Selection):
+    """A Class representing a selection of edges.
+
+    """
     dim: int = 1
     def __init__(self, tags: list[int] = None):
         super().__init__(tags)
 
 class FaceSelection(Selection):
+    """A Class representing a selection of Faces.
+
+    """
     dim: int = 2
     def __init__(self, tags: list[int] = None):
         super().__init__(tags)
 
-    # @property
-    # def obj(self) -> GMSHSurface:
-    #     ''' Returns a GMSHSurface object representing the face selection.'''
-    #     return GMSHSurface(self.tags)
-    
     @property
     def normal(self) -> np.ndarray:
         ''' Returns a 3x3 coordinate matrix of the XY + out of plane basis matrix defining the face assuming it can be projected on a flat plane.'''
@@ -169,7 +197,8 @@ class FaceSelection(Selection):
         
         Returns:
             cs: CoordinateSystem: The coordinate system of the rectangle.
-            size: tuple[float, float]: The size of the rectangle (width [m], height[m])'''
+            size: tuple[float, float]: The size of the rectangle (width [m], height[m])
+        '''
         if len(self.tags) != 1:
             raise ValueError('rect_basis only works for single face selections')
         
@@ -242,6 +271,9 @@ class FaceSelection(Selection):
         return X, Y, Z
     
 class DomainSelection(Selection):
+    """A Class representing a selection of domains.
+
+    """
     dim: int = 3
     def __init__(self, tags: list[int] = None):
         super().__init__(tags)
@@ -256,7 +288,15 @@ SELECT_CLASS: dict[int, type[Selection]] = {
 ######## SELECTOR
 
 class Selector:
+    """A class instance with convenient methods to generate selections using method chaining.
 
+    Use the specific properties and functions in a "language" like way to make selections.
+
+    To specify what to select, use the .node, .edge, .face or .domain property.
+    These properties return the Selector after which you can say how to execute a selection.
+
+
+    """
     def __init__(self):
         self._current_dim: int = -1
     
@@ -285,7 +325,16 @@ class Selector:
              x: float,
              y: float,
              z: float = 0) -> Selection | PointSelection | EdgeSelection | FaceSelection | DomainSelection:
+        """Returns a selection of the releative dimeions by which of the instances is most proximate to a coordinate.
 
+        Args:
+            x (float): The X-coordinate
+            y (float): The Y-coordinate
+            z (float, optional): The Z-coordinate. Defaults to 0.
+
+        Returns:
+            Selection | PointSelection | EdgeSelection | FaceSelection | DomainSelection: The resultant selection.
+        """
         dimtags = gmsh.model.getEntities(self._current_dim)
         
         
@@ -298,8 +347,24 @@ class Selector:
                 x: float,
                 y: float,
                 z: float,
-                vector: np.ndarray,) -> FaceSelection | EdgeSelection | DomainSelection:
-        '''Returns a list of selections that are in the layer defined by the plane normal vector and the point (x,y,z)'''
+                vector: tuple[float, float, float] | np.ndarray | Axis) -> FaceSelection | EdgeSelection | DomainSelection:
+        '''Returns a list of selections that are in the layer defined by the plane normal vector and the point (x,y,z)
+        
+        The layer is specified by two infinite planes normal to the provided vector. The first plane is originated
+        at the provided origin. The second plane is placed such that it contains the point origin+vector.
+
+        Args:
+            x (float): The X-coordinate from which to select
+            y (float): The Y-coordinate from which to select
+            z (float): The Z-coordinate from which to select
+            vector (np.ndarray, tuple, Axis): A vector with length in (meters) originating at the origin.
+
+        Returns:
+            Selection | PointSelection | EdgeSelection | FaceSelection | DomainSelection: The resultant selection.
+
+        '''
+        vector = _parse_vector(vector)
+        
         dimtags = gmsh.model.getEntities(self._current_dim)
 
         coords = [gmsh.model.occ.getCenterOfMass(*tag) for tag in dimtags]

@@ -137,11 +137,27 @@ def mirror(main: GMSHVolume,
     return main
 
 def change_coordinate_system(main: GMSHVolume,
-                             new_cs: CoordinateSystem,
+                             new_cs: CoordinateSystem = GCS,
                              old_cs: CoordinateSystem = GCS):
+    """Moves the GMSHVolume object from a current coordinate system to a new one.
+
+    The old and new coordinate system by default are the global coordinate system.
+    Thus only one needs to be provided to transform to and from these coordinate systems.
+
+    Args:
+        main (GMSHVolume): The object to transform
+        new_cs (CoordinateSystem): The new coordinate system. Defaults to GCS
+        old_cs (CoordinateSystem, optional): The old coordinate system. Defaults to GCS.
+
+    Returns:
+        _type_: _description_
+    """
     if new_cs._is_global and old_cs._is_global:
         return main
+    # Transform to the global coordinate system.
     if not old_cs._is_global:
         gmsh.model.occ.affine_transform(main.dimtags, old_cs.affine_to_global().flatten()[:12])
-    gmsh.model.occ.affineTransform(main.dimtags, new_cs.affine_from_global().flatten()[:12])
+    # Transform to a new coordinate system.
+    if not new_cs._is_global:
+        gmsh.model.occ.affineTransform(main.dimtags, new_cs.affine_from_global().flatten()[:12])
     return main

@@ -1,7 +1,7 @@
 import fem
 import numpy as np
 import pyescher as pe
-
+from fem.plotting.pyvista import PVDisplay
 mm = 0.001
 mil = 0.0254*mm
 
@@ -29,14 +29,14 @@ x5 = x4 + W + S1
 rout = 81*mil
 rin = 25*mil
 lfeed = 100*mil
-with fem.Simulation3D('Combline_DEMO', 'DEBUG') as m:
+with fem.Simulation3D('Combline_DEMO', PVDisplay, loglevel='DEBUG') as m:
     box = fem.modeling.Box(Lbox, a, b, position=(0,-a/2,0))
-    stubs = m.modeler.cyllinder(W/2, m.modeler.series(C1, lr1, lr2, lr1, C1), position=(m.modeler.series(x1, x2, x3, x4, x5), 0, 0))
+    stubs = m.modeler.cyllinder(W/2, m.modeler.series(C1, lr1, lr2, lr1, C1), position=(m.modeler.series(x1, x2, x3, x4, x5), 0, 0), NPoly=10)
 
-    feed1out = fem.modeling.Cyllinder(rout, lfeed, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([-lfeed, 0, h])))
-    feed1in = fem.modeling.Cyllinder(rin, lfeed+wi+W/2, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([-lfeed, 0, h])))
-    feed2out = fem.modeling.Cyllinder(rout, lfeed, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([Lbox, 0, h])))
-    feed2in = fem.modeling.Cyllinder(rin, lfeed+wi+W/2, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([Lbox-wi-W/2, 0, h])))
+    feed1out = fem.modeling.Cyllinder(rout, lfeed, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([-lfeed, 0, h])), Nsections=12)
+    feed1in = fem.modeling.Cyllinder(rin, lfeed+wi+W/2, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([-lfeed, 0, h])), Nsections=8)
+    feed2out = fem.modeling.Cyllinder(rout, lfeed, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([Lbox, 0, h])), Nsections=12)
+    feed2in = fem.modeling.Cyllinder(rin, lfeed+wi+W/2, fem.CoordinateSystem(fem.ZAX, fem.YAX, fem.XAX, np.array([Lbox-wi-W/2, 0, h])), Nsections=8)
     
     for ro in stubs:
         box = fem.modeling.subtract(box, ro)
@@ -48,9 +48,13 @@ with fem.Simulation3D('Combline_DEMO', 'DEBUG') as m:
     
     m.define_geometry(box, feed1out, feed2out)
 
-    m.physics.set_frequency(np.linspace(6e9, 8e9, 21))
+    m.view()
+
+    m.physics.set_frequency(np.linspace(6e9, 8e9, 41))
     m.physics.resolution = 0.05
     m.generate_mesh()
+
+    m.view()
 
     port1 = fem.bc.ModalPort(m.select.face.near(-lfeed, 0, h), 1, True)
     port2 = fem.bc.ModalPort(m.select.face.near(Lbox+lfeed, 0, h), 2, False)

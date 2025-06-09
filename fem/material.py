@@ -3,6 +3,16 @@ from dataclasses import dataclass
 
 @dataclass
 class Material:
+    """The Material class generalizes a material in the EMerge FEM environment.
+
+    If a scalar value is provided for the relative permittivity or the relative permeability
+    it will be used as multiplication entries for the material property diadic as identity matrix.
+
+    Additionally, a function may be provided that computes a coordinate dependent material property
+    for _fer. For example: Material(_fer = lambda x,y,z: ...). 
+    The x,y and z coordinates are provided as a (N,) np.ndarray. The return array must be of shape (3,3,N)!
+    
+    """
     er: float = 1
     ur: float = 1
     tand: float = 0
@@ -11,6 +21,8 @@ class Material:
     _fer: callable = None
     _fur: callable = None
     color: tuple[int,int,int] = (0.9,0.9,1)
+    opacity: float = 1
+
     @property
     def ermat(self) -> np.ndarray:
         if isinstance(self.er, (float, complex, int, np.float64, np.complex128)):
@@ -76,7 +88,8 @@ class Material:
         else:
             return self._fur
     
-AIR = Material()
-VACUUM = Material()
-FR4 = Material(er=4.4, tand=0.001)
+AIR = Material(color=(0.8,0.9,1.0), opacity=0.2)
+VACUUM = Material(color=(0.5,0.5,0.5), opacity=0.05)
+COPPER = Material(color=(143/255, 63/255, 29/255))
+FR4 = Material(er=4.4, tand=0.001, color=(0.1,1,0.2), opacity=0.9)
 

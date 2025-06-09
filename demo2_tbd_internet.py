@@ -1,6 +1,7 @@
 import fem
 import numpy as np
 import pyescher as pe
+from fem.plotting.pyvista import PVDisplay
 
 mm = 0.001
 mil = 0.0254*mm
@@ -22,8 +23,8 @@ WP = 200
 Dtot = 750
 
 extra = 100
-with fem.Simulation3D('Demo3', 'DEBUG') as m:
-    mat = fem.material.Material(3.55)
+with fem.Simulation3D('Demo3', PVDisplay, 'DEBUG') as m:
+    mat = fem.Material(3.55, color=(0.1,1.0,0.2), opacity=0.1)
     pcb = fem.modeling.PCBLayouter(th,4*th,unit=mil)
 
     pcb.new(0,140,w0,(1,0)).straight(l0).turn(0).straight(l1*0.8)\
@@ -59,8 +60,7 @@ with fem.Simulation3D('Demo3', 'DEBUG') as m:
 
     m.generate_mesh('pcbmesh.msh')
 
-    
-
+    m.view()
     port1 = fem.bc.ModalPort(p1, 1, True)
     port2 = fem.bc.ModalPort(p2, 2, False)
     pec = fem.bc.PEC(stripline)

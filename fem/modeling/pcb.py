@@ -5,7 +5,7 @@ import gmsh
 
 from ..cs import CoordinateSystem, GCS
 from ..geo3d import Polygon, GMSHVolume, GMSHSurface
-from ..material import Material, AIR
+from ..material import Material, AIR, COPPER
 from .shapes import Box, Plate
 from .operations import change_coordinate_system
 
@@ -635,7 +635,9 @@ class PCBLayouter:
             
             tag_wire = gmsh.model.occ.addWire(ltags)
             planetag = gmsh.model.occ.addPlaneSurface([tag_wire,])
-            polys.append(Polygon([planetag,]))
+            poly = Polygon([planetag,])
+            poly.material = COPPER
+            polys.append(poly)
 
         self.xs = allx
         self.ys = ally
@@ -646,5 +648,6 @@ class PCBLayouter:
             for p in polys:
                 tags.extend(p.tags)
             polys = GMSHSurface(tags)
+            polys.material = COPPER
         return polys
                 

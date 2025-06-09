@@ -4,7 +4,7 @@ from .geo3d import GMSHObject
 import gmsh
 from .physics.edm.emfreq3d import Electrodynamics3D
 from .mesh3d import Mesh3D
-from typing import Literal
+from typing import Literal, Type
 from loguru import logger
 import numpy as np
 from .selection import Selector, FaceSelection
@@ -12,17 +12,37 @@ import sys
 from .logsettings import logger_format
 from .modeling.modeler import Modeler
 from .plotting.display import BaseDisplay
-from .plotting.pyvista import PVDisplay
+
 class Simulation3D:
 
-    def __init__(self, modelname: str, loglevel: Literal['DEBUG','INFO','WARNING','ERROR'] = 'INFO'):
+    def __init__(self, 
+                 modelname: str, 
+                 display: Type[BaseDisplay] = None,
+                 loglevel: Literal['DEBUG','INFO','WARNING','ERROR'] = 'INFO'):
+        """Generate a Simulation3D class object.
+
+        As a minimum a file name should be provided. Additionally you may provide it with any
+        class that inherits from BaseDisplay. This will then be used for geometry displaying.
+
+        Args:
+            modelname (str): The model name
+            display (BaseDisplay, optional): The BaseDisplay class type to use. Defaults to None.
+            loglevel ("DEBUG","INFO","WARNING","ERROR, optional): _description_. Defaults to 'INFO'.
+        
+        """
         self.modelname = modelname
         self.mesher: Mesher = Mesher()
         self.physics: Electrodynamics3D = Electrodynamics3D(self.mesher)
         self.mesh: Mesh3D = Mesh3D(self.mesher)
         self.select: Selector = Selector()
         self.modeler: Modeler = Modeler()
+        self.display: BaseDisplay = None
+        self._geometries: list[GMSHObject] = []
         self.set_loglevel(loglevel)
+
+        if display is not None:
+            self.display = display(self.mesh)
+        
 
     def set_loglevel(self, loglevel: Literal['DEBUG','INFO','WARNING','ERROR']) -> None:
         handler = {"sink": sys.stdout, "level": loglevel, "format": logger_format}
@@ -30,26 +50,53 @@ class Simulation3D:
         #logger.remove()
         #logger.add(sys.stderr, format=logger_format)
     
-    def preview(self) -> None:
+    def view(self) -> None:
         """Preview the geometry as currently defined using the GMSH viewer.
         
         This function simply calls: 
         >>> gmsh.model.occ.synchronize()
         >>> gmsh.fltk.run()
         """
+        if self.display is not None and self.mesh.defined:
+            try:
+                for obj in self._geometries:
+                    self.display.add_object(obj, color=obj.color, opacity=obj.opacity)
+                self.display.show()
+                return
+            except NotImplementedError as e:
+                logger.warning('The provided BaseDisplay class does not support object display. Please make' \
+                'sure that this method is properly implemented.')
         gmsh.model.occ.synchronize()
         gmsh.fltk.run()
        
     @logger.catch
     def define_geometry(self, *geometries: list[GMSHObject]) -> None:
-        geometries = unpack_lists(geometries)
-        self.mesher.submit_objects(geometries)
+        """Provide the physics engine with the geometries that are contained and ought to be included
+        in the simulation. Please make sure to include all geometries. Its currently unclear how the
+        system behaves if only a part of all geometries are included.
+
+        """
+        self._geometries = unpack_lists(geometries)
+        self.mesher.submit_objects(self._geometries)
         self.physics._initialize_bcs()
 
     @logger.catch
     def generate_mesh(self, name: str = "meshname.msh"):
+        """Generate the mesh. 
+        This can only be done after define_geometry(...) is called and if frequencies are defined.
+
+        Args:
+            name (str, optional): The mesh file name. Defaults to "meshname.msh".
+
+        Raises:
+            ValueError: ValueError if no frequencies are defined.
+        """
         if self.physics.frequencies is None:
             raise ValueError('No frequencies defined for the simulation. Please set frequencies before generating the mesh.')
+        if '.msh' not in name:
+            name = name + '.msh'
+            logger.warning(f'No .msh extension added, renamed to {name}')
+
         gmsh.model.occ.synchronize()
         self.mesher.set_mesh_size(self.physics.get_discretizer(), self.physics.resolution)
         gmsh.model.mesh.generate(3)

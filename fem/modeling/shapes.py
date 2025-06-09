@@ -5,12 +5,15 @@ import numpy as np
 from enum import Enum
 from .operations import subtract
 from ..selection import FaceSelection, Selector, SELECTOR_OBJ
-
+from .extrude import Extrusion, XYPolygon
 class Alignment(Enum):
     CENTER = 1
     CORNER = 2
 
 class Box(GMSHVolume):
+    """ A class that represents a box shaped volume
+
+    """
 
     def __init__(self, 
                  width: float, 
@@ -18,6 +21,18 @@ class Box(GMSHVolume):
                  height: float, 
                  position: tuple = (0,0,0),
                  alignment: Alignment = Alignment.CORNER):
+        """Creates a box volume object.
+        Specify the alignment of the box with the provided position. The options are CORNER (default)
+        for the front-left-bottom node of the box or CENTER for the center of the box.
+
+        Args:
+            width (float): The x-size
+            depth (float): The y-size
+            height (float): The z-size
+            position (tuple, optional): The position of the box. Defaults to (0,0,0).
+            alignment (Alignment, optional): Which point of the box is placed at the position. 
+                Defaults to Alignment.CORNER.
+        """
         super().__init__([])
         if alignment is Alignment.CENTER:
             position = (position[0]-width/2, position[1]-depth/2, position[2]-height/2)
@@ -58,6 +73,12 @@ class Sphere(GMSHVolume):
     def __init__(self, 
                  radius: float,
                  position: tuple = (0,0,0)):
+        """Generates a sphere objected centered ont he position with the given radius
+
+        Args:
+            radius (float): The sphere radius
+            position (tuple, optional): The center position. Defaults to (0,0,0).
+        """
         super().__init__([])
         x,y,z = position
         self.tags: list[int] = [gmsh.model.occ.addSphere(x,y,z,radius),]
@@ -68,6 +89,17 @@ class XYPlate(GMSHSurface):
                  depth: float, 
                  position: tuple = (0,0,0),
                  alignment: Alignment = Alignment.CORNER):
+        """Generates and XY-plane oriented plate
+        
+        Specify the alignment of the plate with the provided position. The options are CORNER (default)
+        for the front-left node of the plate or CENTER for the center of the plate.
+
+        Args:
+            width (float): The x-size of the plate
+            depth (float): The y-size of the plate
+            position (tuple, optional): The position of the alignment node. Defaults to (0,0,0).
+            alignment (Alignment, optional): Which node to align to. Defaults to Alignment.CORNER.
+        """
         super().__init__([])
         if alignment is Alignment.CENTER:
             position = (position[0]-width/2, position[1]-depth/2, position[2])
@@ -80,17 +112,30 @@ class Plate(GMSHSurface):
         
     def __init__(self,
                 origin: tuple[float, float, float],
-                ax1: tuple[float, float, float],
-                ax2: tuple[float, float, float]):
+                u: tuple[float, float, float],
+                v: tuple[float, float, float]):
+        """A generalized 2D rectangular plate in XYZ-space.
+
+        The plate is specified by an origin (o) in meters coordinate plus two vectors (u,v) in meters
+        that span two of the sides such that all points of the plate are defined by:
+            p1 = o
+            p2 = o+u
+            p3 = o+v
+            p4 = o+u+v
+        Args:
+            origin (tuple[float, float, float]): The origin of the plate in meters
+            u (tuple[float, float, float]): The u-axis of the plate
+            v (tuple[float, float, float]): The v-axis of the plate
+        """
         super().__init__([])
         origin = np.array(origin)
-        ax1 = np.array(ax1)
-        ax2 = np.array(ax2)
+        u = np.array(u)
+        v = np.array(v)
         
         tagp1 = gmsh.model.occ.addPoint(*origin)
-        tagp2 = gmsh.model.occ.addPoint(*(origin+ax1))
-        tagp3 = gmsh.model.occ.addPoint(*(origin+ax2))
-        tagp4 = gmsh.model.occ.addPoint(*(origin+ax1+ax2))
+        tagp2 = gmsh.model.occ.addPoint(*(origin+u))
+        tagp3 = gmsh.model.occ.addPoint(*(origin+v))
+        tagp4 = gmsh.model.occ.addPoint(*(origin+u+v))
 
         tagl1 = gmsh.model.occ.addLine(tagp1, tagp2)
         tagl2 = gmsh.model.occ.addLine(tagp2, tagp4)
@@ -107,9 +152,29 @@ class Cyllinder(GMSHVolume):
     def __init__(self, 
                  radius: float,
                  height: float,
-                 cs: CoordinateSystem = None,):
+                 cs: CoordinateSystem = None,
+                 Nsections: int = None):
+        """Generates a Cyllinder object in 3D space.
+        The cyllinder will always be placed in the origin of the provided CoordinateSystem.
+        The bottom cyllinder plane is always placed in the XY-plane. The lenth of the cyllinder is
+        oriented along the Z-axis.
+
+        By default the cyllinder uses the Open Cascade modeling for a cyllinder. In this representation
+        the surface of the cyllinder is approximated with a tolerance thay may be irregular.
+        As an alternative, the argument Nsections may be provided in which case the Cyllinder is replaced
+        by an extrusion of a regular N-sided polygon.
+
+        Args:
+            radius (float): The radius of the Cyllinder
+            height (float): The height of the Cyllinder
+            cs (CoordinateSystem, optional): The coordinate system. Defaults to None.
+            Nsections (int, optional): The number of sections. Defaults to None.
+        """
         ax = cs.zax.np
-        cyl = gmsh.model.occ.addCylinder(cs.origin[0], cs.origin[1], cs.origin[2],
+        if Nsections:
+            cyl = Extrusion(XYPolygon.circle(radius, Nsections=Nsections),cs).extrude_z(0, height, N=2).tags
+        else:
+            cyl = gmsh.model.occ.addCylinder(cs.origin[0], cs.origin[1], cs.origin[2],
                                          height*ax[0], height*ax[1], height*ax[2],
                                          radius)
         self.cs: CoordinateSystem = cs
@@ -138,15 +203,34 @@ class CoaxCyllinder(GMSHVolume):
                  rout: float,
                  rin: float,
                  height: float,
-                 cs: CoordinateSystem = None,):
+                 cs: CoordinateSystem = None,
+                 Nsections: int = None):
+        """Generates a Coaxial cyllinder object in 3D space.
+        The coaxial cyllinder will always be placed in the origin of the provided CoordinateSystem.
+        The bottom coax plane is always placed in the XY-plane. The lenth of the coax is
+        oriented along the Z-axis.
+
+        By default the coax uses the Open Cascade modeling for a cyllinder. In this representation
+        the surface of the cyllinder is approximated with a tolerance thay may be irregular.
+        As an alternative, the argument Nsections may be provided in which case the Cyllinder is replaced
+        by an extrusion of a regular N-sided polygon.
+
+        Args:
+            radius (float): The radius of the Cyllinder
+            height (float): The height of the Cyllinder
+            cs (CoordinateSystem, optional): The coordinate system. Defaults to None.
+            Nsections (int, optional): The number of sections. Defaults to None.
+        """
         if rout <= rin:
             raise ValueError("Outer radius must be greater than inner radius.")
         
         self.rout = rout
         self.rin = rin
         self.height = height
-        self.cyl_out = Cyllinder(rout, height, cs)
-        self.cyl_in = Cyllinder(rin, height, cs)
+
+        self.cyl_out = Cyllinder(rout, height, cs, Nsections=Nsections)
+        self.cyl_in = Cyllinder(rin, height, cs, Nsections=Nsections)
+
         cyltags, _ = gmsh.model.occ.cut(self.cyl_out.dimtags, self.cyl_in.dimtags)
         super().__init__([dt[1] for dt in cyltags])
 

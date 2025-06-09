@@ -8,6 +8,7 @@ from collections import defaultdict
 from .geo3d import GMSHVolume
 from .mth.optimized import outward_normal
 from loguru import logger
+
 @njit(cache=True)
 def area(x1: np.ndarray, x2: np.ndarray, x3: np.ndarray):
     e1 = x2 - x1
@@ -33,22 +34,14 @@ def tri_ordering(i1: int, i2: int, i3: int) -> int:
     return np.sign(np.sign(i2-1) + np.sign(i3-i2) + np.sign(i1-i3))
 
 
-class IndexSet:
-
-    def __init__(self, indices: tuple[int, ...]):
-        self.indices: tuple[int, ...] = indices
-        self.idset: set[int] = set(indices)
-
-    def __eq__(self, other: IndexSet):
-        return self.idset == other.idset
-    
-class DomainMapping:
-
-    def __init__(self):
-        pass
-
 class Mesh3D:
+    """A Mesh managing all 3D mesh related properties.
 
+    Relevant mesh data such as mappings between nodes(vertices), edges, triangles and tetrahedra
+    are managed by the Mesh3D class. Specific information regarding to how actual field values
+    are mapped to mesh elements is managed by the FEMBasis class.
+    
+    """
     def __init__(self, geometry: Mesher):
         
         self.geometry: Mesher = geometry
@@ -99,6 +92,9 @@ class Mesh3D:
         self.tet_to_field: np.ndarray = None
         self.edge_to_field: np.ndarray = None
         self.tri_to_field: np.ndarray = None
+
+        ## States
+        self.defined = False
 
     @property
     def n_edges(self) -> int:
@@ -339,6 +335,7 @@ class Mesh3D:
         self.edge_lengths = np.sqrt(np.sum((self.nodes[:,self.edges[0,:]] - self.nodes[:,self.edges[1,:]])**2, axis=0))
         self.areas = np.array([area(self.nodes[:,self.tris[0,i]], self.nodes[:,self.tris[1,i]], self.nodes[:,self.tris[2,i]]) for i in range(self.tris.shape[1])])
 
+        self.defined = True
     ## Higher order functions
 
     def retreive(self, material_selector: Callable, volumes: list[GMSHVolume]) -> np.ndarray:

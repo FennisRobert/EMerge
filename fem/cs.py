@@ -7,6 +7,7 @@ from typing import Literal
 
 @dataclass
 class Point:
+    """ A representation of a point."""
     x: float
     y: float
     z: float
@@ -14,6 +15,11 @@ class Point:
     
 @dataclass
 class Axis:
+    """A representation of an axis.
+    An Axis object always has length 1 and points in some 3D direction.
+    By default XAX, YAX, and ZAX are constructed and defined in the global namespace of the
+    FEM module.
+    """
     vector: np.ndarray
 
     def __repr__(self) -> str:
@@ -63,6 +69,7 @@ YAX: Axis = Axis(np.array([0, 1, 0]))
 ZAX: Axis = Axis(np.array([0, 0, 1]))
 
 def _parse_vector(vec: np.ndarray | tuple | list | Axis) -> np.ndarray:
+    """ Takes an array, tuple, list or Axis and alwasys returns an array."""
     if isinstance(vec, np.ndarray):
         return vec
     elif isinstance(vec, (list,tuple)):
@@ -71,7 +78,15 @@ def _parse_vector(vec: np.ndarray | tuple | list | Axis) -> np.ndarray:
         return vec.vector
     return None
 
-def _parse_axis(vec: np.ndarray | tuple | list | Axis) -> np.ndarray:
+def _parse_axis(vec: np.ndarray | tuple | list | Axis) -> Axis:
+    """Takes an array, tuple, list or Axis and always returns an Axis.
+
+    Args:
+        vec (np.ndarray | tuple | list | Axis): The Axis data
+
+    Returns:
+        Axis: The Axis object.
+    """
     if isinstance(vec, np.ndarray):
         return Axis(vec)
     elif isinstance(vec, (list,tuple)):
@@ -82,6 +97,9 @@ def _parse_axis(vec: np.ndarray | tuple | list | Axis) -> np.ndarray:
 
 @dataclass
 class Plane:
+    """A generalization of any plane of inifinite size spanned by two Axis objects.
+
+    """
     uax: Axis
     vax: Axis
 
@@ -95,12 +113,31 @@ class Plane:
     
     @property
     def normal(self) -> Axis:
+        """Returns the normal of the plane as u ⨉ v.
+
+        Returns:
+            Axis: The axis object normal to the plane.
+        """
         return self.uax.cross(self.vax)
     
     def flip(self) -> Plane:
+        """Flips the planes U and V axes.
+
+        Returns:
+            Plane: A new plane object.
+        """
         return Plane(self.vax, self.uax)
     
     def cs(self, origin: np.ndarray = None) -> CoordinateSystem:
+        """Returns a CoordinateSystem object for the plane where the XY axes are aligned
+        with the plane UV axis and Z is normal.
+
+        Args:
+            origin (np.ndarray, optional): The origin at which to place the coordinate system. Defaults to None.
+
+        Returns:
+            CoordinateSystem: The coordinate system object
+        """
         if origin is None:
             origin = np.zeros(3)
         return CoordinateSystem(self.uax, self.vax, self.normal, origin)
@@ -110,7 +147,20 @@ class Plane:
              vax: np.ndarray | tuple[float, float, int], 
              origin: np.ndarray | tuple[float, float, float],
              indexing: Literal['xy','ij'] = 'xy') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        
+        """Spans a grid of points in the plane based on a np.linspace like argument type.
+        The first uax argument should be a start, finish, Npoints type tuple of a float, float and integer.
+        Item for the vax. The origin defines the coordinate at which u,v = 0 will be placed.
+        The return type is an N,M np.meshgrid defined by the indexing 'xy' or 'ij'.
+
+        Args:
+            uax (np.ndarray | tuple[float, float, int]): The uax linspace argument values
+            vax (np.ndarray | tuple[float, float, int]): The vax linspace argument values
+            origin (np.ndarray | tuple[float, float, float]): The origin for u,v = 0
+            indexing (Literal[&#39;xy&#39;,&#39;ij&#39;], optional): The indexing type. Defaults to 'xy'.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The X, Y, Z (N,M) meshgrid of coordinates.
+        """
         if isinstance(uax, tuple):
             uax = np.linspace(*uax)
         if isinstance(vax, tuple):
@@ -152,6 +202,18 @@ ZYPLANE = Plane(ZAX, YAX)
 
 @dataclass
 class CoordinateSystem:
+    """A class representing CoordinateSystem information.
+
+    This class is widely used throughout the FEM solver to embed objects in space properly.
+    The x,y and z unit vectors are defined by Axis objects. The origin by a np.ndarray.
+
+    The property _is_global is should only be set for any CoordinateSystem class that is wished to
+    be considered as global. This is reserved for the GCS intance create automatically with:
+        xax = (1,0,0)
+        yax = (0,1,0)
+        zax = (0,0,1)
+        origin = (0., 0., 0.) meters
+    """
     xax: Axis
     yax: Axis
     zax: Axis
@@ -171,9 +233,20 @@ class CoordinateSystem:
         return f"CoordinateSystem({self.xax}, {self.yax}, {self.zax}, {self.origin})"
     
     def copy(self) -> CoordinateSystem:
+        """ Creates a copy of this coordinate system."""
         return CoordinateSystem(self.xax, self.yax, self.zax, self.origin)
     
     def displace(self, dx: float, dy: float, dz: float) -> CoordinateSystem:
+        """Creates a displaced version of this coordinate system. The basis is kept the same.
+
+        Args:
+            dx (float): The X-displacement (meters)
+            dy (float): The Y-displacement (meters)
+            dz (float): The Z-displacement (meters)
+
+        Returns:
+            CoordinateSystem: The new CoordinateSystem object.
+        """
         csnew = CoordinateSystem(self.xax, self.yax, self.zax, self.origin + np.array([dx, dy, dz]))
         return csnew
     
@@ -219,16 +292,17 @@ class CoordinateSystem:
         )
     
     def swapxy(self) -> None:
+        """Swaps the XY axes of the CoordinateSystem.
+        """
         self.xax, self.yax = self.yax, self.xax
         self.__post_init__()
     
     def affine_from_global(self) -> np.ndarray:
-        """
-        xhat, yhat, zhat, origin  : each shape (3,) or (3,1)
-        returns a 4×4 affine matrix T such that
-            [R | origin]
-            [0 |   1   ]
-        where R = [xhat yhat zhat].
+        """Returns an Affine transformation matrix in order to transform coordinates from
+        the global coordinate system to this coordinate system.
+
+        Returns:
+            np.ndarray: The affine transformation matrix.
         """
         # ensure they’re 1-D
         x = self.xax.vector
@@ -244,17 +318,33 @@ class CoordinateSystem:
         return T
     
     def affine_to_global(self) -> np.ndarray:
+        """Returns an Affine transformation matrix in order to transform coordinates from
+        this local coordinate system to the coordinate system.
+
+        Returns:
+            np.ndarray: The affine transformation matrix.
+        """
         T = self.affine_from_global()
         R = T[0:3, 0:3]
         o = T[0:3, 3]
-        R_inv = np.linalg.inv(R)         # general inverse of R
-        o_new = - R_inv @ o              # new translation
+        R_inv = np.linalg.inv(R)
+        o_new = - R_inv @ o
         T_inv = np.eye(4, dtype=float)
         T_inv[0:3, 0:3] = R_inv
         T_inv[0:3, 3]   = o_new
         return T_inv
     
     def in_global_cs(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Converts x,y,z coordinates into the global coordinate system.
+
+        Args:
+            x (np.ndarray): The x-coordinates (meter)
+            y (np.ndarray): The y-coordinates (meter)
+            z (np.ndarray): The z-coordinates (meter)
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The resultant x, y and z coordinates.
+        """
         xg = self.xax.np[0]*x + self.yax.np[0]*y + self.zax.np[0]*z + self.origin[0]
         yg = self.xax.np[1]*x + self.yax.np[1]*y + self.zax.np[1]*z + self.origin[1]
         zg = self.xax.np[2]*x + self.yax.np[2]*y + self.zax.np[2]*z + self.origin[2]
@@ -263,6 +353,16 @@ class CoordinateSystem:
     def in_local_cs(self, x: np.ndarray,
                     y: np.ndarray,
                     z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Converts x,y,z coordinates into the local coordinate system.
+
+        Args:
+            x (np.ndarray): The x-coordinates (meter)
+            y (np.ndarray): The y-coordinates (meter)
+            z (np.ndarray): The z-coordinates (meter)
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The resultant x, y and z coordinates.
+        """
         B = self._basis_inv
         xg = x - self.origin[0]
         yg = y - self.origin[1]
@@ -275,6 +375,16 @@ class CoordinateSystem:
     def in_global_basis(self, x: np.ndarray,
                         y: np.ndarray,
                         z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Converts x,y,z vector components into the global coordinate basis.
+
+        Args:
+            x (np.ndarray): The x-vector components (meter)
+            y (np.ndarray): The y-vector components (meter)
+            z (np.ndarray): The z-vector components (meter)
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The resultant x, y and z vectors.
+        """
         xg = self.xax.np[0]*x + self.yax.np[0]*y + self.zax.np[0]*z
         yg = self.xax.np[1]*x + self.yax.np[1]*y + self.zax.np[1]*z
         zg = self.xax.np[2]*x + self.yax.np[2]*y + self.zax.np[2]*z
@@ -283,14 +393,24 @@ class CoordinateSystem:
     def in_local_basis(self, x: np.ndarray,
                           y: np.ndarray,
                           z: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-          B = self._basis_inv
-          xg = x
-          yg = y
-          zg = z
-          x = B[0,0]*xg + B[0,1]*yg + B[0,2]*zg
-          y = B[1,0]*xg + B[1,1]*yg + B[1,2]*zg
-          z = B[2,0]*xg + B[2,1]*yg + B[2,2]*zg
-          return x, y, z
+        """Converts x,y,z vector components into the local coordinate basis.
+
+        Args:
+            x (np.ndarray): The x-vector components (meter)
+            y (np.ndarray): The y-vector components (meter)
+            z (np.ndarray): The z-vector components (meter)
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The resultant x, y and z vectors.
+        """
+        B = self._basis_inv
+        xg = x
+        yg = y
+        zg = z
+        x = B[0,0]*xg + B[0,1]*yg + B[0,2]*zg
+        y = B[1,0]*xg + B[1,1]*yg + B[1,2]*zg
+        z = B[2,0]*xg + B[2,1]*yg + B[2,2]*zg
+        return x, y, z
     
     @property
     def gx(self) -> float:
@@ -315,5 +435,10 @@ class CoordinateSystem:
     @property
     def gzhat(self) -> np.ndarray:
         return self.zax.np
-    
+
+# A shorthand alias for the CoordinateSystem Class 
+CS = CoordinateSystem
+
+# The global coordinate system
 GCS = CoordinateSystem(XAX, YAX, ZAX, np.zeros(3), _is_global=True)
+

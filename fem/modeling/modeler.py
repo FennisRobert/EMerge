@@ -8,6 +8,7 @@ from numbers import Number
 from functools import reduce
 from operator import mul
 from ..cs import CoordinateSystem, GCS
+from .extrude import XYPolygon, Extrusion
 
 def get_flat_index(indices, shape):
     flat_index = 0
@@ -367,7 +368,9 @@ class Modeler:
                   height: float | Series,
                   position: tuple[float | Series, float | Series, float | Series],
                   cs: CoordinateSystem = GCS,
-                  merge: bool = False):
+                  merge: bool = False,
+                  NPoly: int = False):
+        
         N_objects = self.nvars()
         Rs, Hs, Ps = unpack(radius, height, position)
         N = len(Rs)
@@ -376,7 +379,10 @@ class Modeler:
         for _ in range(N_objects):
             for r,h,p in zip(Rs, Hs, Ps):
                 cs2 = cs.displace(p[0], p[1], p[2])
-                cyl  = Cyllinder(r,h, cs2)
+                if NPoly:
+                    cyl = Extrusion(XYPolygon.circle(r, Nsections=NPoly), cs2).extrude_z(0,h,N=2)
+                else:
+                    cyl  = Cyllinder(r,h, cs2)
                 cyls.append(cyl)
 
         self.ndimcont.set_copies(N)

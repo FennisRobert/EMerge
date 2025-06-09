@@ -1,5 +1,5 @@
 from __future__ import annotations
-from ...dataset import SimData, DataSet, DataAxis
+from ...dataset import SimData, DataSet
 from ...elements.femdata import FEMBasis
 from dataclasses import dataclass
 import numpy as np
@@ -80,7 +80,10 @@ class PortProperties:
     mode_number: int = 1
     
 class EMDataSet(DataSet):
+    """The EMDataSet class stores solution data of FEM Time Harmonic simulations.
+
     
+    """
     def __init__(self, **vars):
         self.er: np.ndarray = None
         self.ur: np.ndarray = None
@@ -211,6 +214,9 @@ class _DataSetProxy:
 
 
 class EMSimData(SimData[EMDataSet]):
+    """The EMSimData class contains all EM simulation data from a Time Harmonic simulation
+    along all sweep axes.
+    """
     datatype: type = EMDataSet
     def __init__(self, basis: FEMBasis):
         super().__init__()
@@ -221,6 +227,48 @@ class EMSimData(SimData[EMDataSet]):
     def __getitem__(self, field: EMField) -> np.ndarray:
         return getattr(self, field)
 
+    def howto(self) -> None:
+        """To access data in the EMSimData class use the .ax method to extract properties selected
+        along an access of global variables. The axes are all global properties that the EMDatasets manage.
+        
+        For example the following would return all S(2,1) parameters along the frequency axis.
+        
+        >>> freq, S21 = dataset.ax('freq').S(2,1)
+
+        Alternatively, one can manually select any solution indexed in order of generation using.
+
+        >>> S21 = dataset.item(3).S(2,1)
+
+        To find the E or H fields at any coordinate, one can use the Dataset's .interpolate method. 
+        This method returns the same Dataset object after which the computed fields can be accessed.
+
+        >>> Ex = dataset.item(3).interpolate(xs,ys,zs).Ex
+
+        Lastly, to find the solutions for a given frequency or other value, you can also just call the dataset
+        class:
+        
+        >>> Ex, Ey, Ez = dataset(freq=1e9).interpolate(xs,ys,zs).E
+
+        """
+
     def ax(self, field: EMField) -> EMDataSet:
+        """Return a EMDataSet proxy object that you can request properties for along a provided axis.
+
+        The EMSimData class contains a list of EMDataSet objects. Any global variable like .freq of the 
+        EMDataSet object can be used as inner-axes after which the outer axis can be selected as if
+        you are extract a single one.
+
+        Args:
+            field (EMField): The global field variable to select the data along
+
+        Returns:
+            EMDataSet: An EMDataSet object (actually a proxy for)
+
+        Example:
+        The following will select all S11 parameters along the frequency axis:
+
+        >>> freq, S11 = dataset.ax('freq').S(1,1)
+
+        """
         # find the real DataSet
         return _DataSetProxy(field, self.datasets)

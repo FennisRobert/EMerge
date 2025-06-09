@@ -2,7 +2,7 @@ from ...mesher import Mesher
 from ...material import Material
 from ...mesh3d import Mesh3D
 from ...bc import BoundaryCondition, PEC, ModalPort, LumpedPort, PortBC
-from .data import EMSimData
+from .emdata import EMSimData
 from ...elements.femdata import FEMBasis
 from .assembler import Assembler
 from ...solver import DEFAULT_ROUTINE, SolveRoutine
@@ -16,6 +16,9 @@ import numpy as np
 from scipy.sparse import identity
 from scipy import sparse
 from loguru import logger
+
+class SimulationError(Exception):
+    pass
 
 def _dimstring(data: list[float]):
     return '(' + ', '.join([f'{x*1000:.1f}mm' for x in data]) + ')'
@@ -49,6 +52,12 @@ def shortest_path(xyz1: np.ndarray, xyz2: np.ndarray, Npts: int) -> np.ndarray:
     return path
 
 class Electrodynamics3D:
+    """The Electrodynamics time harmonic physics class.
+
+    This class contains all physics dependent features to perform EM simuation in the time-harmonic
+    formulation.
+
+    """
     def __init__(self, mesher: Mesher, order: int = 2):
         self.frequencies: list[float] = []
         self.current_frequency = 0
@@ -65,23 +74,47 @@ class Electrodynamics3D:
         self.solveroutine: SolveRoutine = DEFAULT_ROUTINE
         self.set_order(order)
 
+        ## States
+        self._bc_initialized: bool = False
+
     def set_order(self, order: int) -> None:
-        if order not in (1,2):
-            raise ValueError(f'Order {order} not supported. Only 1 or 2 allowed.')
+        """Sets the order of the basis functions used. Currently only supports second order.
+
+        Args:
+            order (int): The order to use.
+
+        Raises:
+            ValueError: An error if a wrong order is used.
+        """
+        if order not in (2,):
+            raise ValueError(f'Order {order} not supported. Only order-2 allowed.')
         
         self.order = order
         self.resolution = {1: 0.15, 2: 0.3}[order]
 
     @property
     def nports(self) -> int:
+        """The number of ports in the physics.
+
+        Returns:
+            int: The number of ports
+        """
         return len([bc for bc in self.boundary_conditions if isinstance(bc,PortBC)])
     
-    def ports(self) -> list[BoundaryCondition]:
+    def ports(self) -> list[PortBC]:
+        """A list of all port boundary conditions.
+
+        Returns:
+            list[PortBC]: A list of all port boundary conditions
+        """
         return sorted([bc for bc in self.boundary_conditions if isinstance(bc,PortBC)], key=lambda x: x.number)
     
     @logger.catch
     def _initialize_bcs(self) -> None:
-        logger.info('Initializing boundary conditions.')
+        """Initializes the boundary conditions to set PEC as all exterior boundaries.
+        """
+        logger.debug('Initializing boundary conditions.')
+
         self.boundary_conditions = []
 
         tags = self.mesher.domain_boundary_face_tags
@@ -111,7 +144,12 @@ class Electrodynamics3D:
             return 299792456/(max(self.frequencies) * np.abs(material.neff))
         return disc
     
-    def initialize_field(self):
+    def _initialize_field(self):
+        """Initializes the physics basis to the correct FEMBasis object.
+        
+        Currently it defaults to Nedelec2. Mixed basis are used for modal analysis. 
+        This function does not have to be called by the user. Its automatically invoked.
+        """
         if self.basis is not None:
             return
         if self.order == 1:
@@ -122,8 +160,8 @@ class Electrodynamics3D:
             from ...elements.nedelec2 import Nedelec2
             self.basis = Nedelec2(self.mesh)
 
-    def initialize_bcs(self):
-        ''' Initialze boundary condition data required.
+    def _initialize_bc_data(self):
+        ''' Initializes auxilliary required boundary condition information before running simulations.
         '''
         logger.debug('Initializing boundary conditions')
         for bc in self.boundary_conditions:
@@ -161,7 +199,9 @@ class Electrodynamics3D:
             kz_range : bool = True
                 Wether to use ARPACK to look for modes in a given range.
         '''
-        self.initialize_field()
+        if self._bc_initialized is False:
+            raise SimulationError('Cannot run a modal analysis because no boundary conditions have been assigned.')
+        self._initialize_field()
         
         logger.debug('Retreiving material properties.')
         ertet = self.mesh.retreive(lambda mat,x,y,z: mat.fer3d_mat(x,y,z), self.mesher.volumes)
@@ -281,8 +321,8 @@ class Electrodynamics3D:
                 logger.debug('High Ez/Et ratio detected, assuming TM mode')
                 mode.modetype = 'TM'
             elif TEM:
-                G1, G2 = self.find_TEM_conductors(port)
-                cs, dls = self.compute_integration_line(G1,G2)
+                G1, G2 = self._find_tem_conductors(port)
+                cs, dls = self._compute_integration_line(G1,G2)
                 
                 Ex, Ey, Ez = portfE(cs[0,:], cs[1,:], cs[2,:])
                 voltage = np.sum(Ex*dls[0,:] + Ey*dls[1,:] + Ez*dls[2,:])
@@ -319,7 +359,22 @@ class Electrodynamics3D:
         port.voltage_integration_points = (start, end)
         port.v_integration = True
 
-    def compute_integration_line(self, group1: list[int], group2: list[int]):
+    def _compute_integration_line(self, group1: list[int], group2: list[int]) -> tuple[np.ndarray, np.ndarray]:
+        """Computes an integration line for two node island groups by finding the closest two nodes.
+        
+        This method is used for the modal TEM analysis to find an appropriate voltage integration path
+        by looking for the two closest points for the two conductor islands that where discovered.
+
+        Currently it defaults to 11 integration line points.
+
+        Args:
+            group1 (list[int]): The first island node group
+            group2 (list[int]): The second island node group
+
+        Returns:
+            centers (np.ndarray): The center points of the line segments
+            dls (np.ndarray): The delta-path vectors for each line segment.
+        """
         nodes1 = self.mesh.nodes[:,group1]
         nodes2 = self.mesh.nodes[:,group2]
         path = shortest_path(nodes1, nodes2, 11)
@@ -327,9 +382,20 @@ class Electrodynamics3D:
         dls = path[:,1:] - path[:,:-1]
         return centres, dls
 
+    def _find_tem_conductors(self, port: ModalPort) -> tuple[list[int], list[int]]:
+        ''' Returns two lists of global node indices corresponding to the TEM port conductors.
+        
+        This method is invoked during modal analysis with TEM modes. It looks at all edges
+        exterior to the boundary face triangulation and finds two small subsets of nodes that
+        lie on different exterior boundaries of the boundary face.
 
-    def find_TEM_conductors(self, port: ModalPort) -> tuple[list[int], list[int]]:
-        ''' Returns two lists of global node indices corresponding to the TEM port conductors assuming there are two.'''
+        Args:
+            port (ModalPort): The modal port object.
+            
+        Returns:
+            list[int]: A list of node integers of island 1.
+            list[int]: A list of node integers of island 2.
+        '''
 
         logger.debug('Finding PEC TEM conductors')
         pecs: list[PEC] = [bc for bc in self.boundary_conditions if isinstance(bc,PEC)]
@@ -373,10 +439,12 @@ class Electrodynamics3D:
 
     @logger.catch
     def frequency_domain(self) -> EMSimData:
-        ''' Executes a frequency domain study.'''
+        ''' Executes the frequency domain study.'''
         mesh = self.mesh
-        self.initialize_field()
-        self.initialize_bcs()
+        if self._bc_initialized is False:
+            raise SimulationError('Cannot run a modal analysis because no boundary conditions have been assigned.')
+        self._initialize_field()
+        self._initialize_bc_data()
         
         er = self.mesh.retreive(lambda mat,x,y,z: mat.fer3d_mat(x,y,z), self.mesher.volumes)
         ur = self.mesh.retreive(lambda mat,x,y,z: mat.fur3d_mat(x,y,z), self.mesher.volumes)
@@ -451,7 +519,7 @@ class Electrodynamics3D:
                     tri_vertices = mesh.tris[:,tris]
                     erp = ertri[:,:,tris]
                     urp = urtri[:,:,tris]
-                    pfield, pmode = self.compute_S_data(bc, fieldf, tri_vertices, k0, erp, urp)
+                    pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
                     logger.debug(f'Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
                     Pout = pmode
                 
@@ -462,7 +530,7 @@ class Electrodynamics3D:
                     tri_vertices = mesh.tris[:,tris]
                     erp = ertri[:,:,tris]
                     urp = urtri[:,:,tris]
-                    pfield, pmode = self.compute_S_data(bc, fieldf, tri_vertices, k0, erp, urp)
+                    pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
                     logger.debug(f'Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
                     
                     data.write_S(bc.port_number, active_ports[0].port_number, pfield/Pout)
@@ -470,20 +538,31 @@ class Electrodynamics3D:
             logger.info('Simulation Complete!')
         return self.data
     
-    def compute_S_data(self, bc: PortBC, 
+    def _compute_s_data(self, bc: PortBC, 
                        fieldfunction: Callable, 
                        tri_vertices: np.ndarray, 
                        k0: float,
                        erp: np.ndarray,
                        urp: np.ndarray,) -> tuple[complex, complex]:
-        
+        """ Computes the S-parameter data for a given boundary condition and field function.
+
+        Args:
+            bc (PortBC): The port boundary condition
+            fieldfunction (Callable): The field function that interpolates the solution field.
+            tri_vertices (np.ndarray): The triangle vertex indices of the port face
+            k₀ (float): The simulation phase constant
+            erp (np.ndarray): The εᵣ of the port face triangles
+            urp (np.ndarray): The μᵣ of the port face triangles.
+
+        Returns:
+            tuple[complex, complex]: _description_
+        """
         if bc.v_integration:
            
             ln = bc.vintline
             Ex, Ey, Ez = fieldfunction(*ln.cmid)
 
             V = np.sum(Ex*ln.dxs + Ey*ln.dys + Ez*ln.dzs)
-            #print(f' Measured voltage = {np.abs(V)}V < {180/np.pi*np.angle(V)}deg, applied voltage = {bc.voltage} V')
             if bc.active:
                 a = bc.voltage
                 b = (V-bc.voltage)
@@ -494,7 +573,6 @@ class Electrodynamics3D:
             a = np.sqrt(a**2/(2*bc.Z0))
             b = np.sqrt(b**2/(2*bc.Z0))
             return b, a
-
         else:
             if bc.modetype == 'TEM':
                 const = 1/(np.sqrt((urp[0,0,:] + urp[1,1,:] + urp[2,2,:])/(erp[0,0,:] + erp[1,1,:] + erp[2,2,:])))
@@ -506,9 +584,39 @@ class Electrodynamics3D:
             field_p = sparam_field_power(self.mesh.nodes, tri_vertices, bc, k0, fieldfunction, const)
             mode_p = sparam_mode_power(self.mesh.nodes, tri_vertices, bc, k0, const)
             return field_p, mode_p
-            #svec = sparam_waveport(mesh.nodes, tri_vertices, bc, freq, fieldf)
-
         
+    @logger.catch
+    def assign(self, 
+               *bcs: BoundaryCondition) -> None:
+        """Assign a boundary-condition object to a domain or list of domains.
+        This method must be called to submit any boundary condition object you made to the physics.
+
+        Args:
+            bcs *(BoundaryCondition): A list of boundary condition objects.
+        """
+        self._bc_initialized = True
+        wordmap = {
+            0: 'node',
+            1: 'edge',
+            2: 'face',
+            3: 'domain'
+        }
+        for bc in bcs:
+            bc.add_tags(bc.selection.dimtags)
+
+            logger.info('Excluding other possible boundary conditions')
+
+            for existing_bc in self.boundary_conditions:
+                excluded = existing_bc.exclude_bc(bc)
+                if excluded:
+                    logger.warning(f'Removed the following {wordmap[bc.dim]}: {excluded} from {existing_bc}')
+            
+            self.boundary_conditions.append(bc)
+
+
+## DEPRICATED
+
+
 
     # @logger.catch
     # def eigenmode(self, mesh: Mesh3D, solver = None, num_sols: int = 6):
@@ -555,25 +663,3 @@ class Electrodynamics3D:
     #     dataset.set_efield(Esol)
 
     #     self.basis = dataset
-
-    @logger.catch
-    def assign(self, 
-               *bcs: BoundaryCondition) -> None:
-        '''Assign a boundary-condition object to a domain or list of domains.'''
-        wordmap = {
-            0: 'node',
-            1: 'edge',
-            2: 'face',
-            3: 'domain'
-        }
-        for bc in bcs:
-            bc.add_tags(bc.selection.dimtags)
-
-            logger.info('Clearing other boundary conditions')
-
-            for existing_bc in self.boundary_conditions:
-                excluded = existing_bc.exclude_bc(bc)
-                if excluded:
-                    logger.warning(f'Removed the following {wordmap[bc.dim]}: {excluded} from {existing_bc}')
-            
-            self.boundary_conditions.append(bc)

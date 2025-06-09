@@ -5,7 +5,8 @@ T = TypeVar('T', bound='DataSet')
 
 
 class DataSet:
-
+    """A General class representing any set of data.
+    """
     def __init__(self, **vars):
         for key, value in vars.items():
             self.__dict__[key] = value
@@ -29,25 +30,11 @@ class DataSet:
     def _getvalue(self, name: str) -> Any | None:
         return self.__dict__.get(name, None)
 
-class DataAxis(Generic[T]):
-    def __init__(self, data: list[T], axis_name: str):
-        self._data = sorted(data, key=lambda d: getattr(d, axis_name))
-        self._axis_name = axis_name
-
-    def __getattr__(self, name: str):
-        try:
-            values = [getattr(d, name) for d in self._data]
-            # Convert to numpy array if all are scalars or arrays
-            if all(isinstance(v, (int, float, complex, np.ndarray)) for v in values):
-                return np.array(values)
-            return values
-        except AttributeError:
-            raise AttributeError(f"'DataAxis' object has no attribute '{name}'")
-
-    def __repr__(self):
-        return f"<DataAxis sorted by '{self._axis_name}' with {len(self._data)} entries>"
-    
 class SimData(Generic[T]):
+    """The SimData class is a generic class that contains multiple DataSet classes. Its inherited
+    by physics specific SimData classes.
+
+    """
     datatype: type = DataSet
     def __init__(self):
         self.datasets: list[T] = []
@@ -55,15 +42,35 @@ class SimData(Generic[T]):
         self._axis: str = None
 
     def new(self, **vars: float) -> T:
+        """Adds a new DataSet object to the SimData class.
+        The global variables at which the data is provided can be supplemented by a dynamic list
+        of keyword variables.
+
+        Returns:
+            T: The specific variant of a DataSet object.
+        """
         vars.update(self._injections)
         data = self.datatype(**vars)
         self.datasets.append(data)
         return data
     
     def item(self, id: int) -> T:
+        """Return the solution dataset object for the given index "id"
+
+        Args:
+            id (int): The numer of the solution (starting at 0 - first solution).
+
+        Returns:
+            T: The Dataset object.
+        """
         return self.datasets[id]
     
     def __call__(self, **vars: float) -> T | list[T]:
+        """Look up the appropriate DataSet object for a given permutation of global variables.
+
+        Returns:
+            T | list[T]: Either a single DataSet instance or a list if multiple satisfy a criterion.
+        """
         collect = []
         for data in self.datasets:
             if data.equals(**vars):
@@ -139,3 +146,25 @@ class SimData(Generic[T]):
             ys = ys[idx]
 
         return xs, ys
+
+
+
+# class DataAxis(Generic[T]):
+#     """ I think this should be depricated."""
+#     def __init__(self, data: list[T], axis_name: str):
+#         self._data = sorted(data, key=lambda d: getattr(d, axis_name))
+#         self._axis_name = axis_name
+
+#     def __getattr__(self, name: str):
+#         try:
+#             values = [getattr(d, name) for d in self._data]
+#             # Convert to numpy array if all are scalars or arrays
+#             if all(isinstance(v, (int, float, complex, np.ndarray)) for v in values):
+#                 return np.array(values)
+#             return values
+#         except AttributeError:
+#             raise AttributeError(f"'DataAxis' object has no attribute '{name}'")
+
+#     def __repr__(self):
+#         return f"<DataAxis sorted by '{self._axis_name}' with {len(self._data)} entries>"
+    

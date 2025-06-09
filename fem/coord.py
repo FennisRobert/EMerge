@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy as np
 
 class Line:
-
+    """ A deprecated line class. Not used at the moment."""
     def __init__(self, xpts: np.ndarray,
                  ypts: np.ndarray,
                  zpts: np.ndarray):

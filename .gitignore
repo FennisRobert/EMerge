@@ -92,4 +92,4 @@ symbollic_work_2/
 tests_2D/
 
 # Meshes
-.msh
+*.msh

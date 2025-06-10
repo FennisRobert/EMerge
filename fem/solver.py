@@ -22,10 +22,11 @@ from scipy.linalg import eig
 #import pyamg
 from scipy import sparse
 import numpy as np
-from typing import Callable
 from loguru import logger
 from pypardiso import spsolve as pardiso_solve
-
+import os
+import sys
+import platform
 #from pyamg.util.utils import get_blocksize
 
 def filter_real_modes(eigvals, eigvecs, k0, ermax, urmax):
@@ -260,7 +261,15 @@ class SolverPardiso(Solver):
         self.A: np.ndarray = None
         self.b: np.ndarray = None
 
+    def solve_arm(self, A, b, precon):
+        logger.debug('ARM system architecture detected, using SPSolver instead.')
+        x = spsolve(A, b)
+        return x, 0
+    
     def solve(self, A, b, precon):
+        if 'arm' in platform.processor():
+            return self.solve_arm(A,b,precon)
+        
         logger.info('Calling Pardiso Solver')
         self.A = A
         self.b = b

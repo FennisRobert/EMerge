@@ -285,6 +285,10 @@ class FaceSelection(Selection):
         X = [c[0] for c in coordset]
         Y = [c[1] for c in coordset]
         Z = [c[2] for c in coordset]
+        if len(X) == 1:
+            X = X[0]
+            Y = Y[0]
+            Z = Z[0]
         return X, Y, Z
     
 class DomainSelection(Selection):

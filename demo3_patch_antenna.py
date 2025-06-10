@@ -32,7 +32,7 @@ f2 = 1.6e9
 with fem.Simulation3D('MySimulation', PVDisplay, loglevel='DEBUG') as model:
     dielectric = fem.modeling.Box(wsub, hsub, th, position=(-wsub/2, -hsub/2, -th))
 
-    air = fem.modeling.Box(wsub, hsub, Hair, position=(-wsub/2, -hsub/2, 0))
+    air = fem.modeling.SidedBox(wsub, hsub, Hair, position=(-wsub/2, -hsub/2, 0))
     
     rpatch = fem.modeling.XYPlate(Wpatch, Lpatch, position=(-Wpatch/2, -Lpatch/2, 0))
     
@@ -63,7 +63,7 @@ with fem.Simulation3D('MySimulation', PVDisplay, loglevel='DEBUG') as model:
 
     model.generate_mesh()
 
-    model.view()
+    #model.view()
 
     xyzs = rpatch.select.sample(50)
     

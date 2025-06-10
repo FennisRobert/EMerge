@@ -131,6 +131,7 @@ class PVDisplay(BaseDisplay):
 
     def show(self):
         self._plot.show()
+        self._plot = pv.Plotter()
     
     ## CUSTOM METHODS
     def mesh_volume(self, volume: DomainSelection) -> pv.UnstructuredGrid:

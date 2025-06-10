@@ -17,12 +17,14 @@
 
 import gmsh
 from ..geo3d import GMSHObject, GMSHSurface, GMSHVolume
-from ..cs import CoordinateSystem
+from ..cs import CoordinateSystem, GCS
 import numpy as np
 from enum import Enum
 from .operations import subtract
 from ..selection import FaceSelection, Selector, SELECTOR_OBJ
 from .extrude import Extrusion, XYPolygon
+from typing import Literal
+
 class Alignment(Enum):
     CENTER = 1
     CORNER = 2
@@ -282,3 +284,134 @@ class HalfSphere(GMSHVolume):
 
         self.tag = subtract(sphere, box)[0].tag
 
+
+
+class SidedBox(GMSHVolume):
+    '''The sided box class creates a box just like the Box class but with selectable face tags.
+    This class is more convenient in use when defining radiation boundaries.'''
+    def __init__(self, 
+                 width: float, 
+                 depth: float, 
+                 height: float, 
+                 position: tuple = (0,0,0),
+                 cs: CoordinateSystem = GCS,
+                 alignment: Alignment = Alignment.CORNER):
+        """Creates a box volume object with selectable sides.
+
+        Specify the alignment of the box with the provided position. The options are CORNER (default)
+        for the front-left-bottom node of the box or CENTER for the center of the box.
+
+        Args:
+            width (float): The x-size
+            depth (float): The y-size
+            height (float): The z-size
+            position (tuple, optional): The position of the box. Defaults to (0,0,0).
+            alignment (Alignment, optional): Which point of the box is placed at the position. 
+                Defaults to Alignment.CORNER.
+        """
+        super().__init__([])
+
+        if alignment is Alignment.CORNER:
+            position = (position[0]+width/2, position[1]+depth/2, position[2])
+        
+        p0 = np.array(position)
+        p1 = p0 + cs.zax.np * height
+
+        wax = cs.xax.np
+        dax = cs.yax.np
+
+        w = width
+        d = depth
+
+        p11 = p0 + wax * w/2 + dax * d/2 # right back
+        p12 = p0 + wax * w/2 - dax * d/2 # right front
+        p13 = p0 - wax * w/2 - dax * d/2 # Left front
+        p14 = p0 - wax * w/2 + dax * d/2 # left back
+
+        p21 = p1 + wax * w/2 + dax * d/2
+        p22 = p1 + wax * w/2 - dax * d/2
+        p23 = p1 - wax * w/2 - dax * d/2
+        p24 = p1 - wax * w/2 + dax * d/2
+
+        pt11 = gmsh.model.occ.addPoint(*p11) # right back
+        pt12 = gmsh.model.occ.addPoint(*p12) # Right front
+        pt13 = gmsh.model.occ.addPoint(*p13) # left front
+        pt14 = gmsh.model.occ.addPoint(*p14) # Left back
+        pt21 = gmsh.model.occ.addPoint(*p21)
+        pt22 = gmsh.model.occ.addPoint(*p22)
+        pt23 = gmsh.model.occ.addPoint(*p23)
+        pt24 = gmsh.model.occ.addPoint(*p24)
+
+        l1r = gmsh.model.occ.addLine(pt11, pt12) #Right
+        l1f = gmsh.model.occ.addLine(pt12, pt13) #Front
+        l1l = gmsh.model.occ.addLine(pt13, pt14) #Left
+        l1b = gmsh.model.occ.addLine(pt14, pt11) #Back
+        
+        l2r = gmsh.model.occ.addLine(pt21, pt22)
+        l2f = gmsh.model.occ.addLine(pt22, pt23)
+        l2l = gmsh.model.occ.addLine(pt23, pt24)
+        l2b = gmsh.model.occ.addLine(pt24, pt21)
+
+        dbr = gmsh.model.occ.addLine(pt11, pt21)
+        dfr = gmsh.model.occ.addLine(pt12, pt22)
+        dfl = gmsh.model.occ.addLine(pt13, pt23)
+        dbl = gmsh.model.occ.addLine(pt14, pt24)
+
+        wbot = gmsh.model.occ.addWire([l1r, l1b, l1l, l1f])
+        wtop = gmsh.model.occ.addWire([l2r, l2b, l2l, l2f])
+        wright = gmsh.model.occ.addWire([l1r, dbr, l2r, dfr])
+        wleft = gmsh.model.occ.addWire([l1l, dbl, l2l, dfl])
+        wback = gmsh.model.occ.addWire([l1b, dbl, l2b, dbr])
+        wfront = gmsh.model.occ.addWire([l1f, dfr, l2f, dfl])
+
+        self.bottom_tag = gmsh.model.occ.addSurfaceFilling(wbot)
+        self.top_tag = gmsh.model.occ.addSurfaceFilling(wtop)
+        self.front_tag = gmsh.model.occ.addSurfaceFilling(wfront)
+        self.back_tag = gmsh.model.occ.addSurfaceFilling(wback)
+        self.left_tag = gmsh.model.occ.addSurfaceFilling(wleft)
+        self.right_tag = gmsh.model.occ.addSurfaceFilling(wright)
+
+        self._outside_tags = [self.bottom_tag, self.top_tag, self.right_tag, self.left_tag, self.front_tag, self.back_tag
+                              ]
+        sv = gmsh.model.occ.addSurfaceLoop([self.bottom_tag,
+                                            self.top_tag,
+                                            self.right_tag,
+                                            self.left_tag,
+                                            self.front_tag,
+                                            self.back_tag])
+
+        self.volume_tag: int = gmsh.model.occ.addVolume([sv,])
+        self.tags: list[int] = [self.volume_tag,]
+        
+    @property
+    def left(self) -> FaceSelection:
+        return FaceSelection([self.left_tag,])
+    
+    @property
+    def right(self) -> FaceSelection:
+        return FaceSelection([self.right_tag,])
+    
+    @property
+    def top(self) -> FaceSelection:
+        return FaceSelection([self.top_tag,])
+    
+    @property
+    def back(self) -> FaceSelection:
+        return FaceSelection([self.back_tag,])
+    
+    @property
+    def front(self) -> FaceSelection:
+        return FaceSelection([self.front_tag,])
+    
+    @property
+    def bottom(self) -> FaceSelection:
+        return FaceSelection([self.bottom_tag,])
+    
+    def outside(self, *exclude: Literal['bottom','top','right','left','front','back']) -> FaceSelection:
+        """Select all outside faces except for the once specified by outside
+
+        Returns:
+            FaceSelection: The resultant face selection
+        """
+        tags = [t for e,t in zip(['bottom','top','right','left','front','back'], self._outside_tags) if e not in exclude]
+        return FaceSelection(tags)

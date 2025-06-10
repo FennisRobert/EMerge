@@ -18,7 +18,16 @@ along with this program; if not, see
 """
 
 from loguru import logger
+from .logsettings import logger_format
 import sys
+
+logger.remove()
+logger.add(sys.stderr, format=logger_format)
+
+logger.warning('Note that the first time running this library can take a couple of seconds.' \
+'Numba has to compile C-compiled functions of a bunch of scripts. These compilations will be cached locally' \
+'so you dont have to wait this long on subsequent runs. However, any time you make a single character change' \
+'to a script containing numba compiled functions means a complete recompilation of all functions in that script.')
 
 from .simmodel import Simulation3D
 from .material import Material, FR4, AIR, VACUUM, COPPER
@@ -31,12 +40,3 @@ from . import plot
 from . import modeling
 from .selection import Selection, FaceSelection, DomainSelection, EdgeSelection
 from .mth.common_functions import norm
-from .logsettings import logger_format
-
-logger.remove()
-logger.add(sys.stderr, format=logger_format)
-
-logger.warning('Note that the first time running this library can take a couple of seconds.' \
-'Numba has to compile C-compiled functions of a bunch of scripts. These compilations will be cached locally' \
-'so you dont have to wait this long on subsequent runs. However, any time you make a single character change' \
-'to a script containing numba compiled functions means a complete recompilation of all functions in that script.')

@@ -5,7 +5,7 @@ import numpy as np
 
 with fem.Simulation3D('SelectionTest',PVDisplay) as m:
 
-    box = fem.modeling.SidedBox(0.02286, 0.05, 0.01016)
+    box = fem.modeling.SiddBox(0.02286, 0.05, 0.01016)
 
     m.define_geometry(box)
 

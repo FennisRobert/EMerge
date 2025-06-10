@@ -51,8 +51,7 @@ with fem.Simulation3D('MySimulation', PVDisplay, loglevel='DEBUG') as model:
 
     dielectric.material = fem.Material(er, color=(0.0, 0.5, 0.0), opacity=0.6)
 
-    model.physics.resolution = 0.2
-    air.mesh_multiplier = 0.3
+    model.physics.resolution = 0.25
     
     model.physics.set_frequency(1.6e9)
 
@@ -79,6 +78,8 @@ with fem.Simulation3D('MySimulation', PVDisplay, loglevel='DEBUG') as model:
 
     model.physics.set_frequency(np.linspace(f1, f2, 3))
 
+    model.physics.solveroutine.use_direct = False
+    model.physics.solveroutine.use_preconditioner = True
     data = model.physics.frequency_domain()
     
     xs, ys, zs = fem.YAX.pair(fem.ZAX).span(wsub, Hair, 31, (0, -wsub/2, -th))

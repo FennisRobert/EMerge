@@ -17,16 +17,15 @@
 
 from scipy.sparse import lil_matrix, csc_matrix
 from scipy.sparse.csgraph import reverse_cuthill_mckee
-from scipy.sparse.linalg import bicgstab, gmres, spsolve, gcrotmk, eigsh
+from scipy.sparse.linalg import bicgstab, gmres, spsolve, gcrotmk, eigsh, splu, spilu
 from scipy.linalg import eig
-#import pyamg
 from scipy import sparse
 import numpy as np
 from loguru import logger
 from pypardiso import spsolve as pardiso_solve
-import os
-import sys
 import platform
+
+
 #from pyamg.util.utils import get_blocksize
 
 def filter_real_modes(eigvals, eigvecs, k0, ermax, urmax):
@@ -237,6 +236,22 @@ class SolverGMRES(Solver):
             x, info = gmres(A, b, atol=self.atol, callback=self.callback, callback_type='pr_norm')
         return x, info
 
+class SolverSuperLU(Solver):
+    def __init__(self):
+        super().__init__()
+        self.atol = 1e-5
+
+        self.A: np.ndarray = None
+        self.b: np.ndarray = None
+
+    def solve(self, A, b, precon):
+        logger.info('Calling SuperLU Solver')
+        self.A = A
+        self.b = b
+        lu = splu(A, permc_spec='MMD_AT_PLUS_A', relax=2, diag_pivot_thresh=1.0)
+        x = lu.solve(b)
+        return x, 0
+
 class SolverSP(Solver):
     def __init__(self):
         super().__init__()
@@ -278,7 +293,7 @@ class SolverPardiso(Solver):
         return x, 0
 
 # class SolverAMG(Solver):
-#     real_only: bool = True
+#     real_only: bool = False
 #     def __init__(self):
 #         super().__init__()
 #         self.atol = 1e-6
@@ -290,23 +305,17 @@ class SolverPardiso(Solver):
 #         self.own_preconditioner = True
 
 #     def callback(self, x):
-#         convergence = 0#np.linalg.norm((self.A @ x - self.b))
+#         convergence = np.linalg.norm((self.A @ x - self.b))
 #         logger.info(f'Iteration {convergence:.4f}')
 
 #     def solve(self, A, b, precon: Preconditioner):
 #         logger.info('Calling Algebraic Multigrid Solver (PyAMG) with GMRES')
 #         self.A = A
 #         self.b = b
-
         
-#         ml = pyamg.aggregation.rootnode_solver(A,
-#                                                smooth      = 'energy',            # prolongation smoother
-#                                                 presmoother = ('block_gauss_seidel', {'sweep':'symmetric'}),
-#                                                 postsmoother= ('block_gauss_seidel', {'sweep':'symmetric'}),
-#                                                 max_levels  = 10,
-#                                                 max_coarse  = 500,)
-#         M = ml.aspreconditioner(cycle='V')
-#         x, info = pyamg.krylov.gmres(A, b, tol=self.atol, M=M, callback=self.callback, maxiter=self.maxiter)
+#         (asa, work) = pyamg.aggregation.adaptive_sa_solver(A,symmetry='symmetric',smooth='energy')
+#         #M = ml.aspreconditioner(cycle='V')
+#         x = asa.solve(b)
 #         return x, 0
 
 class SolverLAPACK(Solver):
@@ -542,7 +551,7 @@ class AutomaticRoutine(SolveRoutine):
 
 DEFAULT_ROUTINE = AutomaticRoutine(ReverseCuthillMckee(), 
                                    ILUPrecon(), 
-                                   iterative_solver=SolverBicgstab(), 
+                                   iterative_solver=SolverGMRES(), 
                                    direct_solver=SolverPardiso(),
                                    iterative_eig_solver=SolverARPACK(),
                                    direct_eig_solver=SolverLAPACK(),)

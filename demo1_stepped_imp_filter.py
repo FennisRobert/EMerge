@@ -46,7 +46,8 @@ with fem.Simulation3D('Demo1_SIF', 'DEBUG') as m:
 
     m.generate_mesh('Demo1_Mesh.msh')
 
-    m.preview()
+    m.view()
+
     port1 = fem.bc.ModalPort(p1, 1, True)
     port2 = fem.bc.ModalPort(p2, 2, False)
     pec = fem.bc.PEC(polies[0])

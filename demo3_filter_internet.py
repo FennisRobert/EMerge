@@ -71,20 +71,19 @@ with fem.Simulation3D('Demo3', PVDisplay, 'DEBUG') as m:
     m.physics.modal_analysis(port1, 1, direct=True, TEM=True, freq=10e9)
     m.physics.modal_analysis(port2, 1, direct=True, TEM=True, freq=10e9)
 
-    from fem.plotting.matplotlib.mpldisplay import MPLDisplay
-    d = MPLDisplay(m.mesh)
-    #d.add_object(diel, color='green', opacity=0.5)
+    d = PVDisplay(m.mesh)
+    d.add_object(diel, color='green', opacity=0.5)
     d.add_object(stripline, color='red')
     d.add_object(p1, color='blue', opacity=0.3)
-    #d.add_portmode(port1, port1.modes[0].k0, 21)
-    #d.add_portmode(port2, port2.modes[0].k0, 21)
+    d.add_portmode(port1, port1.modes[0].k0, 21)
+    d.add_portmode(port2, port2.modes[0].k0, 21)
     d.show()
 
     data = m.physics.frequency_domain()
 
     
 
-    d = MPLDisplay(m.mesh)
+    d = PVDisplay(m.mesh)
     d.add_object(diel, color='green', opacity=0.5)
     d.add_object(stripline, color='red')
     d.add_object(p1, color='blue', opacity=0.3)

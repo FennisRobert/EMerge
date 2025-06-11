@@ -23,7 +23,7 @@ WP = 200
 Dtot = 750
 
 extra = 100
-with fem.Simulation3D('Demo3', PVDisplay, 'DEBUG') as m:
+with fem.Simulation3D('Demo3', PVDisplay, loglevel='DEBUG') as m:
     mat = fem.Material(3.55, color=(0.1,1.0,0.2), opacity=0.1)
     pcb = fem.modeling.PCBLayouter(th,4*th,unit=mil)
 

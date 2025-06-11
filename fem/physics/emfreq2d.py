@@ -25,7 +25,7 @@
 #     def ports(self) -> list[BoundaryCondition]:
 #         return sorted([bc for bc in self.boundary_conditions if isinstance(bc,RectangularWaveguide)], key=lambda x: x.port_number)
     
-#     @logger.catch
+#     
 #     def _initialize_bcs(self) -> None:
 #         logger.info('Initializing boundary conditions.')
 #         self.boundary_conditions = []
@@ -37,7 +37,7 @@
 #         pec = PEC([(1, tag) for tag in tags])
 #         self.boundary_conditions.append(pec)
 
-#     @logger.catch
+#     
 #     def assign(self, bc: BoundaryCondition, edge: Edge = None, edges: list[Edge] = None, point: Point = None, points: list[Point] = None) -> BoundaryCondition:
 #         if edge is not None:
 #             logger.info(f'Assinging the boundary condition {bc} to edge {edge}')
@@ -78,7 +78,7 @@
 #             return 299792456/(max(self.frequencies)* np.abs(material.neff))
 #         return disc
     
-#     @logger.catch
+#     
 #     def solve(self, mesh: Mesh2D, solver = None):
 #         if solver is None:
 #             logger.info('Defaulting to BiCGStab.')
@@ -136,7 +136,7 @@
 
 #         self.solution = dataset
     
-#     @logger.catch
+#     
 #     def eigenmode(self, mesh: Mesh2D, solver = None, num_sols: int = 6):
         
 #         if solver is None:
@@ -183,7 +183,7 @@
 #         self.solution = dataset
     
 #     @staticmethod
-#     @logger.catch
+#     
 #     def _compute_hxy(Ez, vertices, triangles,freq):
 #         counter = np.zeros_like(Ez)
 #         Hsx = np.zeros_like(Ez).astype(np.complex128)

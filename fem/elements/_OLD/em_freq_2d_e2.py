@@ -17,7 +17,7 @@ def dirdiff(func: callable, x: float, y: float, direction: tuple[float,float], o
     elif order==2:
         return (func(x+dx,y+dy) - 2 * func(x,y) + func(x-dx,y-dy))/(eps**2)
     
-@logger.catch
+
 def _iterate_segments(bcs: list[BoundaryCondition]) -> list[tuple[BoundaryCondition, np.ndarray]]:
     indices_list = []
     for bc in bcs:
@@ -25,7 +25,7 @@ def _iterate_segments(bcs: list[BoundaryCondition]) -> list[tuple[BoundaryCondit
             indices_list.append((bc,indices))
     return indices_list
 
-@logger.catch
+
 def assemble_base_matrix_Ez(vertices: np.ndarray, triangles: np.ndarray, N: int, er: np.ndarray, ur: np.ndarray, f0: float):
     ''' This function assembles the base matrix for the solution of the wave equation in 2D'''
     nT = triangles.shape[1]
@@ -131,7 +131,7 @@ def assemble_base_matrix_Ez(vertices: np.ndarray, triangles: np.ndarray, N: int,
     return D
 
 
-@logger.catch
+
 def assemble_matrix_Ez(vertices: np.ndarray, 
                      element_ids: np.ndarray, 
                      qbns: dict,
@@ -304,7 +304,7 @@ def assemble_matrix_Ez(vertices: np.ndarray,
     
     return D, b, solve_ids, auxdata
 
-@logger.catch
+
 def compute_sparam(pids, vertices, Ez, Hx, Hy, port_mode, active=False):
     from emerge.plot import Line, eplot
     Q = 0

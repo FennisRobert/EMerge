@@ -86,7 +86,7 @@ class Simulation3D:
         gmsh.model.occ.synchronize()
         gmsh.fltk.run()
        
-    @logger.catch
+    
     def define_geometry(self, *geometries: list[GMSHObject]) -> None:
         """Provide the physics engine with the geometries that are contained and ought to be included
         in the simulation. Please make sure to include all geometries. Its currently unclear how the
@@ -97,7 +97,7 @@ class Simulation3D:
         self.mesher.submit_objects(self._geometries)
         self.physics._initialize_bcs()
 
-    @logger.catch
+    
     def generate_mesh(self, name: str = "meshname.msh"):
         """Generate the mesh. 
         This can only be done after define_geometry(...) is called and if frequencies are defined.
@@ -208,13 +208,13 @@ class Simulation3D:
 #         self.mesh: Mesh2D = None
 #         self.resolution: float = 0.2
 
-#     @logger.catch
+#     
 #     def define_geometry(self, polygons: list[shp.Polygon]) -> None:
 #         self.geo._merge_polygons(polygons)
 #         self.geo.compile()
 #         self.physics._initialize_bcs()
 
-#     @logger.catch
+#     
 #     def generate_mesh(self, name: str = None, element_order: int = 2) -> Mesh2D:
 #         logger.info('Generating mesh')
 #         discretizer = self.physics.get_discretizer()
@@ -229,7 +229,7 @@ class Simulation3D:
 #         logger.info('Mesh complete')
 #         return self.mesh
     
-#     @logger.catch
+#     
 #     def update_boundary_conditions(self):
 #         logger.info('Updating boundary conditions')
 #         for bc in self.physics.boundary_conditions:

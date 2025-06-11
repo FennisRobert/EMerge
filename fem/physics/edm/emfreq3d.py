@@ -126,7 +126,7 @@ class Electrodynamics3D:
         """
         return sorted([bc for bc in self.boundary_conditions if isinstance(bc,PortBC)], key=lambda x: x.number)
     
-    @logger.catch
+    
     def _initialize_bcs(self) -> None:
         """Initializes the boundary conditions to set PEC as all exterior boundaries.
         """
@@ -185,7 +185,7 @@ class Electrodynamics3D:
             if isinstance(bc, LumpedPort):
                 self.define_lumped_port_integration_points(bc)
 
-    @logger.catch
+    
     def modal_analysis(self, port: ModalPort, 
                        nmodes: int = 6, 
                        direct: bool = True,
@@ -454,7 +454,7 @@ class Electrodynamics3D:
 
         return group1, group2
 
-    @logger.catch
+    
     def frequency_domain(self) -> EMSimData:
         ''' Executes the frequency domain study.'''
         mesh = self.mesh
@@ -603,7 +603,7 @@ class Electrodynamics3D:
             mode_p = sparam_mode_power(self.mesh.nodes, tri_vertices, bc, k0, const)
             return field_p, mode_p
         
-    @logger.catch
+    
     def assign(self, 
                *bcs: BoundaryCondition) -> None:
         """Assign a boundary-condition object to a domain or list of domains.
@@ -636,7 +636,7 @@ class Electrodynamics3D:
 
 
 
-    # @logger.catch
+    # 
     # def eigenmode(self, mesh: Mesh3D, solver = None, num_sols: int = 6):
     #     if solver is None:
     #         logger.info('Defaulting to BiCGStab.')

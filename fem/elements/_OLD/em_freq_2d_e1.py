@@ -14,7 +14,7 @@ def _iterate_segments(bcs: list[BoundaryCondition]) -> tuple[BoundaryCondition, 
             indices_list.append((bc,indices))
     return indices_list
 
-@logger.catch
+
 def assemble_base_matrix_Ez(vertices: np.ndarray, triangles: np.ndarray, er: np.ndarray, ur: np.ndarray, f0: float):
     nT = triangles.shape[1]
     nV = vertices.shape[1]
@@ -60,7 +60,7 @@ def assemble_base_matrix_Ez(vertices: np.ndarray, triangles: np.ndarray, er: np.
         D[k, k] += 2 * A * ax * m31**2 / 2 + 2 * A * ay * m32**2 / 2 + 2 * A * beta / 12
     return D
 
-@logger.catch
+
 def assemble_eig_base_matrix_Ez(vertices: np.ndarray, triangles: np.ndarray, er: np.ndarray, ur: np.ndarray):
     nT = triangles.shape[1]
     nV = vertices.shape[1]
@@ -116,7 +116,7 @@ def assemble_eig_base_matrix_Ez(vertices: np.ndarray, triangles: np.ndarray, er:
         B[k, k] += 2 * A / 12
     return D, B
 
-@logger.catch
+
 def assemble_matrix_Ez(vertices: np.ndarray, 
                      triangles: np.ndarray, 
                      boundary_normals: dict,
@@ -186,7 +186,7 @@ def assemble_matrix_Ez(vertices: np.ndarray,
     
     return D, b, solve_ids
 
-@logger.catch
+
 def assemble_eig_matrix_Ez(vertices: np.ndarray, 
                      triangles: np.ndarray,
                      er: np.ndarray, 

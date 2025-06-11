@@ -2,7 +2,7 @@ import fem
 import numpy as np
 import pyescher as pe
 
-with fem.Simulation3D('PCB Making test', 'DEBUG') as m:
+with fem.Simulation3D('PCB Making test', loglevel='DEBUG') as m:
 
     pcb = fem.modeling.PCBLayouter(1, 5, 0.001)
 

@@ -200,7 +200,7 @@ class Assembler:
         self.cached_matrices = None
 
     @staticmethod
-    @logger.catch
+    
     def assemble_TEM_matrix(field: Nedelec2,
                              er: np.ndarray,
                              ur: np.ndarray,
@@ -234,7 +234,7 @@ class Assembler:
         return K, solve_ids
     
     @staticmethod
-    @logger.catch
+    
     def assemble_bma_matrices(field: Nedelec2,
                         er: np.ndarray, 
                         ur: np.ndarray, 
@@ -300,7 +300,7 @@ class Assembler:
         return E, B, np.array(solve_ids), nedlegfield
 
         
-    @logger.catch
+    
     def assemble_freq_matrix(self, field: Nedelec2, 
                         er: np.ndarray, 
                         ur: np.ndarray, 

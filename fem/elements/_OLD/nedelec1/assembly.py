@@ -293,7 +293,7 @@ def assemble_surf_matrices(vertices: np.ndarray,
 
 
 
-@logger.catch
+
 def assemble_eig_matrix(mesh: Mesh3D,
                      er: np.ndarray, 
                      ur: np.ndarray, 
@@ -335,7 +335,7 @@ def assemble_eig_matrix(mesh: Mesh3D,
     
     return D, B, solve_ids
 
-@logger.catch
+
 def assemble_freq_matrix(mesh: Mesh3D, 
                      er: np.ndarray, 
                      ur: np.ndarray, 

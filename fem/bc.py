@@ -191,6 +191,8 @@ class PortBC(RobinBC):
         self.cs: CoordinateSystem = None
         self.selected_mode: int = 0
         self.Z0 = None
+        self._tri_ids: np.ndarray = None
+        self._tri_vertices: np.ndarray = None
 
     @property
     def modetype(self) -> Literal['TEM','TE','TM']:

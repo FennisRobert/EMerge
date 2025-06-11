@@ -96,7 +96,7 @@ class Sorter:
     def __str__(self) -> str:
         return f'{self.__class__.__name__}'
     
-    def sort(self, A: lil_matrix, b: np.ndarray) -> tuple[lil_matrix, np.ndarray]:
+    def sort(self, A: lil_matrix, b: np.ndarray, reuse_sorting: bool = False) -> tuple[lil_matrix, np.ndarray]:
         return A,b
     
     def unsort(self, x: np.ndarray) -> np.ndarray:
@@ -138,19 +138,19 @@ class ReverseCuthillMckee(Sorter):
         self.perm = None
         self.inv_perm = None
 
-    def sort(self, A, b):
-        logger.info('Generating Reverse Cuthill-Mckee sorting.')
-        self.perm = reverse_cuthill_mckee(A)
-
-        self.inv_perm = np.argsort(self.perm)
-
+    def sort(self, A, b, reuse_sorting: bool = False):
+        
+        if not reuse_sorting:
+            logger.debug('Generating Reverse Cuthill-Mckee sorting.')
+            self.perm = reverse_cuthill_mckee(A)
+            self.inv_perm = np.argsort(self.perm)
+        logger.debug('Applying Reverse Cuthill-Mckee sorting.')
         Asorted = A[self.perm, :][:, self.perm]
         bsorted = b[self.perm]
-
         return Asorted, bsorted
     
     def unsort(self, x: np.ndarray):
-        logger.info('Reversing Reverse Cuthill-Mckee sorting.')
+        logger.debug('Reversing Reverse Cuthill-Mckee sorting.')
         return  x[self.inv_perm]
     
 
@@ -426,7 +426,7 @@ class SolveRoutine:
 
         # SORT
         if solver.req_sorter and self.use_sorter:
-            Asorted, bsorted = self.sorter.sort(Asel,bsel)
+            Asorted, bsorted = self.sorter.sort(Asel,bsel, reuse_sorting=reuse)
         else:
             Asorted, bsorted = Asel, bsel
         

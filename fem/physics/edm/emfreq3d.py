@@ -481,22 +481,31 @@ class Electrodynamics3D:
         
         #### Port settings
 
-        active_ports = [bc for bc in self.boundary_conditions if isinstance(bc,PortBC) and bc.active]
-        analyse_sparameters = False
-
-        if len(active_ports) == 1:
-            analyse_sparameters = True
-
-
         all_ports = [bc for bc in self.boundary_conditions if isinstance(bc,PortBC)]
         port_numbers = [port.port_number for port in all_ports]
 
-        #####
+        ##### FOR PORT SWEEP SET ALL ACTIVE TO FALSE. THIS SHOULD BE FIXED LATER
+        ### COMPUTE WHICH TETS ARE CONNECTED TO PORT INDICES
+
+        all_port_vertices = set()
         for port in all_ports:
             port.active=False
+            tris = mesh.get_triangles(port.tags)
+            tri_vertices = mesh.tris[:,tris]
+            port._tri_ids = tris
+            port._tri_vertices = tri_vertices
+            all_port_vertices.update(set(list(tri_vertices.flatten())))
+        
+        all_port_tets = []
+        for itet in range(self.mesh.n_tets):
+            if not set(self.mesh.tets[:,itet]).isdisjoint(all_port_vertices):
+                all_port_tets.append(itet)
+        
+        all_port_tets = np.array(all_port_tets)
 
         logger.debug(f'Starting the simulation of {len(self.frequencies)} frequency points.')
-        
+
+        # ITERATE OVER FREQUENCIES
         for freq in self.frequencies:
             
             
@@ -524,42 +533,48 @@ class Electrodynamics3D:
             K, b, solve_ids, port_vectors = self.assembler.assemble_freq_matrix(self.basis, er, ur, self.boundary_conditions, freq, cache_matrices=True)
         
             logger.debug(f'Routine: {self.solveroutine}')
-            i = 0
             
+            reuse_factorization = False
+
             for active_port in all_ports:
+                # Set port as active and add the port mode to the forcing vector
                 active_port.active = True
                 b_active = b + port_vectors[active_port.port_number]
-                solution = self.solveroutine.solve(K,b_active,solve_ids, reuse=i>0)
-                i = i+1
+
+                # Solve the Ax=b problem
+                solution = self.solveroutine.solve(K,b_active,solve_ids, reuse=reuse_factorization)
+
+                # From now reuse the factorization
+                reuse_factorization = True
+
                 data._field = solution
+
+                # Compute the S-parameters
+                # Define the field interpolation function
+                fieldf = self.basis.interpolate_Ef(solution, tetids=all_port_tets)
+                Pout = 0
+
+                # Active port power
+                logger.debug('Active ports:')
+                tris = active_port._tri_ids
+                tri_vertices = active_port._tri_vertices
+                erp = ertri[:,:,tris]
+                urp = urtri[:,:,tris]
+                pfield, pmode = self._compute_s_data(active_port, fieldf, tri_vertices, k0, erp, urp)
+                logger.debug(f'    Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
+                Pout = pmode
                 
-                if analyse_sparameters:
-
-                    fieldf = self.basis.interpolate_Ef(solution)
-
-                    Pout = 0
-                    logger.debug('Active ports:')
-
-                    # Active port power
-                    tris = mesh.get_triangles(active_port.tags)
-                    tri_vertices = mesh.tris[:,tris]
+                #Passive ports
+                logger.debug('Passive ports:')
+                for bc in all_ports:
+                    tris = bc._tri_ids
+                    tri_vertices = bc._tri_vertices
                     erp = ertri[:,:,tris]
                     urp = urtri[:,:,tris]
-                    pfield, pmode = self._compute_s_data(active_port, fieldf, tri_vertices, k0, erp, urp)
-                    logger.debug(f'    Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
-                    Pout = pmode
-                
-                    
-                    logger.debug('Passive ports:')
-                    for bc in all_ports:
-                        tris = mesh.get_triangles(bc.tags)
-                        tri_vertices = mesh.tris[:,tris]
-                        erp = ertri[:,:,tris]
-                        urp = urtri[:,:,tris]
-                        pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
-                        logger.debug(f'    Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
-                        
-                        data.write_S(bc.port_number, active_port.port_number, pfield/Pout)
+                    pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
+                    logger.debug(f'    Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
+                    data.write_S(bc.port_number, active_port.port_number, pfield/Pout)
+
                 active_port.active=False
             logger.info('Simulation Complete!')
         return self.data

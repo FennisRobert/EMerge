@@ -368,14 +368,15 @@ def leg2_tet_stiff(tet_vertices, edge_lengths, local_edge_map, local_tri_map, C_
 ###### NEDELEC 2 BASIS FUNCTIONS ########
 #########################################
 
-@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], i8[:,:]), cache=True)
+@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], i8[:,:], i8[:]), cache=True, nogil=True)
 def ned2_tet_interp(coords: np.ndarray,
                          solutions: np.ndarray, 
                          tets: np.ndarray, 
                          tris: np.ndarray,
                          edges: np.ndarray,
                          nodes: np.ndarray,
-                         tet_to_field: np.ndarray):
+                         tet_to_field: np.ndarray,
+                         tetids: np.ndarray):
     ''' Nedelec 2 tetrahedral interpolation'''
     # Solution has shape (nEdges, nsols)
     nNodes = coords.shape[1]
@@ -389,7 +390,8 @@ def ned2_tet_interp(coords: np.ndarray,
     Ey = np.zeros((nNodes, ), dtype=np.complex128)
     Ez = np.zeros((nNodes, ), dtype=np.complex128)
 
-    for itet in range(tets.shape[1]):
+    for i_iter in range(tetids.shape[0]):
+        itet = tetids[i_iter]
 
         iv1, iv2, iv3, iv4 = tets[:, itet]
 
@@ -461,10 +463,7 @@ def ned2_tet_interp(coords: np.ndarray,
             ex =  L*(Em1*(a1 + b1*x + c1*y + d1*z) + Em2*(a2 + b2*x + c2*y + d2*z))*(b1*(a2 + b2*x + c2*y + d2*z) - b2*(a1 + b1*x + c1*y + d1*z))/(216*V**3)
             ey =  L*(Em1*(a1 + b1*x + c1*y + d1*z) + Em2*(a2 + b2*x + c2*y + d2*z))*(c1*(a2 + b2*x + c2*y + d2*z) - c2*(a1 + b1*x + c1*y + d1*z))/(216*V**3)
             ez =  L*(Em1*(a1 + b1*x + c1*y + d1*z) + Em2*(a2 + b2*x + c2*y + d2*z))*(d1*(a2 + b2*x + c2*y + d2*z) - d2*(a1 + b1*x + c1*y + d1*z))/(216*V**3)
-            #ex = (Em1*(a1 + b1*x + c1*y + d1*z) + Em2*(a2 + b2*x + c2*y + d2*z))*(b1*(a2 + b2*x + c2*y + d2*z) - b2*(a1 + b1*x + c1*y + d1*z))*np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)/(216*V**3)
-            #ey = (Em1*(a1 + b1*x + c1*y + d1*z) + Em2*(a2 + b2*x + c2*y + d2*z))*(c1*(a2 + b2*x + c2*y + d2*z) - c2*(a1 + b1*x + c1*y + d1*z))*np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)/(216*V**3)
-            #ez = (Em1*(a1 + b1*x + c1*y + d1*z) + Em2*(a2 + b2*x + c2*y + d2*z))*(d1*(a2 + b2*x + c2*y + d2*z) - d2*(a1 + b1*x + c1*y + d1*z))*np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)/(216*V**3)
-            
+
             Exl += ex
             Eyl += ey
             Ezl += ez
@@ -497,7 +496,7 @@ def ned2_tet_interp(coords: np.ndarray,
         Ez[inside] = Ezl
     return Ex, Ey, Ez
 
-@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], i8[:,:], c16[:]), cache=True)
+@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], i8[:,:], c16[:], i8[:]), cache=True, nogil=True)
 def ned2_tet_interp_curl(coords: np.ndarray,
                          solutions: np.ndarray, 
                          tets: np.ndarray, 
@@ -505,7 +504,8 @@ def ned2_tet_interp_curl(coords: np.ndarray,
                          edges: np.ndarray,
                          nodes: np.ndarray,
                          tet_to_field: np.ndarray,
-                         c: np.ndarray):
+                         c: np.ndarray,
+                         tetids: np.ndarray):
     ''' Nedelec 2 tetrahedral interpolation of the analytic curl'''
     # Solution has shape (nEdges, nsols)
     nNodes = coords.shape[1]
@@ -519,8 +519,8 @@ def ned2_tet_interp_curl(coords: np.ndarray,
     Ey = np.zeros((nNodes, ), dtype=np.complex128)
     Ez = np.zeros((nNodes, ), dtype=np.complex128)
 
-    for itet in range(tets.shape[1]):
-        
+    for i_iter in range(tetids.shape[0]):
+        itet = tetids[i_iter]
         
         iv1, iv2, iv3, iv4 = tets[:, itet]
 

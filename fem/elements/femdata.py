@@ -45,7 +45,7 @@ class FEMBasis:
         self._rows: np.ndarray = None
         self._cols: np.ndarray = None
     
-    def interpolate_Ef(self, field: np.ndarray, basis: np.ndarray = None, origin: np.ndarray = None) -> Callable:
+    def interpolate_Ef(self, field: np.ndarray, basis: np.ndarray = None, origin: np.ndarray = None, tetids: np.ndarray = None) -> Callable:
         '''Generates the Interpolation function as a function object for a given coordiante basis and origin.'''
         if basis is None:
             basis = np.eye(3)
@@ -57,13 +57,13 @@ class FEMBasis:
         def func(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndarray:
             xyz = np.array([xs, ys, zs]) + origin[:, np.newaxis]
             xyzg = basis @ xyz
-            return ibasis @ np.array(self.interpolate(field, xyzg[0,:], xyzg[1,:], xyzg[2,:]))
+            return ibasis @ np.array(self.interpolate(field, xyzg[0,:], xyzg[1,:], xyzg[2,:], tetids))
         return func
     
-    def interpolate(self, field: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def interpolate(self, field: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, tetids: np.ndarray = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pass
 
-    def interpolate_curl(self, field: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, constants: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def interpolate_curl(self, field: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, constants: np.ndarray, tetids: np.ndarray = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Interpolates the curl of the field at the given points.
         """

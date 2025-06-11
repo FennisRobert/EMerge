@@ -194,6 +194,12 @@ class PortBC(RobinBC):
         self._tri_ids: np.ndarray = None
         self._tri_vertices: np.ndarray = None
 
+    def get_basis(self) -> np.ndarray:
+        return self.cs._basis
+    
+    def get_inv_basis(self) -> np.ndarray:
+        return self.cs._basis_inv
+    
     @property
     def modetype(self) -> Literal['TEM','TE','TM']:
         return 'TEM'
@@ -561,9 +567,6 @@ class RectangularWaveguide(PortBC):
         logger.debug(f'Detected port {self.port_number} width = {a*1000:.1f} mm')
         ds = np.sqrt((xs-xc)**2 + (ys-yc)**2)
         return self.amplitude*np.cos(ds*np.pi/a), np.sqrt(k0**2 - (np.pi/a)**2)
-    
-    def get_basis(self) -> np.ndarray:
-        return self.cs._basis
     
     def get_beta(self, k0: float) -> float:
         ''' Return the out of plane propagation constant. βz.'''

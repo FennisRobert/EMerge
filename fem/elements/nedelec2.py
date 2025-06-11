@@ -117,20 +117,18 @@ class Nedelec2(FEMBasis):
     #     return ned2_tet_stiff_mass(tet_vertices, edge_lengths, local_edge_map, local_tri_map, C_stiffness, C_mass)
     
     @staticmethod
-    def tri_stiff_mass_submatrix(tri_vertices: np.ndarray, 
-                                 edge_lengths: np.ndarray,
+    def tri_stiff_mass_submatrix(tri_vertices: np.ndarray,
                                  local_edge_map: np.ndarray,
                                  C_stiffness: float, 
                                  C_mass: float) -> tuple[np.ndarray, np.ndarray]:
-        return ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness, C_mass)
+        return ned2_tri_stiff_mass(tri_vertices, local_edge_map, C_stiffness, C_mass)
     
     @staticmethod
     def tri_stiff_vec_matrix(lcs_vertices: np.ndarray, 
-                             edge_lengths: np.ndarray, 
                              gamma: complex, 
                              lcs_Uinc: np.ndarray, 
                              DPTs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs)
+        return ned2_tri_stiff_force(lcs_vertices, gamma, lcs_Uinc, DPTs)
     
     @staticmethod
     def tri_stiff_matrix(lcs_vertices: np.ndarray, 

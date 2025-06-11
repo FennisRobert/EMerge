@@ -6,30 +6,6 @@ from numba import njit, f8, i8, c16, types
 
 c0 = 299792458
 
-def plot_matrix(matrix, title='Matrix Visualization', cmap='viridis'):
-    """
-    Quickly visualize a matrix to inspect sparsity, symmetry, etc.
-    
-    Parameters:
-    - matrix: np.ndarray
-    - title: str, optional
-    - cmap: str, optional (colormap, e.g., 'viridis', 'gray', 'hot', etc.)
-    """
-    plt.figure(figsize=(6, 6))
-    plt.imshow(np.abs(matrix), cmap=cmap, interpolation='none')
-    plt.colorbar()
-    plt.title(title)
-    plt.xlabel("Columns")
-    plt.ylabel("Rows")
-    plt.grid(False)
-    plt.show()
-
-# TETS
-# [0,  1,  2, 3]
-# [4, 34, 12, 8]
-# [5,  1,  3, 4]
-#
-#
 def matprint(mat: np.ndarray) -> None:
     factor = np.max(np.abs(mat.flatten()))
     if factor == 0:
@@ -59,7 +35,7 @@ def diagnose_matrix(mat: np.ndarray) -> None:
     if len(ids[0]) > 0:
         logger.error(f'Found Inf at {ids}')
 
-@njit(cache=True)
+#(cache=True, nogil=True)
 def compute_coeffs(xs, ys, zs):
     ## THIS FUNCTION WORKS
     x1, x2, x3, x4 = xs
@@ -88,7 +64,7 @@ def compute_coeffs(xs, ys, zs):
     return a1, a2, a3, a4, b1, b2, b3, b4, c1, c2, c3, c4, d1, d2, d3, d4, V
 
 
-@njit((types.Tuple((c16[:,:], c16[:,:])))(f8[:,:], i8[:,:], i8[:,:], i8[:,:], i8[:,:], f8[:], f8[:,]))
+#@njit((types.Tuple((c16[:,:], c16[:,:])))(f8[:,:], i8[:,:], i8[:,:], i8[:,:], i8[:,:], f8[:], f8[:,]), cache=True, nogil=True)
 def assemble_base_matrices(vertices: np.ndarray, 
                            tets: np.ndarray, 
                            edges: np.ndarray,
@@ -204,7 +180,7 @@ def assemble_base_matrices(vertices: np.ndarray,
         
     return D, F
 
-#@njit((types.Tuple((c16[:,:], c16[:])))(f8[:,:], i8[:,:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], c16, c16[:,:]))
+@njit((types.Tuple((c16[:,:], c16[:])))(f8[:,:], i8[:,:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], c16, c16[:,:]))
 def assemble_surf_matrices(vertices: np.ndarray, 
                            surftris: np.ndarray,
                            triangles: np.ndarray, 
@@ -232,7 +208,7 @@ def assemble_surf_matrices(vertices: np.ndarray,
         ie1, ie2, ie3, = tri2edge[:,indtri]
         ies = np.array([ie1, ie2, ie3])
 
-        iv1, iv2, iv3 = triangles[:,indtri]
+        #iv1, iv2, iv3 = triangles[:,indtri]
         x1, x2, x3 = vertices_local[0, triangles[:,indtri]]
         y1, y2, y3 = vertices_local[1, triangles[:,indtri]]
         
@@ -321,17 +297,15 @@ def assemble_eig_matrix(mesh: Mesh3D,
             B[i, :] = 0
             B[:, i] = 0
         pec_ids += list(edge_ids)
-
-    ve = pe.Viewer()
     
     pec_ids = [int(x) for x in pec_ids]
     
     solve_ids = np.array([i for i in range(ne) if i not in pec_ids])
 
-    with ve.new3d('Edges') as v:
-        v.scatter(mesh.nodes[0,:], mesh.nodes[1,:], mesh.nodes[2,:], size=0.0001)
-        v.scatter(mesh.edge_centers[0,pec_ids], mesh.edge_centers[1,pec_ids], mesh.edge_centers[2,pec_ids], size=0.001)
-        v.scatter(mesh.edge_centers[0,solve_ids], mesh.edge_centers[1,solve_ids], mesh.edge_centers[2,solve_ids], color=(0,1,0),size=0.001)
+    # with ve.new3d('Edges') as v:
+    #     v.scatter(mesh.nodes[0,:], mesh.nodes[1,:], mesh.nodes[2,:], size=0.0001)
+    #     v.scatter(mesh.edge_centers[0,pec_ids], mesh.edge_centers[1,pec_ids], mesh.edge_centers[2,pec_ids], size=0.001)
+    #     v.scatter(mesh.edge_centers[0,solve_ids], mesh.edge_centers[1,solve_ids], mesh.edge_centers[2,solve_ids], color=(0,1,0),size=0.001)
     
     return D, B, solve_ids
 
@@ -384,9 +358,6 @@ def assemble_freq_matrix(mesh: Mesh3D,
         Uinc_tot = np.zeros((3, mesh.n_edges), dtype=np.complex128)
         Uinc_tot[:, edge_ids] = Uinc
         
-        #port._field_amplitude = np.zeros_like(b)
-        #port._field_amplitude[edge_ids] = Ez # dot product with edge
-
         port._edge_ids = edge_ids
         port._edge_amp = np.sqrt(np.abs(E[0,:])**2 + np.abs(E[1,:])**2 + np.abs(E[2,:])**2)
         gamma = 1j*beta

@@ -137,7 +137,7 @@ def gaus_quad_tet(p: int) -> np.ndarray:
     pts = np.array(Pts).T
     return pts
 
-@njit(types.Tuple((f8[:], f8[:], f8[:], i8[:]))(f8[:,:], i8[:,:], f8[:,:]), cache=True)
+@njit(types.Tuple((f8[:], f8[:], f8[:], i8[:]))(f8[:,:], i8[:,:], f8[:,:]), cache=True, nogil=True)
 def generate_int_points_tri(nodes: np.ndarray,
                                 triangles: np.ndarray,
                                 PTS: np.ndarray):
@@ -170,7 +170,7 @@ def generate_int_points_tri(nodes: np.ndarray,
 
     return xall_flat, yall_flat, zall_flat, shape
 
-@njit(types.Tuple((f8[:], f8[:], f8[:], i8[:]))(f8[:,:], i8[:,:], f8[:,:]), cache=True)
+@njit(types.Tuple((f8[:], f8[:], f8[:], i8[:]))(f8[:,:], i8[:,:], f8[:,:]), cache=True, nogil=True)
 def generate_int_points_tet(nodes: np.ndarray,
                             tets: np.ndarray,
                             PTS: np.ndarray):
@@ -208,7 +208,7 @@ def generate_int_points_tet(nodes: np.ndarray,
 def dot(a: np.ndarray, b: np.ndarray):
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]#np.sum(a*b)
 
-@njit(f8[:](f8[:], f8[:]), cache=True, fastmath=True)
+@njit(f8[:](f8[:], f8[:]), cache=True, fastmath=True, nogil=True)
 def cross(a: np.ndarray, b: np.ndarray):
     crossv = np.empty((3,), dtype=np.float64)
     crossv[0] = a[1]*b[2] - a[2]*b[1]
@@ -224,7 +224,7 @@ def cross_c(a: np.ndarray, b: np.ndarray):
     crossv[2] = a[0]*b[1] - a[1]*b[0]
     return crossv
 
-@njit(f8[:](f8[:], f8[:], f8[:], f8[:]), cache=True)
+@njit(f8[:](f8[:], f8[:], f8[:], f8[:]), cache=True, nogil=True)
 def outward_normal(n1, n2, n3, o):
     e1 = n2-n1
     e2 = n3-n1
@@ -235,7 +235,7 @@ def outward_normal(n1, n2, n3, o):
         sgn = -1
     return n*sgn
     
-@njit(f8(f8[:], f8[:], f8[:]), cache=True, fastmath=True)
+@njit(f8(f8[:], f8[:], f8[:]), cache=True, fastmath=True, nogil=True)
 def calc_area(x1: np.ndarray, x2: np.ndarray, x3: np.ndarray):
     e1 = x2 - x1
     e2 = x3 - x1
@@ -248,7 +248,7 @@ def dot_c(a: np.ndarray, b: np.ndarray):
 
 _FACTORIALS = np.array([1, 1, 2, 6, 24, 120, 720, 5040, 40320, 362880], dtype=np.int64)
     
-@njit(f8(i8, i8, i8, i8), cache=True, fastmath=True)
+@njit(f8(i8, i8, i8, i8), cache=True, fastmath=True, nogil=True)
 def volume_coeff(a, b, c, d):
     klmn = np.array([0,0,0,0,0,0,0])
     klmn[a] += 1
@@ -259,7 +259,7 @@ def volume_coeff(a, b, c, d):
                   *_FACTORIALS[klmn[4]]*_FACTORIALS[klmn[5]]*_FACTORIALS[klmn[6]])/_FACTORIALS[(np.sum(klmn[1:])+3)]
     return output
 
-@njit(f8(i8, i8, i8, i8), cache=True, fastmath=True)
+@njit(f8(i8, i8, i8, i8), cache=True, fastmath=True, nogil=True)
 def area_coeff(a, b, c, d):
     klmn = np.array([0,0,0,0,0,0,0])
     klmn[a] += 1

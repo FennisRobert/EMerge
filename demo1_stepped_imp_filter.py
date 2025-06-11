@@ -12,6 +12,7 @@ er = 2.2
 Ltot = L3 + 2*(L0+L1+L2)
 Wtot = 424
 Hair = 31
+
 with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
 
     pcbmat = fem.material.Material(2.2)
@@ -22,8 +23,6 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     
     p1 = pcbr.wave_port(pcbr.paths[0].start)
     p2 = pcbr.wave_port(pcbr.paths[0].end)
-
-    m.howto_ff()
     
     polies = pcbr.compile_paths(0)
 

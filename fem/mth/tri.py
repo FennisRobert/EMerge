@@ -19,17 +19,12 @@
 from numba import njit, f8, i8, types, c16
 import numpy as np
 
-from .optimized import local_mapping, cross, dot, compute_distances, tet_coefficients, volume_coeff, tri_coefficients
-from .optimized import area_coeff as true_area_coeff
+from .optimized import area_coeff, cross, dot, compute_distances, tri_coefficients
 
 # def njit(*args, **kwargs):
 #     def wrap(x):
 #         return x
 #     return wrap
-
-@njit(f8(f8, i8, i8, i8, i8), cache=True, nogil=True)
-def area_coeff(Area, A, B, C, D):
-    return Area*true_area_coeff(A,B,C,D)
 
 #########################################
 ###### LEGRANGE 2 BASIS FUNCTIONS #######
@@ -227,6 +222,7 @@ def ned2_tri_interp(coords: np.ndarray,
         Ey[inside] = Eyl
     return Ex, Ey, Ez
 
+@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], f8[:,:], i8[:,:]), cache=True, nogil=True)
 def ned2_tri_interp_full(coords: np.ndarray,
                     solutions: np.ndarray, 
                     tris: np.ndarray,
@@ -306,6 +302,7 @@ def ned2_tri_interp_full(coords: np.ndarray,
         Ez[inside] = ez
     return Ex, Ey, Ez
 
+@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], f8[:,:], i8[:,:], c16[:,:,:], f8), cache=True, nogil=True)
 def ned2_tri_interp_curl(coords: np.ndarray,
                     solutions: np.ndarray, 
                     tris: np.ndarray,
@@ -391,7 +388,16 @@ def ned2_tri_interp_curl(coords: np.ndarray,
         Ez[inside] = hz*dc[2,2]
     return Ex, Ey, Ez
 
-#@njit(types.Tuple((c16[:,:],c16[:,:]))(f8[:,:], f8[:], f8[:,:], i8[:,:], f8, f8), cache=True)
+
+NFILL = 5
+AREA_COEFF_CACHE_BASE = np.zeros((NFILL,NFILL,NFILL,NFILL), dtype=np.float64)
+for I in range(NFILL):
+    for J in range(NFILL):
+        for K in range(NFILL):
+            for L in range(NFILL):
+                AREA_COEFF_CACHE_BASE[I,J,K,L] = area_coeff(I,J,K,L)
+
+@njit(types.Tuple((c16[:,:],c16[:,:]))(f8[:,:], f8[:], i8[:,:], c16[:,:], c16[:,:]), cache=True, nogil=True)
 def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness, C_mass):
     '''Nedelec-2 Triangle stiffness and mass submatrix'''
     Dmat = np.zeros((8,8), dtype=np.complex128)
@@ -422,6 +428,8 @@ def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness,
     F = 6
     letters = [1,2,3,4,5,6]
 
+    AREA_COEFF = AREA_COEFF_CACHE_BASE * Area
+
     for ei in range(3):
         ei1, ei2 = local_edge_map[:, ei]
         for ej in range(3):
@@ -442,15 +450,15 @@ def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness,
             CEE = 1/(2*Area)**4 
             CFEE = 1/(2*Area)**2
             
-            Dmat[ei,ej] += Li*Lj*CEE*(9*area_coeff(Area,A,C,0,0)*dot(GAxGB,GCxGD))
-            Dmat[ei,ej+4] += Li*Lj*CEE*(9*area_coeff(Area,A,D,0,0)*dot(GAxGB,GCxGD))
-            Dmat[ei+4,ej] += Li*Lj*CEE*(9*area_coeff(Area,B,C,0,0)*dot(GAxGB,GCxGD))
-            Dmat[ei+4,ej+4] += Li*Lj*CEE*(9*area_coeff(Area,B,D,0,0)*dot(GAxGB,GCxGD))
+            Dmat[ei,ej] += Li*Lj*CEE*(9*AREA_COEFF[A,C,0,0]*dot(GAxGB,GCxGD))
+            Dmat[ei,ej+4] += Li*Lj*CEE*(9*AREA_COEFF[A,D,0,0]*dot(GAxGB,GCxGD))
+            Dmat[ei+4,ej] += Li*Lj*CEE*(9*AREA_COEFF[B,C,0,0]*dot(GAxGB,GCxGD))
+            Dmat[ei+4,ej+4] += Li*Lj*CEE*(9*AREA_COEFF[B,D,0,0]*dot(GAxGB,GCxGD))
             
-            Fmat[ei,ej] += Li*Lj*CFEE*(area_coeff(Area,A,B,C,D)*dot(GA,GC)-area_coeff(Area,A,B,C,C)*dot(GA,GD)-area_coeff(Area,A,A,C,D)*dot(GB,GC)+area_coeff(Area,A,A,C,C)*dot(GB,GD))
-            Fmat[ei,ej+4] += Li*Lj*CFEE*(area_coeff(Area,A,B,D,D)*dot(GA,GC)-area_coeff(Area,A,B,C,D)*dot(GA,GD)-area_coeff(Area,A,A,D,D)*dot(GB,GC)+area_coeff(Area,A,A,C,D)*dot(GB,GD))
-            Fmat[ei+4,ej] += Li*Lj*CFEE*(area_coeff(Area,B,B,C,D)*dot(GA,GC)-area_coeff(Area,B,B,C,C)*dot(GA,GD)-area_coeff(Area,A,B,C,D)*dot(GB,GC)+area_coeff(Area,A,B,C,C)*dot(GB,GD))
-            Fmat[ei+4,ej+4] += Li*Lj*CFEE*(area_coeff(Area,B,B,D,D)*dot(GA,GC)-area_coeff(Area,B,B,C,D)*dot(GA,GD)-area_coeff(Area,A,B,D,D)*dot(GB,GC)+area_coeff(Area,A,B,C,D)*dot(GB,GD))
+            Fmat[ei,ej] += Li*Lj*CFEE*(AREA_COEFF[A,B,C,D]*dot(GA,GC)-AREA_COEFF[A,B,C,C]*dot(GA,GD)-AREA_COEFF[A,A,C,D]*dot(GB,GC)+AREA_COEFF[A,A,C,C]*dot(GB,GD))
+            Fmat[ei,ej+4] += Li*Lj*CFEE*(AREA_COEFF[A,B,D,D]*dot(GA,GC)-AREA_COEFF[A,B,C,D]*dot(GA,GD)-AREA_COEFF[A,A,D,D]*dot(GB,GC)+AREA_COEFF[A,A,C,D]*dot(GB,GD))
+            Fmat[ei+4,ej] += Li*Lj*CFEE*(AREA_COEFF[B,B,C,D]*dot(GA,GC)-AREA_COEFF[B,B,C,C]*dot(GA,GD)-AREA_COEFF[A,B,C,D]*dot(GB,GC)+AREA_COEFF[A,B,C,C]*dot(GB,GD))
+            Fmat[ei+4,ej+4] += Li*Lj*CFEE*(AREA_COEFF[B,B,D,D]*dot(GA,GC)-AREA_COEFF[B,B,C,D]*dot(GA,GD)-AREA_COEFF[A,B,D,D]*dot(GB,GC)+AREA_COEFF[A,B,C,D]*dot(GB,GD))
 
     for ei in range(3):
         ei1, ei2 = local_edge_map[:, ei]
@@ -475,14 +483,14 @@ def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness,
         CEF = 1/(2*Area)**4
         CFEF = 1/(2*Area)**2 
 
-        Dmat[ei,3] += Li*Lac*CEF*(-6*area_coeff(Area,A,D,0,0)*dot(GAxGB,GCxGF)-3*area_coeff(Area,A,C,0,0)*dot(GAxGB,GDxGF)-3*area_coeff(Area,A,F,0,0)*dot(GAxGB,GCxGD))
-        Fmat[ei,3] += Li*Lac*CFEF*(area_coeff(Area,A,B,C,D)*dot(GA,GF)-area_coeff(Area,A,B,D,F)*dot(GA,GC)-area_coeff(Area,A,A,C,D)*dot(GB,GF)+area_coeff(Area,A,A,D,F)*dot(GB,GC))
-        Dmat[ei,7] += Li*Lab*CEF*(6*area_coeff(Area,A,F,0,0)*dot(GAxGB,GCxGD)+3*area_coeff(Area,A,D,0,0)*dot(GAxGB,GCxGF)-3*area_coeff(Area,A,C,0,0)*dot(GAxGB,GDxGF))
-        Fmat[ei,7] += Li*Lab*CFEF*(area_coeff(Area,A,B,D,F)*dot(GA,GC)-area_coeff(Area,A,B,F,C)*dot(GA,GD)-area_coeff(Area,A,A,D,F)*dot(GB,GC)+area_coeff(Area,A,A,F,C)*dot(GB,GD))
-        Dmat[ei+4,3] += Li*Lac*CEF*(-6*area_coeff(Area,B,D,0,0)*dot(GAxGB,GCxGF)-3*area_coeff(Area,B,C,0,0)*dot(GAxGB,GDxGF)-3*area_coeff(Area,B,F,0,0)*dot(GAxGB,GCxGD))
-        Fmat[ei+4,3] += Li*Lac*CFEF*(area_coeff(Area,B,B,C,D)*dot(GA,GF)-area_coeff(Area,B,B,D,F)*dot(GA,GC)-area_coeff(Area,A,B,C,D)*dot(GB,GF)+area_coeff(Area,A,B,D,F)*dot(GB,GC))
-        Dmat[ei+4,7] += Li*Lab*CEF*(6*area_coeff(Area,B,F,0,0)*dot(GAxGB,GCxGD)+3*area_coeff(Area,B,D,0,0)*dot(GAxGB,GCxGF)-3*area_coeff(Area,B,C,0,0)*dot(GAxGB,GDxGF))
-        Fmat[ei+4,7] += Li*Lab*CFEF*(area_coeff(Area,B,B,D,F)*dot(GA,GC)-area_coeff(Area,B,B,F,C)*dot(GA,GD)-area_coeff(Area,A,B,D,F)*dot(GB,GC)+area_coeff(Area,A,B,F,C)*dot(GB,GD))
+        Dmat[ei,3] += Li*Lac*CEF*(-6*AREA_COEFF[A,D,0,0]*dot(GAxGB,GCxGF)-3*AREA_COEFF[A,C,0,0]*dot(GAxGB,GDxGF)-3*AREA_COEFF[A,F,0,0]*dot(GAxGB,GCxGD))
+        Fmat[ei,3] += Li*Lac*CFEF*(AREA_COEFF[A,B,C,D]*dot(GA,GF)-AREA_COEFF[A,B,D,F]*dot(GA,GC)-AREA_COEFF[A,A,C,D]*dot(GB,GF)+AREA_COEFF[A,A,D,F]*dot(GB,GC))
+        Dmat[ei,7] += Li*Lab*CEF*(6*AREA_COEFF[A,F,0,0]*dot(GAxGB,GCxGD)+3*AREA_COEFF[A,D,0,0]*dot(GAxGB,GCxGF)-3*AREA_COEFF[A,C,0,0]*dot(GAxGB,GDxGF))
+        Fmat[ei,7] += Li*Lab*CFEF*(AREA_COEFF[A,B,D,F]*dot(GA,GC)-AREA_COEFF[A,B,F,C]*dot(GA,GD)-AREA_COEFF[A,A,D,F]*dot(GB,GC)+AREA_COEFF[A,A,F,C]*dot(GB,GD))
+        Dmat[ei+4,3] += Li*Lac*CEF*(-6*AREA_COEFF[B,D,0,0]*dot(GAxGB,GCxGF)-3*AREA_COEFF[B,C,0,0]*dot(GAxGB,GDxGF)-3*AREA_COEFF[B,F,0,0]*dot(GAxGB,GCxGD))
+        Fmat[ei+4,3] += Li*Lac*CFEF*(AREA_COEFF[B,B,C,D]*dot(GA,GF)-AREA_COEFF[B,B,D,F]*dot(GA,GC)-AREA_COEFF[A,B,C,D]*dot(GB,GF)+AREA_COEFF[A,B,D,F]*dot(GB,GC))
+        Dmat[ei+4,7] += Li*Lab*CEF*(6*AREA_COEFF[B,F,0,0]*dot(GAxGB,GCxGD)+3*AREA_COEFF[B,D,0,0]*dot(GAxGB,GCxGF)-3*AREA_COEFF[B,C,0,0]*dot(GAxGB,GDxGF))
+        Fmat[ei+4,7] += Li*Lab*CFEF*(AREA_COEFF[B,B,D,F]*dot(GA,GC)-AREA_COEFF[B,B,F,C]*dot(GA,GD)-AREA_COEFF[A,B,D,F]*dot(GB,GC)+AREA_COEFF[A,B,F,C]*dot(GB,GD))
 
 
     for ej in range(3):
@@ -508,14 +516,14 @@ def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness,
         CFE = 1/(2*Area)**4
         CFFE = 1/(2*Area)**2 
 
-        Dmat[3,ej] += Lj*Lac*CFE*(-6*area_coeff(Area,B,C,0,0)*dot(GAxGE,GCxGD)-3*area_coeff(Area,A,C,0,0)*dot(GBxGE,GCxGD)-3*area_coeff(Area,E,C,0,0)*dot(GAxGB,GCxGD))
-        Fmat[3,ej] += Lj*Lac*CFFE*(area_coeff(Area,A,B,C,D)*dot(GC,GE)-area_coeff(Area,A,B,C,C)*dot(GD,GE)-area_coeff(Area,B,E,C,D)*dot(GA,GC)+area_coeff(Area,B,E,C,C)*dot(GA,GD))
-        Dmat[3,ej+4] += Lj*Lac*CFE*(-6*area_coeff(Area,B,D,0,0)*dot(GAxGE,GCxGD)-3*area_coeff(Area,A,D,0,0)*dot(GBxGE,GCxGD)-3*area_coeff(Area,E,D,0,0)*dot(GAxGB,GCxGD))
-        Fmat[3,ej+4] += Lj*Lac*CFFE*(area_coeff(Area,A,B,D,D)*dot(GC,GE)-area_coeff(Area,A,B,C,D)*dot(GD,GE)-area_coeff(Area,B,E,D,D)*dot(GA,GC)+area_coeff(Area,B,E,C,D)*dot(GA,GD))
-        Dmat[7,ej] += Lj*Lab*CFE*(6*area_coeff(Area,E,C,0,0)*dot(GAxGB,GCxGD)+3*area_coeff(Area,B,C,0,0)*dot(GAxGE,GCxGD)-3*area_coeff(Area,A,C,0,0)*dot(GBxGE,GCxGD))
-        Fmat[7,ej] += Lj*Lab*CFFE*(area_coeff(Area,B,E,C,D)*dot(GA,GC)-area_coeff(Area,B,E,C,C)*dot(GA,GD)-area_coeff(Area,E,A,C,D)*dot(GB,GC)+area_coeff(Area,E,A,C,C)*dot(GB,GD))
-        Dmat[7,ej+4] += Lj*Lab*CFE*(6*area_coeff(Area,E,D,0,0)*dot(GAxGB,GCxGD)+3*area_coeff(Area,B,D,0,0)*dot(GAxGE,GCxGD)-3*area_coeff(Area,A,D,0,0)*dot(GBxGE,GCxGD))
-        Fmat[7,ej+4] += Lj*Lab*CFFE*(area_coeff(Area,B,E,D,D)*dot(GA,GC)-area_coeff(Area,B,E,C,D)*dot(GA,GD)-area_coeff(Area,E,A,D,D)*dot(GB,GC)+area_coeff(Area,E,A,C,D)*dot(GB,GD))
+        Dmat[3,ej] += Lj*Lac*CFE*(-6*AREA_COEFF[B,C,0,0]*dot(GAxGE,GCxGD)-3*AREA_COEFF[A,C,0,0]*dot(GBxGE,GCxGD)-3*AREA_COEFF[E,C,0,0]*dot(GAxGB,GCxGD))
+        Fmat[3,ej] += Lj*Lac*CFFE*(AREA_COEFF[A,B,C,D]*dot(GC,GE)-AREA_COEFF[A,B,C,C]*dot(GD,GE)-AREA_COEFF[B,E,C,D]*dot(GA,GC)+AREA_COEFF[B,E,C,C]*dot(GA,GD))
+        Dmat[3,ej+4] += Lj*Lac*CFE*(-6*AREA_COEFF[B,D,0,0]*dot(GAxGE,GCxGD)-3*AREA_COEFF[A,D,0,0]*dot(GBxGE,GCxGD)-3*AREA_COEFF[E,D,0,0]*dot(GAxGB,GCxGD))
+        Fmat[3,ej+4] += Lj*Lac*CFFE*(AREA_COEFF[A,B,D,D]*dot(GC,GE)-AREA_COEFF[A,B,C,D]*dot(GD,GE)-AREA_COEFF[B,E,D,D]*dot(GA,GC)+AREA_COEFF[B,E,C,D]*dot(GA,GD))
+        Dmat[7,ej] += Lj*Lab*CFE*(6*AREA_COEFF[E,C,0,0]*dot(GAxGB,GCxGD)+3*AREA_COEFF[B,C,0,0]*dot(GAxGE,GCxGD)-3*AREA_COEFF[A,C,0,0]*dot(GBxGE,GCxGD))
+        Fmat[7,ej] += Lj*Lab*CFFE*(AREA_COEFF[B,E,C,D]*dot(GA,GC)-AREA_COEFF[B,E,C,C]*dot(GA,GD)-AREA_COEFF[E,A,C,D]*dot(GB,GC)+AREA_COEFF[E,A,C,C]*dot(GB,GD))
+        Dmat[7,ej+4] += Lj*Lab*CFE*(6*AREA_COEFF[E,D,0,0]*dot(GAxGB,GCxGD)+3*AREA_COEFF[B,D,0,0]*dot(GAxGE,GCxGD)-3*AREA_COEFF[A,D,0,0]*dot(GBxGE,GCxGD))
+        Fmat[7,ej+4] += Lj*Lab*CFFE*(AREA_COEFF[B,E,D,D]*dot(GA,GC)-AREA_COEFF[B,E,C,D]*dot(GA,GD)-AREA_COEFF[E,A,D,D]*dot(GB,GC)+AREA_COEFF[E,A,C,D]*dot(GB,GD))
 
     ei1, ei2, fi = 0, 1, 2
     ej1, ej2, fj = 0, 1, 2
@@ -544,14 +552,14 @@ def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness,
     CFF = 1/(2*Area)**4
     CFFF = 1/(2*Area)**2
 
-    Dmat[3,3] += Lac1*Lac2*CFF*(4*area_coeff(Area,B,D,0,0)*dot(GAxGE,GCxGF)+2*area_coeff(Area,B,C,0,0)*dot(GAxGE,GDxGF)+2*area_coeff(Area,B,F,0,0)*dot(GAxGE,GCxGD)+2*area_coeff(Area,A,D,0,0)*dot(GBxGE,GCxGF)+area_coeff(Area,A,C,0,0)*dot(GBxGE,GDxGF)+area_coeff(Area,A,F,0,0)*dot(GBxGE,GCxGD)+2*area_coeff(Area,E,D,0,0)*dot(GAxGB,GCxGF)+area_coeff(Area,E,C,0,0)*dot(GAxGB,GDxGF)+area_coeff(Area,E,F,0,0)*dot(GAxGB,GCxGD))
-    Fmat[3,3] += Lac1*Lac2*CFFF*(area_coeff(Area,A,B,C,D)*dot(GE,GF)-area_coeff(Area,A,B,D,F)*dot(GC,GE)-area_coeff(Area,B,E,C,D)*dot(GA,GF)+area_coeff(Area,B,E,D,F)*dot(GA,GC))
-    Dmat[3,7] += Lac1*Lab2*CFF*(-4*area_coeff(Area,B,F,0,0)*dot(GAxGE,GCxGD)-2*area_coeff(Area,B,D,0,0)*dot(GAxGE,GCxGF)+2*area_coeff(Area,B,C,0,0)*dot(GAxGE,GDxGF)-2*area_coeff(Area,A,F,0,0)*dot(GBxGE,GCxGD)-area_coeff(Area,A,D,0,0)*dot(GBxGE,GCxGF)+area_coeff(Area,A,C,0,0)*dot(GBxGE,GDxGF)-2*area_coeff(Area,E,F,0,0)*dot(GAxGB,GCxGD)-area_coeff(Area,E,D,0,0)*dot(GAxGB,GCxGF)+area_coeff(Area,E,C,0,0)*dot(GAxGB,GDxGF))
-    Fmat[3,7] += Lac1*Lab2*CFFF*(area_coeff(Area,A,B,D,F)*dot(GC,GE)-area_coeff(Area,A,B,F,C)*dot(GD,GE)-area_coeff(Area,B,E,D,F)*dot(GA,GC)+area_coeff(Area,B,E,F,C)*dot(GA,GD))
-    Dmat[7,3] += Lab1*Lac2*CFF*(-4*area_coeff(Area,E,D,0,0)*dot(GAxGB,GCxGF)-2*area_coeff(Area,E,C,0,0)*dot(GAxGB,GDxGF)-2*area_coeff(Area,E,F,0,0)*dot(GAxGB,GCxGD)-2*area_coeff(Area,B,D,0,0)*dot(GAxGE,GCxGF)-area_coeff(Area,B,C,0,0)*dot(GAxGE,GDxGF)-area_coeff(Area,B,F,0,0)*dot(GAxGE,GCxGD)+2*area_coeff(Area,A,D,0,0)*dot(GBxGE,GCxGF)+area_coeff(Area,A,C,0,0)*dot(GBxGE,GDxGF)+area_coeff(Area,A,F,0,0)*dot(GBxGE,GCxGD))
-    Fmat[7,3] += Lab1*Lac2*CFFF*(area_coeff(Area,B,E,C,D)*dot(GA,GF)-area_coeff(Area,B,E,D,F)*dot(GA,GC)-area_coeff(Area,E,A,C,D)*dot(GB,GF)+area_coeff(Area,E,A,D,F)*dot(GB,GC))
-    Dmat[7,7] += Lab1*Lab2*CFF*(4*area_coeff(Area,E,F,0,0)*dot(GAxGB,GCxGD)+2*area_coeff(Area,E,D,0,0)*dot(GAxGB,GCxGF)-2*area_coeff(Area,E,C,0,0)*dot(GAxGB,GDxGF)+2*area_coeff(Area,B,F,0,0)*dot(GAxGE,GCxGD)+area_coeff(Area,B,D,0,0)*dot(GAxGE,GCxGF)-area_coeff(Area,B,C,0,0)*dot(GAxGE,GDxGF)-2*area_coeff(Area,A,F,0,0)*dot(GBxGE,GCxGD)-area_coeff(Area,A,D,0,0)*dot(GBxGE,GCxGF)+area_coeff(Area,A,C,0,0)*dot(GBxGE,GDxGF))
-    Fmat[7,7] += Lab1*Lab2*CFFF*(area_coeff(Area,B,E,D,F)*dot(GA,GC)-area_coeff(Area,B,E,F,C)*dot(GA,GD)-area_coeff(Area,E,A,D,F)*dot(GB,GC)+area_coeff(Area,E,A,F,C)*dot(GB,GD))
+    Dmat[3,3] += Lac1*Lac2*CFF*(4*AREA_COEFF[B,D,0,0]*dot(GAxGE,GCxGF)+2*AREA_COEFF[B,C,0,0]*dot(GAxGE,GDxGF)+2*AREA_COEFF[B,F,0,0]*dot(GAxGE,GCxGD)+2*AREA_COEFF[A,D,0,0]*dot(GBxGE,GCxGF)+AREA_COEFF[A,C,0,0]*dot(GBxGE,GDxGF)+AREA_COEFF[A,F,0,0]*dot(GBxGE,GCxGD)+2*AREA_COEFF[E,D,0,0]*dot(GAxGB,GCxGF)+AREA_COEFF[E,C,0,0]*dot(GAxGB,GDxGF)+AREA_COEFF[E,F,0,0]*dot(GAxGB,GCxGD))
+    Fmat[3,3] += Lac1*Lac2*CFFF*(AREA_COEFF[A,B,C,D]*dot(GE,GF)-AREA_COEFF[A,B,D,F]*dot(GC,GE)-AREA_COEFF[B,E,C,D]*dot(GA,GF)+AREA_COEFF[B,E,D,F]*dot(GA,GC))
+    Dmat[3,7] += Lac1*Lab2*CFF*(-4*AREA_COEFF[B,F,0,0]*dot(GAxGE,GCxGD)-2*AREA_COEFF[B,D,0,0]*dot(GAxGE,GCxGF)+2*AREA_COEFF[B,C,0,0]*dot(GAxGE,GDxGF)-2*AREA_COEFF[A,F,0,0]*dot(GBxGE,GCxGD)-AREA_COEFF[A,D,0,0]*dot(GBxGE,GCxGF)+AREA_COEFF[A,C,0,0]*dot(GBxGE,GDxGF)-2*AREA_COEFF[E,F,0,0]*dot(GAxGB,GCxGD)-AREA_COEFF[E,D,0,0]*dot(GAxGB,GCxGF)+AREA_COEFF[E,C,0,0]*dot(GAxGB,GDxGF))
+    Fmat[3,7] += Lac1*Lab2*CFFF*(AREA_COEFF[A,B,D,F]*dot(GC,GE)-AREA_COEFF[A,B,F,C]*dot(GD,GE)-AREA_COEFF[B,E,D,F]*dot(GA,GC)+AREA_COEFF[B,E,F,C]*dot(GA,GD))
+    Dmat[7,3] += Lab1*Lac2*CFF*(-4*AREA_COEFF[E,D,0,0]*dot(GAxGB,GCxGF)-2*AREA_COEFF[E,C,0,0]*dot(GAxGB,GDxGF)-2*AREA_COEFF[E,F,0,0]*dot(GAxGB,GCxGD)-2*AREA_COEFF[B,D,0,0]*dot(GAxGE,GCxGF)-AREA_COEFF[B,C,0,0]*dot(GAxGE,GDxGF)-AREA_COEFF[B,F,0,0]*dot(GAxGE,GCxGD)+2*AREA_COEFF[A,D,0,0]*dot(GBxGE,GCxGF)+AREA_COEFF[A,C,0,0]*dot(GBxGE,GDxGF)+AREA_COEFF[A,F,0,0]*dot(GBxGE,GCxGD))
+    Fmat[7,3] += Lab1*Lac2*CFFF*(AREA_COEFF[B,E,C,D]*dot(GA,GF)-AREA_COEFF[B,E,D,F]*dot(GA,GC)-AREA_COEFF[E,A,C,D]*dot(GB,GF)+AREA_COEFF[E,A,D,F]*dot(GB,GC))
+    Dmat[7,7] += Lab1*Lab2*CFF*(4*AREA_COEFF[E,F,0,0]*dot(GAxGB,GCxGD)+2*AREA_COEFF[E,D,0,0]*dot(GAxGB,GCxGF)-2*AREA_COEFF[E,C,0,0]*dot(GAxGB,GDxGF)+2*AREA_COEFF[B,F,0,0]*dot(GAxGE,GCxGD)+AREA_COEFF[B,D,0,0]*dot(GAxGE,GCxGF)-AREA_COEFF[B,C,0,0]*dot(GAxGE,GDxGF)-2*AREA_COEFF[A,F,0,0]*dot(GBxGE,GCxGD)-AREA_COEFF[A,D,0,0]*dot(GBxGE,GCxGF)+AREA_COEFF[A,C,0,0]*dot(GBxGE,GDxGF))
+    Fmat[7,7] += Lab1*Lab2*CFFF*(AREA_COEFF[B,E,D,F]*dot(GA,GC)-AREA_COEFF[B,E,F,C]*dot(GA,GD)-AREA_COEFF[E,A,D,F]*dot(GB,GC)+AREA_COEFF[E,A,F,C]*dot(GB,GD))
     
 
     Dmat = Dmat*C_stiffness
@@ -559,8 +567,10 @@ def ned2_tri_stiff_mass(tri_vertices, edge_lengths, local_edge_map, C_stiffness,
     
     return Dmat, Fmat
 
-@njit(types.Tuple((c16[:,:],c16[:]))(f8[:,:], f8[:], c16, c16[:,:], f8[:,:]), cache=True)
-def ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
+
+
+@njit(types.Tuple((c16[:,:],c16[:]))(f8[:,:], c16, c16[:,:], f8[:,:]), cache=True, nogil=True)
+def ned2_tri_stiff_force(lcs_vertices, gamma, lcs_Uinc, DPTs):
     ''' Nedelec-2 Triangle Stiffness matrix and forcing vector (For Boundary Condition of the Third Kind)
 
     '''
@@ -615,9 +625,10 @@ def ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
     Ws = DPTs[0,:]
 
     COEFF = gamma/(2*Area)**2
+    AREA_COEFF = AREA_COEFF_CACHE_BASE * Area
     for ei in range(3):
         ei1, ei2 = local_edge_map[:, ei]
-        Li = edge_lengths[ei]
+        Li = Ds[ei1, ei2]
         
         A = letters[ei1]
         B = letters[ei2]
@@ -627,7 +638,7 @@ def ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
 
         for ej in range(3):
             ej1, ej2 = local_edge_map[:, ej]
-            Lj = edge_lengths[ej]
+            Lj = Ds[ej1, ej2]
 
             C = letters[ej1]
             D = letters[ej2]
@@ -635,19 +646,19 @@ def ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
             GC = GLs[ej1]
             GD = GLs[ej2]
 
-            Bmat[ei,ej] += Li*Lj*COEFF*(area_coeff(Area,A,B,C,D)*dot(GA,GC)-area_coeff(Area,A,B,C,C)*dot(GA,GD)-area_coeff(Area,A,A,C,D)*dot(GB,GC)+area_coeff(Area,A,A,C,C)*dot(GB,GD))
-            Bmat[ei,ej+4] += Li*Lj*COEFF*(area_coeff(Area,A,B,D,D)*dot(GA,GC)-area_coeff(Area,A,B,C,D)*dot(GA,GD)-area_coeff(Area,A,A,D,D)*dot(GB,GC)+area_coeff(Area,A,A,C,D)*dot(GB,GD))
-            Bmat[ei+4,ej] += Li*Lj*COEFF*(area_coeff(Area,B,B,C,D)*dot(GA,GC)-area_coeff(Area,B,B,C,C)*dot(GA,GD)-area_coeff(Area,A,B,C,D)*dot(GB,GC)+area_coeff(Area,A,B,C,C)*dot(GB,GD))
-            Bmat[ei+4,ej+4] += Li*Lj*COEFF*(area_coeff(Area,B,B,D,D)*dot(GA,GC)-area_coeff(Area,B,B,C,D)*dot(GA,GD)-area_coeff(Area,A,B,D,D)*dot(GB,GC)+area_coeff(Area,A,B,C,D)*dot(GB,GD))
+            Bmat[ei,ej] += Li*Lj*(AREA_COEFF[A,B,C,D]*dot(GA,GC)-AREA_COEFF[A,B,C,C]*dot(GA,GD)-AREA_COEFF[A,A,C,D]*dot(GB,GC)+AREA_COEFF[A,A,C,C]*dot(GB,GD))
+            Bmat[ei,ej+4] += Li*Lj*(AREA_COEFF[A,B,D,D]*dot(GA,GC)-AREA_COEFF[A,B,C,D]*dot(GA,GD)-AREA_COEFF[A,A,D,D]*dot(GB,GC)+AREA_COEFF[A,A,C,D]*dot(GB,GD))
+            Bmat[ei+4,ej] += Li*Lj*(AREA_COEFF[B,B,C,D]*dot(GA,GC)-AREA_COEFF[B,B,C,C]*dot(GA,GD)-AREA_COEFF[A,B,C,D]*dot(GB,GC)+AREA_COEFF[A,B,C,C]*dot(GB,GD))
+            Bmat[ei+4,ej+4] += Li*Lj*(AREA_COEFF[B,B,D,D]*dot(GA,GC)-AREA_COEFF[B,B,C,D]*dot(GA,GD)-AREA_COEFF[A,B,D,D]*dot(GB,GC)+AREA_COEFF[A,B,C,D]*dot(GB,GD))
             
-        Bmat[ei,3] += Li*Lt1*COEFF*(area_coeff(Area,A,B,tA,tB)*dot(GA,GtC)-area_coeff(Area,A,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,A,A,tA,tB)*dot(GB,GtC)+area_coeff(Area,A,A,tB,tC)*dot(GB,GtA))
-        Bmat[ei,7] += Li*Lt2*COEFF*(area_coeff(Area,A,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,A,B,tC,tA)*dot(GA,GtB)-area_coeff(Area,A,A,tB,tC)*dot(GB,GtA)+area_coeff(Area,A,A,tC,tA)*dot(GB,GtB))
-        Bmat[3,ei] += Lt1*Li*COEFF*(area_coeff(Area,tA,tB,A,B)*dot(GA,GtC)-area_coeff(Area,tA,tB,A,A)*dot(GB,GtC)-area_coeff(Area,tB,tC,A,B)*dot(GA,GtA)+area_coeff(Area,tB,tC,A,A)*dot(GB,GtA))
-        Bmat[7,ei] += Lt2*Li*COEFF*(area_coeff(Area,tB,tC,A,B)*dot(GA,GtA)-area_coeff(Area,tB,tC,A,A)*dot(GB,GtA)-area_coeff(Area,tC,tA,A,B)*dot(GA,GtB)+area_coeff(Area,tC,tA,A,A)*dot(GB,GtB))
-        Bmat[ei+4,3] += Li*Lt1*COEFF*(area_coeff(Area,B,B,tA,tB)*dot(GA,GtC)-area_coeff(Area,B,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,A,B,tA,tB)*dot(GB,GtC)+area_coeff(Area,A,B,tB,tC)*dot(GB,GtA))
-        Bmat[ei+4,7] += Li*Lt2*COEFF*(area_coeff(Area,B,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,B,B,tC,tA)*dot(GA,GtB)-area_coeff(Area,A,B,tB,tC)*dot(GB,GtA)+area_coeff(Area,A,B,tC,tA)*dot(GB,GtB))
-        Bmat[3,ei+4] += Lt1*Li*COEFF*(area_coeff(Area,tA,tB,B,B)*dot(GA,GtC)-area_coeff(Area,tA,tB,A,B)*dot(GB,GtC)-area_coeff(Area,tB,tC,B,B)*dot(GA,GtA)+area_coeff(Area,tB,tC,A,B)*dot(GB,GtA))
-        Bmat[7,ei+4] += Lt2*Li*COEFF*(area_coeff(Area,tB,tC,B,B)*dot(GA,GtA)-area_coeff(Area,tB,tC,A,B)*dot(GB,GtA)-area_coeff(Area,tC,tA,B,B)*dot(GA,GtB)+area_coeff(Area,tC,tA,A,B)*dot(GB,GtB))
+        Bmat[ei,3] += Li*Lt1*(AREA_COEFF[A,B,tA,tB]*dot(GA,GtC)-AREA_COEFF[A,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[A,A,tA,tB]*dot(GB,GtC)+AREA_COEFF[A,A,tB,tC]*dot(GB,GtA))
+        Bmat[ei,7] += Li*Lt2*(AREA_COEFF[A,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[A,B,tC,tA]*dot(GA,GtB)-AREA_COEFF[A,A,tB,tC]*dot(GB,GtA)+AREA_COEFF[A,A,tC,tA]*dot(GB,GtB))
+        Bmat[3,ei] += Lt1*Li*(AREA_COEFF[tA,tB,A,B]*dot(GA,GtC)-AREA_COEFF[tA,tB,A,A]*dot(GB,GtC)-AREA_COEFF[tB,tC,A,B]*dot(GA,GtA)+AREA_COEFF[tB,tC,A,A]*dot(GB,GtA))
+        Bmat[7,ei] += Lt2*Li*(AREA_COEFF[tB,tC,A,B]*dot(GA,GtA)-AREA_COEFF[tB,tC,A,A]*dot(GB,GtA)-AREA_COEFF[tC,tA,A,B]*dot(GA,GtB)+AREA_COEFF[tC,tA,A,A]*dot(GB,GtB))
+        Bmat[ei+4,3] += Li*Lt1*(AREA_COEFF[B,B,tA,tB]*dot(GA,GtC)-AREA_COEFF[B,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[A,B,tA,tB]*dot(GB,GtC)+AREA_COEFF[A,B,tB,tC]*dot(GB,GtA))
+        Bmat[ei+4,7] += Li*Lt2*(AREA_COEFF[B,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[B,B,tC,tA]*dot(GA,GtB)-AREA_COEFF[A,B,tB,tC]*dot(GB,GtA)+AREA_COEFF[A,B,tC,tA]*dot(GB,GtB))
+        Bmat[3,ei+4] += Lt1*Li*(AREA_COEFF[tA,tB,B,B]*dot(GA,GtC)-AREA_COEFF[tA,tB,A,B]*dot(GB,GtC)-AREA_COEFF[tB,tC,B,B]*dot(GA,GtA)+AREA_COEFF[tB,tC,A,B]*dot(GB,GtA))
+        Bmat[7,ei+4] += Lt2*Li*(AREA_COEFF[tB,tC,B,B]*dot(GA,GtA)-AREA_COEFF[tB,tC,A,B]*dot(GB,GtA)-AREA_COEFF[tC,tA,B,B]*dot(GA,GtB)+AREA_COEFF[tC,tA,A,B]*dot(GB,GtB))
             
         A1, A2 = As[ei1], As[ei2]
         B1, B2 = Bs[ei1], Bs[ei2]
@@ -661,10 +672,10 @@ def ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
         bvec[ei] += signA*Area*np.sum(Ws*(Ee1x*Ux + Ee1y*Uy))
         bvec[ei+4] += signA*Area*np.sum(Ws*(Ee2x*Ux + Ee2y*Uy))
     
-    Bmat[3,3] += Lt1*Lt1*COEFF*(area_coeff(Area,tA,tB,tA,tB)*dot(GtC,GtC)-area_coeff(Area,tA,tB,tB,tC)*dot(GtA,GtC)-area_coeff(Area,tB,tC,tA,tB)*dot(GtA,GtC)+area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA))
-    Bmat[3,7] += Lt1*Lt2*COEFF*(area_coeff(Area,tA,tB,tB,tC)*dot(GtA,GtC)-area_coeff(Area,tA,tB,tC,tA)*dot(GtB,GtC)-area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA)+area_coeff(Area,tB,tC,tC,tA)*dot(GtA,GtB))
-    Bmat[7,3] += Lt2*Lt1*COEFF*(area_coeff(Area,tB,tC,tA,tB)*dot(GtA,GtC)-area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA)-area_coeff(Area,tC,tA,tA,tB)*dot(GtB,GtC)+area_coeff(Area,tC,tA,tB,tC)*dot(GtA,GtB))
-    Bmat[7,7] += Lt2*Lt2*COEFF*(area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA)-area_coeff(Area,tB,tC,tC,tA)*dot(GtA,GtB)-area_coeff(Area,tC,tA,tB,tC)*dot(GtA,GtB)+area_coeff(Area,tC,tA,tC,tA)*dot(GtB,GtB))
+    Bmat[3,3] += Lt1*Lt1*(AREA_COEFF[tA,tB,tA,tB]*dot(GtC,GtC)-AREA_COEFF[tA,tB,tB,tC]*dot(GtA,GtC)-AREA_COEFF[tB,tC,tA,tB]*dot(GtA,GtC)+AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA))
+    Bmat[3,7] += Lt1*Lt2*(AREA_COEFF[tA,tB,tB,tC]*dot(GtA,GtC)-AREA_COEFF[tA,tB,tC,tA]*dot(GtB,GtC)-AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA)+AREA_COEFF[tB,tC,tC,tA]*dot(GtA,GtB))
+    Bmat[7,3] += Lt2*Lt1*(AREA_COEFF[tB,tC,tA,tB]*dot(GtA,GtC)-AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA)-AREA_COEFF[tC,tA,tA,tB]*dot(GtB,GtC)+AREA_COEFF[tC,tA,tB,tC]*dot(GtA,GtB))
+    Bmat[7,7] += Lt2*Lt2*(AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA)-AREA_COEFF[tB,tC,tC,tA]*dot(GtA,GtB)-AREA_COEFF[tC,tA,tB,tC]*dot(GtA,GtB)+AREA_COEFF[tC,tA,tC,tA]*dot(GtB,GtB))
     
     A1, A2, A3 = As
     B1, B2, B3 = Bs
@@ -677,10 +688,10 @@ def ned2_tri_stiff_force(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
     
     bvec[3] += signA*Area*np.sum(Ws*(Ef1x*Ux + Ef1y*Uy))
     bvec[7] += signA*Area*np.sum(Ws*(Ef2x*Ux + Ef2y*Uy))
-
+    Bmat = Bmat * COEFF
     return Bmat, bvec
 
-@njit(c16[:,:](f8[:,:], f8[:], c16), cache=True)
+@njit(c16[:,:](f8[:,:], f8[:], c16), cache=True, nogil=True)
 def ned2_tri_stiff(vertices, edge_lengths, gamma):
     ''' Nedelec-2 Triangle Stiffness matrix and forcing vector (For Boundary Condition of the Third Kind)
 
@@ -737,6 +748,7 @@ def ned2_tri_stiff(vertices, edge_lengths, gamma):
     Lt1, Lt2 = Ds[2, 0], Ds[1, 0]
     
     COEFF = gamma/(2*Area)**2
+    AREA_COEFF = AREA_COEFF_CACHE_BASE * Area
     for ei in range(3):
         ei1, ei2 = local_edge_map[:, ei]
         Li = edge_lengths[ei]
@@ -757,31 +769,31 @@ def ned2_tri_stiff(vertices, edge_lengths, gamma):
             GC = GLs[ej1]
             GD = GLs[ej2]
 
-            Bmat[ei,ej] += Li*Lj*COEFF*(area_coeff(Area,A,B,C,D)*dot(GA,GC)-area_coeff(Area,A,B,C,C)*dot(GA,GD)-area_coeff(Area,A,A,C,D)*dot(GB,GC)+area_coeff(Area,A,A,C,C)*dot(GB,GD))
-            Bmat[ei,ej+4] += Li*Lj*COEFF*(area_coeff(Area,A,B,D,D)*dot(GA,GC)-area_coeff(Area,A,B,C,D)*dot(GA,GD)-area_coeff(Area,A,A,D,D)*dot(GB,GC)+area_coeff(Area,A,A,C,D)*dot(GB,GD))
-            Bmat[ei+4,ej] += Li*Lj*COEFF*(area_coeff(Area,B,B,C,D)*dot(GA,GC)-area_coeff(Area,B,B,C,C)*dot(GA,GD)-area_coeff(Area,A,B,C,D)*dot(GB,GC)+area_coeff(Area,A,B,C,C)*dot(GB,GD))
-            Bmat[ei+4,ej+4] += Li*Lj*COEFF*(area_coeff(Area,B,B,D,D)*dot(GA,GC)-area_coeff(Area,B,B,C,D)*dot(GA,GD)-area_coeff(Area,A,B,D,D)*dot(GB,GC)+area_coeff(Area,A,B,C,D)*dot(GB,GD))
+            Bmat[ei,ej] += Li*Lj*COEFF*(AREA_COEFF[A,B,C,D]*dot(GA,GC)-AREA_COEFF[A,B,C,C]*dot(GA,GD)-AREA_COEFF[A,A,C,D]*dot(GB,GC)+AREA_COEFF[A,A,C,C]*dot(GB,GD))
+            Bmat[ei,ej+4] += Li*Lj*COEFF*(AREA_COEFF[A,B,D,D]*dot(GA,GC)-AREA_COEFF[A,B,C,D]*dot(GA,GD)-AREA_COEFF[A,A,D,D]*dot(GB,GC)+AREA_COEFF[A,A,C,D]*dot(GB,GD))
+            Bmat[ei+4,ej] += Li*Lj*COEFF*(AREA_COEFF[B,B,C,D]*dot(GA,GC)-AREA_COEFF[B,B,C,C]*dot(GA,GD)-AREA_COEFF[A,B,C,D]*dot(GB,GC)+AREA_COEFF[A,B,C,C]*dot(GB,GD))
+            Bmat[ei+4,ej+4] += Li*Lj*COEFF*(AREA_COEFF[B,B,D,D]*dot(GA,GC)-AREA_COEFF[B,B,C,D]*dot(GA,GD)-AREA_COEFF[A,B,D,D]*dot(GB,GC)+AREA_COEFF[A,B,C,D]*dot(GB,GD))
             
-        Bmat[ei,3] += Li*Lt1*COEFF*(area_coeff(Area,A,B,tA,tB)*dot(GA,GtC)-area_coeff(Area,A,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,A,A,tA,tB)*dot(GB,GtC)+area_coeff(Area,A,A,tB,tC)*dot(GB,GtA))
-        Bmat[ei,7] += Li*Lt2*COEFF*(area_coeff(Area,A,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,A,B,tC,tA)*dot(GA,GtB)-area_coeff(Area,A,A,tB,tC)*dot(GB,GtA)+area_coeff(Area,A,A,tC,tA)*dot(GB,GtB))
-        Bmat[3,ei] += Lt1*Li*COEFF*(area_coeff(Area,tA,tB,A,B)*dot(GA,GtC)-area_coeff(Area,tA,tB,A,A)*dot(GB,GtC)-area_coeff(Area,tB,tC,A,B)*dot(GA,GtA)+area_coeff(Area,tB,tC,A,A)*dot(GB,GtA))
-        Bmat[7,ei] += Lt2*Li*COEFF*(area_coeff(Area,tB,tC,A,B)*dot(GA,GtA)-area_coeff(Area,tB,tC,A,A)*dot(GB,GtA)-area_coeff(Area,tC,tA,A,B)*dot(GA,GtB)+area_coeff(Area,tC,tA,A,A)*dot(GB,GtB))
-        Bmat[ei+4,3] += Li*Lt1*COEFF*(area_coeff(Area,B,B,tA,tB)*dot(GA,GtC)-area_coeff(Area,B,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,A,B,tA,tB)*dot(GB,GtC)+area_coeff(Area,A,B,tB,tC)*dot(GB,GtA))
-        Bmat[ei+4,7] += Li*Lt2*COEFF*(area_coeff(Area,B,B,tB,tC)*dot(GA,GtA)-area_coeff(Area,B,B,tC,tA)*dot(GA,GtB)-area_coeff(Area,A,B,tB,tC)*dot(GB,GtA)+area_coeff(Area,A,B,tC,tA)*dot(GB,GtB))
-        Bmat[3,ei+4] += Lt1*Li*COEFF*(area_coeff(Area,tA,tB,B,B)*dot(GA,GtC)-area_coeff(Area,tA,tB,A,B)*dot(GB,GtC)-area_coeff(Area,tB,tC,B,B)*dot(GA,GtA)+area_coeff(Area,tB,tC,A,B)*dot(GB,GtA))
-        Bmat[7,ei+4] += Lt2*Li*COEFF*(area_coeff(Area,tB,tC,B,B)*dot(GA,GtA)-area_coeff(Area,tB,tC,A,B)*dot(GB,GtA)-area_coeff(Area,tC,tA,B,B)*dot(GA,GtB)+area_coeff(Area,tC,tA,A,B)*dot(GB,GtB))
+        Bmat[ei,3] += Li*Lt1*COEFF*(AREA_COEFF[A,B,tA,tB]*dot(GA,GtC)-AREA_COEFF[A,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[A,A,tA,tB]*dot(GB,GtC)+AREA_COEFF[A,A,tB,tC]*dot(GB,GtA))
+        Bmat[ei,7] += Li*Lt2*COEFF*(AREA_COEFF[A,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[A,B,tC,tA]*dot(GA,GtB)-AREA_COEFF[A,A,tB,tC]*dot(GB,GtA)+AREA_COEFF[A,A,tC,tA]*dot(GB,GtB))
+        Bmat[3,ei] += Lt1*Li*COEFF*(AREA_COEFF[tA,tB,A,B]*dot(GA,GtC)-AREA_COEFF[tA,tB,A,A]*dot(GB,GtC)-AREA_COEFF[tB,tC,A,B]*dot(GA,GtA)+AREA_COEFF[tB,tC,A,A]*dot(GB,GtA))
+        Bmat[7,ei] += Lt2*Li*COEFF*(AREA_COEFF[tB,tC,A,B]*dot(GA,GtA)-AREA_COEFF[tB,tC,A,A]*dot(GB,GtA)-AREA_COEFF[tC,tA,A,B]*dot(GA,GtB)+AREA_COEFF[tC,tA,A,A]*dot(GB,GtB))
+        Bmat[ei+4,3] += Li*Lt1*COEFF*(AREA_COEFF[B,B,tA,tB]*dot(GA,GtC)-AREA_COEFF[B,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[A,B,tA,tB]*dot(GB,GtC)+AREA_COEFF[A,B,tB,tC]*dot(GB,GtA))
+        Bmat[ei+4,7] += Li*Lt2*COEFF*(AREA_COEFF[B,B,tB,tC]*dot(GA,GtA)-AREA_COEFF[B,B,tC,tA]*dot(GA,GtB)-AREA_COEFF[A,B,tB,tC]*dot(GB,GtA)+AREA_COEFF[A,B,tC,tA]*dot(GB,GtB))
+        Bmat[3,ei+4] += Lt1*Li*COEFF*(AREA_COEFF[tA,tB,B,B]*dot(GA,GtC)-AREA_COEFF[tA,tB,A,B]*dot(GB,GtC)-AREA_COEFF[tB,tC,B,B]*dot(GA,GtA)+AREA_COEFF[tB,tC,A,B]*dot(GB,GtA))
+        Bmat[7,ei+4] += Lt2*Li*COEFF*(AREA_COEFF[tB,tC,B,B]*dot(GA,GtA)-AREA_COEFF[tB,tC,A,B]*dot(GB,GtA)-AREA_COEFF[tC,tA,B,B]*dot(GA,GtB)+AREA_COEFF[tC,tA,A,B]*dot(GB,GtB))
       
     
-    Bmat[3,3] += Lt1*Lt1*COEFF*(area_coeff(Area,tA,tB,tA,tB)*dot(GtC,GtC)-area_coeff(Area,tA,tB,tB,tC)*dot(GtA,GtC)-area_coeff(Area,tB,tC,tA,tB)*dot(GtA,GtC)+area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA))
-    Bmat[3,7] += Lt1*Lt2*COEFF*(area_coeff(Area,tA,tB,tB,tC)*dot(GtA,GtC)-area_coeff(Area,tA,tB,tC,tA)*dot(GtB,GtC)-area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA)+area_coeff(Area,tB,tC,tC,tA)*dot(GtA,GtB))
-    Bmat[7,3] += Lt2*Lt1*COEFF*(area_coeff(Area,tB,tC,tA,tB)*dot(GtA,GtC)-area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA)-area_coeff(Area,tC,tA,tA,tB)*dot(GtB,GtC)+area_coeff(Area,tC,tA,tB,tC)*dot(GtA,GtB))
-    Bmat[7,7] += Lt2*Lt2*COEFF*(area_coeff(Area,tB,tC,tB,tC)*dot(GtA,GtA)-area_coeff(Area,tB,tC,tC,tA)*dot(GtA,GtB)-area_coeff(Area,tC,tA,tB,tC)*dot(GtA,GtB)+area_coeff(Area,tC,tA,tC,tA)*dot(GtB,GtB))
+    Bmat[3,3] += Lt1*Lt1*COEFF*(AREA_COEFF[tA,tB,tA,tB]*dot(GtC,GtC)-AREA_COEFF[tA,tB,tB,tC]*dot(GtA,GtC)-AREA_COEFF[tB,tC,tA,tB]*dot(GtA,GtC)+AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA))
+    Bmat[3,7] += Lt1*Lt2*COEFF*(AREA_COEFF[tA,tB,tB,tC]*dot(GtA,GtC)-AREA_COEFF[tA,tB,tC,tA]*dot(GtB,GtC)-AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA)+AREA_COEFF[tB,tC,tC,tA]*dot(GtA,GtB))
+    Bmat[7,3] += Lt2*Lt1*COEFF*(AREA_COEFF[tB,tC,tA,tB]*dot(GtA,GtC)-AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA)-AREA_COEFF[tC,tA,tA,tB]*dot(GtB,GtC)+AREA_COEFF[tC,tA,tB,tC]*dot(GtA,GtB))
+    Bmat[7,7] += Lt2*Lt2*COEFF*(AREA_COEFF[tB,tC,tB,tC]*dot(GtA,GtA)-AREA_COEFF[tB,tC,tC,tA]*dot(GtA,GtB)-AREA_COEFF[tC,tA,tB,tC]*dot(GtA,GtB)+AREA_COEFF[tC,tA,tC,tA]*dot(GtB,GtB))
 
 
     return Bmat
 
 
-@njit(c16(f8[:,:], f8[:], c16[:,:], f8[:,:]), cache=True)
+@njit(c16(f8[:,:], f8[:], c16[:,:], f8[:,:]), cache=True, nogil=True)
 def ned2_tri_surface_integral(lcs_vertices, edge_lengths, lcs_Uinc, DPTs):
     ''' Nedelec-2 Triangle surface integral
 

@@ -2,7 +2,7 @@ from numba import njit, f8, i8, types, c16
 import numpy as np
 
 from ...math.optimized import local_mapping, cross, dot, compute_distances, tet_coefficients, volume_coeff, area_coeff, tri_coefficients
-@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], i8[:,:]), cache=True)
+@njit(types.Tuple((c16[:], c16[:], c16[:]))(f8[:,:], c16[:], i8[:,:], i8[:,:], i8[:,:], f8[:,:], i8[:,:]), cache=True, nogil=True)
 def interpolate_solution(coords: np.ndarray,
                          solutions: np.ndarray, 
                          tets: np.ndarray, 
@@ -123,7 +123,7 @@ def interpolate_solution(coords: np.ndarray,
     return Ex, Ey, Ez
 
 
-@njit(types.Tuple((c16[:,:],c16[:,:]))(f8[:,:], f8[:], i8[:,:], i8[:,:], f8, f8), cache=True)
+@njit(types.Tuple((c16[:,:],c16[:,:]))(f8[:,:], f8[:], i8[:,:], i8[:,:], f8, f8), cache=True, nogil=True)
 def tet_stiff_mass_submatrix(tet_vertices, edge_lengths, local_edge_map, local_tri_map, C_stiffness, C_mass):
     ''' Computes the curl dot curl submatrix terms
     
@@ -301,7 +301,7 @@ def tet_stiff_mass_submatrix(tet_vertices, edge_lengths, local_edge_map, local_t
     
     return Dmat, Fmat
 
-#@njit(types.Tuple((c16[:,:],c16[:,:]))(f8[:,:], f8[:], f8[:,:], i8[:,:], f8, f8), cache=True)
+@njit(types.Tuple((c16[:,:],c16[:,:]))(f8[:,:], f8[:], f8[:,:], i8[:,:], f8, f8), cache=True, nogil=True)
 def tri_stiff_mass_submatrix(tri_vertices, edge_lengths, local_edge_map, C_stiffness, C_mass):
     ''' Computes the curl dot curl submatrix terms
     
@@ -477,7 +477,7 @@ def tri_stiff_mass_submatrix(tri_vertices, edge_lengths, local_edge_map, C_stiff
     
     return Dmat, Fmat
 
-@njit(types.Tuple((c16[:,:],c16[:]))(f8[:,:], f8[:], c16, c16[:,:], f8[:,:]), cache=True)
+@njit(types.Tuple((c16[:,:],c16[:]))(f8[:,:], f8[:], c16, c16[:,:], f8[:,:]), cache=True, nogil=True)
 def tri_stiff_vec_matrix(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
     ''' Computes the curl dot curl submatrix terms
     
@@ -609,7 +609,7 @@ def tri_stiff_vec_matrix(lcs_vertices, edge_lengths, gamma, lcs_Uinc, DPTs):
     return Bmat, bvec
 
 
-@njit(c16(f8[:,:], f8[:], c16[:,:], f8[:,:]), cache=True)
+@njit(c16(f8[:,:], f8[:], c16[:,:], f8[:,:]), cache=True, nogil=True)
 def tri_surf_integral(lcs_vertices, edge_lengths, lcs_Uinc, DPTs):
     ''' Computes the curl dot curl submatrix terms
     

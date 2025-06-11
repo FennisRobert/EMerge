@@ -21,7 +21,7 @@ from numba import njit, f8, i8, types, c16
 from .optimized import gaus_quad_tri, generate_int_points_tri, calc_area
 
 
-@njit(c16(f8[:,:], i8[:,:], c16[:], f8[:,:], c16[:,:]), cache=True)
+@njit(c16(f8[:,:], i8[:,:], c16[:], f8[:,:], c16[:,:]), cache=True, nogil=True)
 def _fast_integral_c(nodes, triangles, constants, DPTs, field_values):
     tot = np.complex128(0.0)
 
@@ -35,7 +35,7 @@ def _fast_integral_c(nodes, triangles, constants, DPTs, field_values):
         tot = tot + constants[it] * field * A
     return tot
 
-@njit(f8(f8[:,:], i8[:,:], f8[:], f8[:,:], f8[:,:]), cache=True)
+@njit(f8(f8[:,:], i8[:,:], f8[:], f8[:,:], f8[:,:]), cache=True, nogil=True)
 def _fast_integral_f(nodes, triangles, constants, DPTs, field_values):
     tot = np.float64(0.0)
     for it in range(triangles.shape[1]):

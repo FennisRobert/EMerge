@@ -323,6 +323,7 @@ class Electrodynamics3D:
 
             portfE = nlf.interpolate_Ef(Emode)
             portfH = nlf.interpolate_Hf(Emode, k0, ur, beta)
+            
             P = compute_avg_power_flux(nlf, Emode, k0, ur, beta)
 
             mode = port.add_mode(Emode, portfE, portfH, beta, k0, residuals, TEM=TEM, freq=freq)
@@ -453,8 +454,7 @@ class Electrodynamics3D:
         group2 = groups[1]
 
         return group1, group2
-
-    
+ 
     def frequency_domain(self) -> EMSimData:
         ''' Executes the frequency domain study.'''
         mesh = self.mesh

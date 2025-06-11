@@ -21,9 +21,12 @@ from ...elements.legrange2 import Legrange2
 from ...elements.nedelec2 import Nedelec2
 from ...elements.nedleg2 import NedelecLegrange2
 from ...mth.optimized import gaus_quad_tri
+from ...mth.tri import ned2_tri_stiff_force
 from scipy.sparse import lil_matrix, csr_matrix
 from loguru import logger
 from typing import Callable
+
+from numba import types, njit, f8, i8, c16
 
 c0 = 299792458
 
@@ -57,6 +60,43 @@ def diagnose_matrix(mat: np.ndarray) -> None:
 
 #############
 
+@njit(types.Tuple((f8[:],f8[:]))(f8[:,:], i8[:,:], f8[:,:], i8[:]), cache=True, nogil=True)
+def generate_points(vertices_local, tris, DPTs, surf_triangle_indices):
+    NS = surf_triangle_indices.shape[0]
+    xall = np.zeros((DPTs.shape[1], NS))
+    yall = np.zeros((DPTs.shape[1], NS)) 
+
+    for i in range(NS):
+        itri = surf_triangle_indices[i]
+        vertex_ids = tris[:, itri]
+        
+        x1, x2, x3 = vertices_local[0, vertex_ids]
+        y1, y2, y3 = vertices_local[1, vertex_ids]
+        
+        xall[:,i] = x1*DPTs[1,:] + x2*DPTs[2,:] + x3*DPTs[3,:]
+        yall[:,i] = y1*DPTs[1,:] + y2*DPTs[2,:] + y3*DPTs[3,:]
+    
+    xflat = xall.flatten()
+    yflat = yall.flatten()
+    return xflat, yflat
+
+@njit(types.Tuple((c16[:], c16[:]))(f8[:,:], i8[:,:], c16[:], c16[:], i8[:], c16, c16[:,:,:], f8[:,:], i8[:,:]), cache=True, nogil=True)
+def compute_bc_entries(vertices_local, tris, Bmat, Bvec, surf_triangle_indices, gamma, Ulocal_all, DPTs, tri_to_field):
+    N = 64
+    for i, itri in enumerate(surf_triangle_indices):
+
+        vertex_ids = tris[:, itri]
+
+        Ulocal = Ulocal_all[:,:, i]
+
+        Bsub, bvec = ned2_tri_stiff_force(vertices_local[:,vertex_ids], gamma, Ulocal, DPTs)
+        
+        indices = tri_to_field[:, itri]
+        
+        Bmat[itri*N:(itri+1)*N] = Bsub.ravel()
+        Bvec[indices] = Bvec[indices] + bvec
+    return Bmat, Bvec
+
 def assemble_robin_bc_excited(field: Nedelec2,
                 surf_triangle_indices: np.ndarray,
                 Ufunc: Callable,
@@ -71,43 +111,15 @@ def assemble_robin_bc_excited(field: Nedelec2,
     
     Bvec = np.zeros((field.n_field,), dtype=np.complex128)
 
-    vertices_local = np.linalg.pinv(local_basis) @ (field.mesh.nodes - origin[:,np.newaxis])
-    
-    xall = np.zeros((DPTs.shape[1], surf_triangle_indices.shape[0]))
-    yall = np.zeros((DPTs.shape[1], surf_triangle_indices.shape[0])) 
+    vertices_local = local_basis @ (field.mesh.nodes - origin[:,np.newaxis])
 
-    for i, itri in enumerate(surf_triangle_indices):
-
-        vertex_ids = field.mesh.tris[:, itri]
-        
-        x1, x2, x3 = vertices_local[0, vertex_ids]
-        y1, y2, y3 = vertices_local[1, vertex_ids]
-        
-        xall[:,i] = x1*DPTs[1,:] + x2*DPTs[2,:] + x3*DPTs[3,:]
-        yall[:,i] = y1*DPTs[1,:] + y2*DPTs[2,:] + y3*DPTs[3,:]
-    
-    xflat = xall.flatten()
-    yflat = yall.flatten()
+    xflat, yflat = generate_points(vertices_local, field.mesh.tris, DPTs, surf_triangle_indices)
 
     Ulocal = Ufunc(xflat, yflat)
 
     Ulocal_all = Ulocal.reshape((3, DPTs.shape[1], surf_triangle_indices.shape[0]))
 
-    for i, itri in enumerate(surf_triangle_indices):
-
-        vertex_ids = field.mesh.tris[:, itri]
-
-        Ulocal = np.squeeze(Ulocal_all[:,:, i])
-
-        edge_lengths = field.tri_to_edge_lengths(itri)
-
-        Bsub, bvec = field.tri_stiff_vec_matrix(vertices_local[:,vertex_ids], edge_lengths, gamma, Ulocal, DPTs)
-        
-        indices = field.tri_to_field[:, itri]
-        
-        Bmat[field.trislice(itri)] = Bsub.ravel()
-        Bvec[indices] = Bvec[indices] + bvec
-    
+    Bmat, Bvec = compute_bc_entries(vertices_local, field.mesh.tris, Bmat, Bvec, surf_triangle_indices, gamma, Ulocal_all, DPTs, field.tri_to_field)
     Bmat = field.generate_csr(Bmat)
     
     return Bmat, Bvec
@@ -128,10 +140,8 @@ def assemble_robin_bc(field: Nedelec2,
 
         Bsub = field.tri_stiff_matrix(field.mesh.nodes[:,vertex_ids], edge_lengths, gamma)
         
-        #ndices = field.tri_to_field[:, itri]
-        
         Bmat[field.trislice(itri)] = Bsub.ravel()
-        #Bmat[np.ix_(indices, indices)] = Bmat[np.ix_(indices, indices)] + Bsub
+        
     Bmat = field.generate_csr(Bmat)
     return Bmat
 
@@ -353,7 +363,7 @@ class Assembler:
                 pec_ids.extend(list(tids))
 
         logger.debug('Implementing Port BCs')
-
+        gauss_points = gaus_quad_tri(4)
         for bc in robin_bcs:
             face_tags = bc.tags
 
@@ -367,7 +377,7 @@ class Assembler:
             
             if bc._include_force:
 
-                B_p, b_p = assemble_robin_bc_excited(field, tri_ids, Ufunc, gamma, bc.get_basis(), bc.cs.origin, gaus_quad_tri(4))
+                B_p, b_p = assemble_robin_bc_excited(field, tri_ids, Ufunc, gamma, bc.get_inv_basis(), bc.cs.origin, gauss_points)
                 
                 port_vectors[bc.port_number] += b_p
 

@@ -26,7 +26,7 @@ from .geo3d import GMSHVolume
 from .mth.optimized import outward_normal
 from loguru import logger
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def area(x1: np.ndarray, x2: np.ndarray, x3: np.ndarray):
     e1 = x2 - x1
     e2 = x3 - x1

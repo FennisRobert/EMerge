@@ -24,7 +24,7 @@ import numpy as np
 from loguru import logger
 from pypardiso import spsolve as pardiso_solve
 import platform
-
+import time
 
 #from pyamg.util.utils import get_blocksize
 
@@ -114,6 +114,7 @@ class Preconditioner:
 class Solver:
     
     real_only: bool = False
+    req_sorter: bool = False
     def __init__(self):
         self.own_preconditioner: bool = False
 
@@ -237,22 +238,26 @@ class SolverGMRES(Solver):
         return x, info
 
 class SolverSuperLU(Solver):
+    req_sorter: bool = True
     def __init__(self):
         super().__init__()
         self.atol = 1e-5
 
         self.A: np.ndarray = None
         self.b: np.ndarray = None
+        self._perm_c = None
+        self.options: dict[str, str] = dict(SymmetricMode=True)
 
+        self.lu = None
+        
     def solve(self, A, b, precon):
         logger.info('Calling SuperLU Solver')
-        self.A = A
-        self.b = b
-        lu = splu(A, permc_spec='MMD_AT_PLUS_A', relax=2, diag_pivot_thresh=1.0)
+        lu = splu(A, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.01, options=self.options)
         x = lu.solve(b)
         return x, 0
 
 class SolverSP(Solver):
+    req_sorter = False
     def __init__(self):
         super().__init__()
         self.atol = 1e-5
@@ -269,28 +274,21 @@ class SolverSP(Solver):
     
 class SolverPardiso(Solver):
     real_only: bool = True
+    req_sorter: bool = False
 
     def __init__(self):
         super().__init__()
 
         self.A: np.ndarray = None
         self.b: np.ndarray = None
-
-    def solve_arm(self, A, b, precon):
-        logger.debug('ARM system architecture detected, using SPSolver instead.')
-        x = spsolve(A, b)
-        return x, 0
     
     def solve(self, A, b, precon):
-        if 'arm' in platform.processor():
-            return self.solve_arm(A,b,precon)
-        
         logger.info('Calling Pardiso Solver')
         self.A = A
         self.b = b
         x = pardiso_solve(A, b)
 
-        return x, 0
+        return np.squeeze(x), 0
 
 # class SolverAMG(Solver):
 #     real_only: bool = False
@@ -375,6 +373,7 @@ class SolveRoutine:
                  precon: Preconditioner, 
                  iterative_solver: Solver, 
                  direct_solver: Solver,
+                 direct_solver_arm: Solver,
                  iterative_eig_solver: Solver,
                  direct_eig_solver: Solver):
         
@@ -383,6 +382,7 @@ class SolveRoutine:
 
         self.iterative_solver: Solver = iterative_solver
         self.direct_solver: Solver = direct_solver
+        self.direct_solver_arm: Solver = direct_solver_arm
 
         self.iterative_eig_solver: Solver = iterative_eig_solver
         self.direct_eig_solver: Solver = direct_eig_solver
@@ -394,6 +394,12 @@ class SolveRoutine:
     def __str__(self) -> str:
         return f'SolveRoutine({self.sorter},{self.precon},{self.iterative_solver}, {self.direct_solver})'
     
+    def get_direct_solver(self) -> Solver:
+        if 'arm' in platform.processor():
+            return self.direct_solver_arm
+        else:
+            return self.direct_solver
+        
     def get_solver(self, A: lil_matrix, b: np.ndarray) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
 
@@ -447,20 +453,21 @@ class SolveRoutine:
             Asel, bsel = complex_to_real_block(Asel, bsel)
 
         # SORT
-        if self.use_sorter:
+        if solver.req_sorter and self.use_sorter:
             Asorted, bsorted = self.sorter.sort(Asel,bsel)
         else:
             Asorted, bsorted = Asel, bsel
+        
         # Preconditioner
-
         if self.use_preconditioner and not self.iterative_solver.own_preconditioner:
             self.precon.init(Asorted, bsorted)
 
-        
+        start = time.time()
         x_solved, code = solver.solve(Asorted, bsorted, self.precon)
-
+        end = time.time()
+        logger.info(f'Time taken: {(end-start):.3f} seconds')
         
-        if self.use_sorter:
+        if self.use_sorter and solver.req_sorter:
             x = self.sorter.unsort(x_solved)
         else:
             x = x_solved
@@ -469,7 +476,6 @@ class SolveRoutine:
             logger.debug('Converting back to complex matrix')
             x = real_to_complex_block(x)
         
-
         solution[solve_ids] = x
         logger.debug('Solver complete!')
         if code:
@@ -543,8 +549,7 @@ class AutomaticRoutine(SolveRoutine):
         else:
             logger.debug('Defaulting Direct Solver')
             self.use_preconditioner = False
-            self.use_sorter = False
-            return self.direct_solver
+            return self.get_direct_solver()
         
     
 ### DEFAULTS
@@ -553,5 +558,6 @@ DEFAULT_ROUTINE = AutomaticRoutine(ReverseCuthillMckee(),
                                    ILUPrecon(), 
                                    iterative_solver=SolverGMRES(), 
                                    direct_solver=SolverPardiso(),
+                                   direct_solver_arm=SolverSuperLU(),
                                    iterative_eig_solver=SolverARPACK(),
                                    direct_eig_solver=SolverLAPACK(),)

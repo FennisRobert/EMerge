@@ -76,10 +76,8 @@ with fem.Simulation3D('MySimulation', PVDisplay, loglevel='DEBUG') as model:
 
     model.physics.assign(port, pec, abc)
 
-    model.physics.set_frequency(np.linspace(f1, f2, 3))
-
-    model.physics.solveroutine.use_direct = False
-    model.physics.solveroutine.use_preconditioner = True
+    model.physics.set_frequency(np.linspace(1.5e9, 1.7e9, 5))
+    
     data = model.physics.frequency_domain()
     
     xs, ys, zs = fem.YAX.pair(fem.ZAX).span(wsub, Hair, 31, (0, -wsub/2, -th))

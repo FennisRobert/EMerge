@@ -12,10 +12,10 @@ er = 2.2
 Ltot = L3 + 2*(L0+L1+L2)
 Wtot = 424
 Hair = 31
-with fem.Simulation3D('Demo1_SIF', 'DEBUG') as m:
+with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
 
     pcbmat = fem.material.Material(2.2)
-    pcbr = fem.modeling.PCBLayouter(Ltot, Wtot, th, Hair, (0, -Wtot/2, 0), unit=mil, material=pcbmat)
+    pcbr = fem.modeling.PCBLayouter(th, Hair, unit=mil, material=pcbmat)
 
     pcbr.new(0,Wtot/2,W0, (1,0)).straight(L0, W0).straight(L1,W1).straight(L2,W2).straight(L3,W3)\
         .straight(L2,W2).straight(L1,W1).straight(L0,W0)
@@ -29,6 +29,7 @@ with fem.Simulation3D('Demo1_SIF', 'DEBUG') as m:
     
     polies = pcbr.compile_paths(0)
 
+    pcbr.determine_bounds(200, 200, 200, 200)
     
     pcb = pcbr.gen_pcb()
     

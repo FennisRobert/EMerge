@@ -123,7 +123,7 @@ class Solver:
     def __str__(self) -> str:
         return f'{self.__class__.__name__}'
     
-    def solve(self, A: lil_matrix, b: np.ndarray, precon: Preconditioner) -> tuple[np.ndarray, int]:
+    def solve(self, A: lil_matrix, b: np.ndarray, precon: Preconditioner, reuse_factorization: bool = False) -> tuple[np.ndarray, int]:
         return gmres(A, b, M=precon.M), 0
     
     def eig(self, A: lil_matrix, B: np.ndarray, nmodes: int = 6, target_k0: float = None, which: str = 'LM'):
@@ -253,10 +253,11 @@ class SolverSuperLU(Solver):
 
         self.lu = None
         
-    def solve(self, A, b, precon):
+    def solve(self, A, b, precon, reuse_factorization: bool = False):
         logger.info('Calling SuperLU Solver')
-        lu = splu(A, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.01, options=self.options)
-        x = lu.solve(b)
+        if not reuse_factorization:
+            self.lu = splu(A, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.01, options=self.options)
+        x = self.lu.solve(b)
         return x, 0
 
 class SolverSP(Solver):
@@ -286,13 +287,12 @@ class SolverPardiso(Solver):
         self.A: np.ndarray = None
         self.b: np.ndarray = None
     
-    def solve(self, A, b, precon):
+    def solve(self, A, b, precon, reuse_factorization: bool = False):
         logger.info('Calling Pardiso Solver')
         self.A = A
         self.b = b
         x = pardiso_solve(A, b)
-
-        return np.squeeze(x), 0
+        return x, 0
     
 class SolverLAPACK(Solver):
 
@@ -390,7 +390,8 @@ class SolveRoutine:
     
     def solve(self, A: np.ndarray | lil_matrix | csc_matrix, 
               b: np.ndarray, 
-              solve_ids: np.ndarray) -> np.ndarray:
+              solve_ids: np.ndarray,
+              reuse: bool = False) -> np.ndarray:
         """ Solve the system of equations defined by Ax=b for x.
 
         Solve is the main function call to solve a linear system of equations defined by Ax=b.
@@ -401,6 +402,7 @@ class SolveRoutine:
             b (np.ndarray): The source vector
             solve_ids (np.ndarray): A vector of ids for which to solve the problem. For EM problems this
             implies all non-PEC degrees of freedom.
+            reuse (bool): Whether to reuse the existing factorization if it exists.
 
         Returns:
             np.ndarray: The resultant solution.
@@ -433,7 +435,7 @@ class SolveRoutine:
             self.precon.init(Asorted, bsorted)
 
         start = time.time()
-        x_solved, code = solver.solve(Asorted, bsorted, self.precon)
+        x_solved, code = solver.solve(Asorted, bsorted, self.precon, reuse_factorization=reuse)
         end = time.time()
         logger.info(f'Time taken: {(end-start):.3f} seconds')
         logger.debug(f'O(N²) performance = {(NS**2)/((end-start)*1e6):.3f} MDoF/s')

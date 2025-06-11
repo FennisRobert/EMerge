@@ -38,9 +38,18 @@ with fem.Simulation3D('PCB Making test', loglevel='DEBUG') as m:
 
     f, S11 = data.ax('freq').S(1,1)
     f, S21 = data.ax('freq').S(2,1)
-
-    pe.plot_lines(pe.Line(f/1e9, S11, label='S11'), pe.Line(f/1e9, S21, label='S21'), transformation=pe.dB, grid=True, show_marker=True)
-
+    f, S12 = data.ax('freq').S(1,2)
+    f, S22 = data.ax('freq').S(2,2)
+    pe.plot_lines(pe.Line(f/1e9,S11, label='S11', linestyle='--'), 
+                  pe.Line(f/1e9,S21, label='S21', linestyle=':'),
+                  pe.Line(f/1e9,S12, label='S12', linestyle='-.'),
+                  pe.Line(f/1e9,S22, label='S22', linestyle=':'),
+                      show_marker=True, 
+                  transformation=pe.dB,
+                  grid=True,
+                  xlabel='Frequency (GHz)',
+                  ylabel='S-parameters (dB)',
+                  ylim=[-50,5],marker_size=1)
     from fem.plotting.pyvista import PVDisplay
 
     d = PVDisplay(m.mesh)

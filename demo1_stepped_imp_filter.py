@@ -23,6 +23,7 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     p1 = pcbr.wave_port(pcbr.paths[0].start)
     p2 = pcbr.wave_port(pcbr.paths[0].end)
 
+    m.howto_ff()
     
     polies = pcbr.compile_paths(0)
 
@@ -42,7 +43,7 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     m.mesher.set_boundary_size(p2.dimtags, 2*mm, max_size=5*mm, edge_only=False)
     
     
-    m.physics.set_frequency(np.linspace(0.2e9, 3e9, 31))
+    m.physics.set_frequency(np.linspace(0.2e9, 2e9, 5))
 
     m.generate_mesh('Demo1_Mesh.msh')
 
@@ -71,7 +72,13 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     
     f, S11 = sol.ax('freq').S(1,1)
     f, S21 = sol.ax('freq').S(2,1)
-    pe.plot_lines(pe.Line(f/1e9, S11, label='S11'), pe.Line(f/1e9,S21,label='S21'), show_marker=True, 
+    f, S12 = sol.ax('freq').S(1,2)
+    f, S22 = sol.ax('freq').S(2,2)
+    pe.plot_lines(pe.Line(f/1e9,S11, label='S11', linestyle='--'), 
+                  pe.Line(f/1e9,S21, label='S21', linestyle=':'),
+                  pe.Line(f/1e9,S12, label='S12', linestyle='-.'),
+                  pe.Line(f/1e9,S22, label='S22', linestyle=':'),
+                      show_marker=True, 
                   transformation=pe.dB,
                   grid=True,
                   xlabel='Frequency (GHz)',

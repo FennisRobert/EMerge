@@ -306,7 +306,7 @@ class Assembler:
                         ur: np.ndarray, 
                         bcs: list[BoundaryCondition],
                         frequency: float,
-                        cache_matrices: bool = False) -> tuple[lil_matrix, np.ndarray, np.ndarray]:
+                        cache_matrices: bool = False) -> tuple[lil_matrix, np.ndarray, np.ndarray, dict[int, np.ndarray]]:
         
         from .optimized_assembly import tet_mass_stiffness_matrices
 
@@ -326,11 +326,15 @@ class Assembler:
 
         logger.debug('Starting second order boundary conditions.')
         
-        b = np.zeros((E.shape[0],)).astype(np.complex128)
+       
 
         pecs: list[PEC] = [bc for bc in bcs if isinstance(bc,PEC)]
         robin_bcs: list[RectangularWaveguide] = [bc for bc in bcs if isinstance(bc,RobinBC)]
+        ports: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
+        
 
+        b = np.zeros((E.shape[0],)).astype(np.complex128)
+        port_vectors = {port.port_number: np.zeros((E.shape[0],)).astype(np.complex128) for port in ports}
         # Process all PEC Boundary Conditions
         pec_ids = []
         logger.debug('Implementing PEC BCs')
@@ -365,8 +369,7 @@ class Assembler:
 
                 B_p, b_p = assemble_robin_bc_excited(field, tri_ids, Ufunc, gamma, bc.get_basis(), bc.cs.origin, gaus_quad_tri(4))
                 
-                if bc.active:
-                    b = b + b_p
+                port_vectors[bc.port_number] += b_p
 
             else:
                 B_p = assemble_robin_bc(field, tri_ids, gamma)
@@ -378,4 +381,4 @@ class Assembler:
         solve_ids = np.array([i for i in range(E.shape[0]) if i not in pec_ids])
 
         logger.debug(f'Assembly complete! Total of {K.shape[0]} DOF')
-        return K, b, solve_ids
+        return K, b, solve_ids, port_vectors

@@ -531,24 +531,25 @@ class Electrodynamics3D:
                 fieldf = self.basis.interpolate_Ef(solution)
 
                 Pout = 0
+                logger.debug('Active ports:')
                 for bc in active_ports:
                     tris = mesh.get_triangles(bc.tags)
                     tri_vertices = mesh.tris[:,tris]
                     erp = ertri[:,:,tris]
                     urp = urtri[:,:,tris]
                     pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
-                    logger.debug(f'Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
+                    logger.debug(f'    Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
                     Pout = pmode
                 
                 
-                logger.info('Passive ports:')
+                logger.debug('Passive ports:')
                 for bc in all_ports:
                     tris = mesh.get_triangles(bc.tags)
                     tri_vertices = mesh.tris[:,tris]
                     erp = ertri[:,:,tris]
                     urp = urtri[:,:,tris]
                     pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
-                    logger.debug(f'Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
+                    logger.debug(f'    Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
                     
                     data.write_S(bc.port_number, active_ports[0].port_number, pfield/Pout)
             

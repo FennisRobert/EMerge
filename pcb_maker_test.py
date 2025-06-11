@@ -22,7 +22,7 @@ with fem.Simulation3D('PCB Making test', loglevel='DEBUG') as m:
     m.define_geometry(lines, lp1, diel, lp2, air)
 
     m.physics.set_frequency(np.linspace(4e9, 6e9, 11))
-    m.physics.resolution = 0.15
+    m.physics.resolution = 0.10
     m.generate_mesh()
 
     p1 = fem.bc.LumpedPort(lp1, 1, 0.002, 0.001, fem.ZAX, True, Z0=72)

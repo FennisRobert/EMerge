@@ -239,6 +239,7 @@ class SolverGMRES(Solver):
 
 class SolverSuperLU(Solver):
     req_sorter: bool = True
+    real_only: bool = False
     def __init__(self):
         super().__init__()
         self.atol = 1e-5
@@ -258,6 +259,7 @@ class SolverSuperLU(Solver):
 
 class SolverSP(Solver):
     req_sorter = False
+    real_only = False
     def __init__(self):
         super().__init__()
         self.atol = 1e-5
@@ -545,7 +547,7 @@ class AutomaticRoutine(SolveRoutine):
             logger.debug('Using Direct SP Solver due to small matrix size')
             self.use_preconditioner = False
             self.use_sorter = False
-            return SolverSP()
+            return self.get_direct_solver()
         else:
             logger.debug('Defaulting Direct Solver')
             self.use_preconditioner = False
@@ -554,8 +556,8 @@ class AutomaticRoutine(SolveRoutine):
     
 ### DEFAULTS
 
-DEFAULT_ROUTINE = AutomaticRoutine(ReverseCuthillMckee(), 
-                                   ILUPrecon(), 
+DEFAULT_ROUTINE = AutomaticRoutine(sorter=ReverseCuthillMckee(), 
+                                   precon=ILUPrecon(), 
                                    iterative_solver=SolverGMRES(), 
                                    direct_solver=SolverPardiso(),
                                    direct_solver_arm=SolverSuperLU(),

@@ -20,16 +20,13 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     pcbr.new(0,Wtot/2,W0, (1,0)).straight(L0, W0).straight(L1,W1).straight(L2,W2).straight(L3,W3)\
         .straight(L2,W2).straight(L1,W1).straight(L0,W0)
     
-    p1 = fem.modeling.Plate((0,-Wtot*mil/2, -th*mil),
-                            (0,Wtot*mil,0),
-                            (0,0,Hair*mil+th*mil))
-    p2 = fem.modeling.Plate((Ltot*mil,-Wtot*mil/2, -th*mil),
-                            (0,Wtot*mil,0),
-                            (0,0,Hair*mil+th*mil))
+    p1 = pcbr.wave_port(pcbr.paths[0].start)
+    p2 = pcbr.wave_port(pcbr.paths[0].end)
+
     
     polies = pcbr.compile_paths(0)
 
-    pcbr.determine_bounds(200, 200, 200, 200)
+    pcbr.determine_bounds(0, 200, 0, 200)
     
     pcb = pcbr.gen_pcb()
     

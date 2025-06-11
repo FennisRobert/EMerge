@@ -215,7 +215,7 @@ class SolverGCROTMK(Solver):
         return x, info
 
 class SolverGMRES(Solver):
-
+    real_only = False
     def __init__(self):
         super().__init__()
         self.atol = 1e-5
@@ -291,33 +291,7 @@ class SolverPardiso(Solver):
         x = pardiso_solve(A, b)
 
         return np.squeeze(x), 0
-
-# class SolverAMG(Solver):
-#     real_only: bool = False
-#     def __init__(self):
-#         super().__init__()
-#         self.atol = 1e-6
-#         self.maxiter = 200
-
-#         self.A: np.ndarray = None
-#         self.b: np.ndarray = None
-
-#         self.own_preconditioner = True
-
-#     def callback(self, x):
-#         convergence = np.linalg.norm((self.A @ x - self.b))
-#         logger.info(f'Iteration {convergence:.4f}')
-
-#     def solve(self, A, b, precon: Preconditioner):
-#         logger.info('Calling Algebraic Multigrid Solver (PyAMG) with GMRES')
-#         self.A = A
-#         self.b = b
-        
-#         (asa, work) = pyamg.aggregation.adaptive_sa_solver(A,symmetry='symmetric',smooth='energy')
-#         #M = ml.aspreconditioner(cycle='V')
-#         x = asa.solve(b)
-#         return x, 0
-
+    
 class SolverLAPACK(Solver):
 
     def __init__(self):
@@ -523,7 +497,8 @@ class SolveRoutine:
 
 class AutomaticRoutine(SolveRoutine):
 
-    
+    quick_solver: Solver = SolverSP()
+
     def get_solver(self, A: np.ndarray, b: np.ndarray) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
 
@@ -541,13 +516,14 @@ class AutomaticRoutine(SolveRoutine):
         """
         N = A.shape[0]
         if N > 5_000_000 or not self.use_direct:
-            logger.debug('Using Iterative Solver due to large matrix size')
+            logger.warning('Using Iterative Solver due to large matrix size.' \
+            'This simulation likely wont converge due to a lack of good preconditioner support.')
             return self.iterative_solver
         elif N < 10_000:
             logger.debug('Using Direct SP Solver due to small matrix size')
             self.use_preconditioner = False
             self.use_sorter = False
-            return self.get_direct_solver()
+            return self.direct_solver_arm
         else:
             logger.debug('Defaulting Direct Solver')
             self.use_preconditioner = False

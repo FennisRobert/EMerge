@@ -22,10 +22,12 @@ from scipy.linalg import eig
 from scipy import sparse
 import numpy as np
 from loguru import logger
-from pypardiso import spsolve as pardiso_solve
+
 import platform
 import time
 
+if 'arm' not in platform.processor():
+    from pypardiso import spsolve as pardiso_solve
 #from pyamg.util.utils import get_blocksize
 
 def filter_real_modes(eigvals, eigvecs, k0, ermax, urmax):
@@ -349,7 +351,6 @@ class SolveRoutine:
                  precon: Preconditioner, 
                  iterative_solver: Solver, 
                  direct_solver: Solver,
-                 direct_solver_arm: Solver,
                  iterative_eig_solver: Solver,
                  direct_eig_solver: Solver):
         
@@ -358,7 +359,6 @@ class SolveRoutine:
 
         self.iterative_solver: Solver = iterative_solver
         self.direct_solver: Solver = direct_solver
-        self.direct_solver_arm: Solver = direct_solver_arm
 
         self.iterative_eig_solver: Solver = iterative_eig_solver
         self.direct_eig_solver: Solver = direct_eig_solver
@@ -369,12 +369,6 @@ class SolveRoutine:
 
     def __str__(self) -> str:
         return f'SolveRoutine({self.sorter},{self.precon},{self.iterative_solver}, {self.direct_solver})'
-    
-    def get_direct_solver(self) -> Solver:
-        if 'arm' in platform.processor():
-            return self.direct_solver_arm
-        else:
-            return self.direct_solver
         
     def get_solver(self, A: lil_matrix, b: np.ndarray) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
@@ -497,8 +491,6 @@ class SolveRoutine:
 
 class AutomaticRoutine(SolveRoutine):
 
-    quick_solver: Solver = SolverSP()
-
     def get_solver(self, A: np.ndarray, b: np.ndarray) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
 
@@ -518,24 +510,23 @@ class AutomaticRoutine(SolveRoutine):
         if N > 5_000_000 or not self.use_direct:
             logger.warning('Using Iterative Solver due to large matrix size.' \
             'This simulation likely wont converge due to a lack of good preconditioner support.')
+            self.use_preconditioner = True
             return self.iterative_solver
-        elif N < 10_000:
-            logger.debug('Using Direct SP Solver due to small matrix size')
-            self.use_preconditioner = False
-            self.use_sorter = False
-            return self.direct_solver_arm
         else:
-            logger.debug('Defaulting Direct Solver')
             self.use_preconditioner = False
-            return self.get_direct_solver()
+            return self.direct_solver
         
     
 ### DEFAULTS
 
+if 'arm' in platform.processor():
+    direct_solver = SolverSuperLU()
+else:
+    direct_solver = SolverPardiso()
+
 DEFAULT_ROUTINE = AutomaticRoutine(sorter=ReverseCuthillMckee(), 
                                    precon=ILUPrecon(), 
                                    iterative_solver=SolverGMRES(), 
-                                   direct_solver=SolverPardiso(),
-                                   direct_solver_arm=SolverSuperLU(),
+                                   direct_solver=direct_solver,
                                    iterative_eig_solver=SolverARPACK(),
                                    direct_eig_solver=SolverLAPACK(),)

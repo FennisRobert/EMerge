@@ -206,7 +206,7 @@ def generate_int_points_tet(nodes: np.ndarray,
 
 @njit(f8(f8[:], f8[:]), cache=True, fastmath=True, nogil=True)
 def dot(a: np.ndarray, b: np.ndarray):
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]#np.sum(a*b)
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
 
 @njit(f8[:](f8[:], f8[:]), cache=True, fastmath=True, nogil=True)
 def cross(a: np.ndarray, b: np.ndarray):

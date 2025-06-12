@@ -106,7 +106,6 @@ class FEMBasis:
 
         for itri in range(self.n_tris):
             p = itri*N2
-            
             indices = self.tri_to_field[:, itri]
             for ii in range(N):
                 rows[p+N*ii:p+N*(ii+1)] = indices[ii]
@@ -126,7 +125,6 @@ class FEMBasis:
     
     def generate_csr(self, data: np.ndarray) -> csr_matrix:
         return coo_matrix((data, (self._rows, self._cols)), shape=(self.n_field, self.n_field)).tocsr()
-        
     
     ### QUANTITIES
 

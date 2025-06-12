@@ -66,6 +66,8 @@ class Nedelec2(FEMBasis):
         self.n_tet_dofs = 20
         self.n_tri_dofs = 8
         self._all_tet_ids = np.arange(self.ntets)
+
+        self.empty_tri_rowcol()
     
     def interpolate(self, field: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs:np.ndarray, tetids: np.ndarray = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ''' 

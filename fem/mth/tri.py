@@ -19,7 +19,7 @@
 from numba import njit, f8, i8, types, c16
 import numpy as np
 
-from .optimized import area_coeff, cross, dot, compute_distances, tri_coefficients
+from .optimized import area_coeff, cross, compute_distances, tri_coefficients
 
 # def njit(*args, **kwargs):
 #     def wrap(x):
@@ -30,6 +30,9 @@ from .optimized import area_coeff, cross, dot, compute_distances, tri_coefficien
 ###### LEGRANGE 2 BASIS FUNCTIONS #######
 #########################################
 
+@njit(f8(f8[:], f8[:]), cache=True, fastmath=True, nogil=True)
+def dot(a: np.ndarray, b: np.ndarray):
+    return a[0]*b[0] + a[1]*b[1]
 
 def dirac(a,b):
     if a==b:

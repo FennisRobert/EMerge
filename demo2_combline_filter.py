@@ -51,7 +51,7 @@ with fem.Simulation3D('Combline_DEMO', PVDisplay, loglevel='DEBUG') as m:
     m.view()
 
     m.physics.set_frequency(np.linspace(6e9, 8e9, 41))
-    m.physics.resolution = 0.05
+    m.physics.resolution = 0.04
     m.generate_mesh()
 
     m.view()

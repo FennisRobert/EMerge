@@ -25,7 +25,7 @@ from ...mth.tri import ned2_tri_stiff_force
 from scipy.sparse import lil_matrix, csr_matrix
 from loguru import logger
 from typing import Callable
-
+import time
 from numba import types, njit, f8, i8, c16
 
 c0 = 299792458
@@ -104,9 +104,7 @@ def assemble_robin_bc_excited(field: Nedelec2,
                 local_basis: np.ndarray,
                 origin: np.ndarray,
                 DPTs: np.ndarray):
-
     Bmat = field.empty_tri_matrix()
-    row, col = field.empty_tri_rowcol()
     Bmat[:] = 0
     
     Bvec = np.zeros((field.n_field,), dtype=np.complex128)
@@ -121,7 +119,7 @@ def assemble_robin_bc_excited(field: Nedelec2,
 
     Bmat, Bvec = compute_bc_entries(vertices_local, field.mesh.tris, Bmat, Bvec, surf_triangle_indices, gamma, Ulocal_all, DPTs, field.tri_to_field)
     Bmat = field.generate_csr(Bmat)
-    
+
     return Bmat, Bvec
 
 def assemble_robin_bc(field: Nedelec2,
@@ -141,7 +139,7 @@ def assemble_robin_bc(field: Nedelec2,
         Bsub = field.tri_stiff_matrix(field.mesh.nodes[:,vertex_ids], edge_lengths, gamma)
         
         Bmat[field.trislice(itri)] = Bsub.ravel()
-        
+
     Bmat = field.generate_csr(Bmat)
     return Bmat
 
@@ -316,7 +314,7 @@ class Assembler:
                         ur: np.ndarray, 
                         bcs: list[BoundaryCondition],
                         frequency: float,
-                        cache_matrices: bool = False) -> tuple[lil_matrix, np.ndarray, np.ndarray, dict[int, np.ndarray]]:
+                        cache_matrices: bool = False) -> tuple[csr_matrix, np.ndarray, np.ndarray, dict[int, np.ndarray]]:
         
         from .optimized_assembly import tet_mass_stiffness_matrices
 
@@ -332,11 +330,9 @@ class Assembler:
                 E, B = tet_mass_stiffness_matrices(field, er, ur)
                 self.cached_matrices = (E, B)
         
-        K: lil_matrix = (E - B*(k0**2)).tolil()
+        K: csr_matrix = (E - B*(k0**2)).tocsr()
 
         logger.debug('Starting second order boundary conditions.')
-        
-       
 
         pecs: list[PEC] = [bc for bc in bcs if isinstance(bc,PEC)]
         robin_bcs: list[RectangularWaveguide] = [bc for bc in bcs if isinstance(bc,RobinBC)]
@@ -348,9 +344,9 @@ class Assembler:
         # Process all PEC Boundary Conditions
         pec_ids = []
         logger.debug('Implementing PEC BCs')
+        
         for pec in pecs:
             face_tags = pec.tags
-
             tri_ids = mesh.get_triangles(face_tags)
             edge_ids = list(mesh.tri_to_edge[:,tri_ids].flatten())
 
@@ -369,7 +365,7 @@ class Assembler:
 
             tri_ids = mesh.get_triangles(face_tags)
             edge_ids = list(mesh.tri_to_edge[:,tri_ids].flatten())
-            
+
             gamma = bc.get_gamma(k0)
 
             def Ufunc(x,y): 
@@ -380,13 +376,11 @@ class Assembler:
                 B_p, b_p = assemble_robin_bc_excited(field, tri_ids, Ufunc, gamma, bc.get_inv_basis(), bc.cs.origin, gauss_points)
                 
                 port_vectors[bc.port_number] += b_p
-
+            
             else:
                 B_p = assemble_robin_bc(field, tri_ids, gamma)
-            
             if bc._include_stiff:
                 K = K + B_p
-        
         pec_ids = set(pec_ids)
         solve_ids = np.array([i for i in range(E.shape[0]) if i not in pec_ids])
 

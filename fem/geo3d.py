@@ -19,6 +19,7 @@ from __future__ import annotations
 import gmsh
 from .material import Material, AIR
 from .selection import FaceSelection, DomainSelection, EdgeSelection
+from loguru import logger
 
 class GMSHObject:
     """A generalization of any OpenCASCADE entity described by a dimension and a set of tags.
@@ -32,6 +33,11 @@ class GMSHObject:
         self.max_meshsize: float = 1e9
         self._unset_constraints: bool = False
         self._embeddings: list[GMSHObject] = []
+
+        self._aux_tags: dict[int, list[int]] = {0: [],
+                                                1: [],
+                                                2: [],
+                                                3: []}
 
     @property
     def color(self) -> tuple[int,int,int]:
@@ -50,20 +56,35 @@ class GMSHObject:
             return FaceSelection(self.tags)
         elif self.dim==3:
             return DomainSelection(self.tags)
-        
+    
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.dim},{self.tags})'
 
-    def update_tags(self, tags: list[int]) -> None:
+    def replace_tags(self, tagmap: dict[int, list[int]]):
+        self.old_tags = self.tags
+        newtags = []
+        for tag in self.tags:
+            newtags.extend(tagmap.get(tag, [tag,]))
+        self.tags = newtags
+        logger.debug(f'Replaced {self.old_tags} with {self.tags}')
+    
+    def update_tags(self, tag_mapping: dict[int,dict]) -> None:
         ''' Update the tag definition of a GMSHObject after fragementation.'''
-        if not self.old_tags:
-            self.old_tags = self.tags
-            self.tags = []
-        self.tags.extend(tags)
+        self.replace_tags(tag_mapping[self.dim])
 
+        for dim in range(4):
+            new_tags = []
+            for tag in self._aux_tags[dim]:
+                new_tags.extend(tag_mapping[dim].get(tag, [tag,]))
+            self._aux_tags[dim] = new_tags
+        
     @property
     def dimtags(self) -> list[tuple[int, int]]:
         return [(self.dim, tag) for tag in self.tags]
+    
+    @property
+    def embeddings(self) -> list[tuple[int,int]]:
+        return []
     
     def boundary(self) -> FaceSelection:
         if self.dim == 3:

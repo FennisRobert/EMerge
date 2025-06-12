@@ -57,12 +57,12 @@ with fem.Simulation3D('MySimulation', PVDisplay, loglevel='DEBUG') as model:
 
     model.define_geometry([dielectric, air, rpatch, port])
 
-    model.mesher.set_boundary_size(rpatch.dimtags, 5*mm, edge_only=True, max_size=20*mm)
-    model.mesher.set_boundary_size(model.select.face.near(0.0,0.0,-th).dimtags, 8*mm, max_size=50*mm)
+    model.mesher.set_boundary_size(rpatch, 5*mm)
+    model.mesher.set_boundary_size(model.select.face.near(0.0,0.0,-th), 8*mm, max_size=50*mm)
 
     model.generate_mesh()
 
-    #model.view()
+    model.view()
 
     xyzs = rpatch.select.sample(50)
     

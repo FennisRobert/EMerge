@@ -56,7 +56,7 @@ with fem.Simulation3D('Demo3', PVDisplay, loglevel='DEBUG') as m:
 
     m.define_geometry(stripline, diel, p1, p2, air)
 
-    m.mesher.set_boundary_size(stripline.dimtags, 0.7*mm, edge_only=False, max_size=10*mm, growth_distance=10)
+    m.mesher.set_boundary_size(stripline, 0.7*mm)
 
     m.generate_mesh('pcbmesh.msh')
 

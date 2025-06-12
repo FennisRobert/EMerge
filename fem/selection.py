@@ -150,17 +150,7 @@ class Selection:
                 maxy = max(maxy, y1)
                 maxz = max(maxz, z1)
             return (minx, miny, minz), (maxx, maxy, maxz)
-    
-    # @staticmethod
-    # def from_object(obj: GMSHSurface | GMSHVolume) -> Selection:
         
-    #     if isinstance(obj, GMSHSurface):
-    #         return FaceSelection(obj.tags)
-    #     elif isinstance(obj, GMSHVolume):
-    #         return DomainSelection(obj.tags)
-    #     else:
-    #         raise TypeError(f'Object {obj} is not a GMSHSurface or GMSHVolume')
-    
     def exclude(self, xyz_excl_function: Callable) -> Selection:
         """Exclude points by evaluating a function(x,y,z)-> bool
 

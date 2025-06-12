@@ -36,14 +36,16 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     m.define_geometry(pcb, air, polies, p1, p2)
 
     m.physics.resolution = 0.1
-    pcb.max_meshsize = (2*mm)
-    m.mesher.set_boundary_size(polies[0].dimtags, 1*mm, max_size = 5*mm, edge_only=True)
-    m.mesher.set_boundary_size(p1.dimtags, 2*mm, max_size=5*mm, edge_only=False)
-    m.mesher.set_boundary_size(p2.dimtags, 2*mm, max_size=5*mm, edge_only=False)
-    
-    
+
+    pcb.max_meshsize = 2*mm
+    air.max_meshsize = 5*mm
+
     m.physics.set_frequency(np.linspace(0.2e9, 2e9, 5))
 
+    m.mesher.set_boundary_size(polies[0], 1*mm)
+    m.mesher.set_boundary_size(p1, 2*mm)
+    m.mesher.set_boundary_size(p2, 2*mm)
+    
     m.generate_mesh('Demo1_Mesh.msh')
 
     m.view()

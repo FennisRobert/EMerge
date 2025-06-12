@@ -151,6 +151,11 @@ class Electrodynamics3D:
         else:
             self.frequencies = [frequency]
 
+        self.mesher.max_size = self.resolution * 299792458 / max(self.frequencies)
+        self.mesher.min_size = 0.1 * self.mesher.max_size
+
+        logger.debug(f'Setting mesh size limits to: {self.mesher.min_size*1000:.1f}mm - {self.mesher.max_size*1000:.1f}')
+    
     def get_discretizer(self) -> Callable:
         """Returns a discretizer function that defines the maximum mesh size.
 
@@ -323,7 +328,7 @@ class Electrodynamics3D:
 
             portfE = nlf.interpolate_Ef(Emode)
             portfH = nlf.interpolate_Hf(Emode, k0, ur, beta)
-            
+
             P = compute_avg_power_flux(nlf, Emode, k0, ur, beta)
 
             mode = port.add_mode(Emode, portfE, portfH, beta, k0, residuals, TEM=TEM, freq=freq)

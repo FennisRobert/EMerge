@@ -19,11 +19,15 @@
 import gmsh
 from .material import Material, AIR
 from .geo3d import GMSHVolume, GMSHObject, GMSHSurface
+from .selection import Selection, FaceSelection
 import numpy as np
 from typing import Iterable, Callable
 from collections import defaultdict
 from loguru import logger
 from enum import Enum
+
+class MeshError(Exception):
+    pass
 
 class Algorithm2D(Enum):
     MESHADAPT = 1
@@ -64,6 +68,8 @@ class Mesher:
         self.objects: list[GMSHObject] = []
         self.size_definitions: list[tuple[int, float]] = []
         self.mesh_fields: list[int] = []
+        self.min_size: float = None
+        self.max_size: float = None
 
     @property
     def edge_tags(self) -> list[int]:
@@ -93,9 +99,18 @@ class Mesher:
         alltags = self.face_tags
         boundary = self.domain_boundary_face_tags
         return [tag for tag in alltags if tag not in boundary]
-        
+    
+    def _check_ready(self) -> None:
+        if self.max_size is None or self.min_size is None:
+            raise MeshError('Either maximum or minimum mesh size is undefined. Make sure \
+                            to set the simulation frequency range before calling mesh instructions.')
+    
     def submit_objects(self, objects: list[GMSHObject]) -> None:
+        """Takes al ist of GMSHObjects and computes the fragment. 
 
+        Args:
+            objects (list[GMSHObject]): The set of GMSHObjects
+        """
         if not isinstance(objects, list):
             objects = [objects,]
 
@@ -112,12 +127,24 @@ class Mesher:
             for dt in dom.dimtags:
                 dom_mapping[dt] = dom
         
+
         embedding_dimtags = unpack_lists([emb.dimtags for emb in embeddings])
+        for dom in objects:
+            embedding_dimtags.extend(dom.embeddings)
+
+        tag_mapping: dict[int, dict] = {0: dict(),
+                                        1: dict(),
+                                        2: dict(),
+                                        3: dict()}
         if len(objects) > 1:
-            
             dimtags, output_mapping = gmsh.model.occ.fragment(final_dimtags, embedding_dimtags)
-            for domain, mapping in zip(final_dimtags, output_mapping):
-                dom_mapping[domain].update_tags([dt[1] for dt in mapping])
+            for domain, mapping in zip(final_dimtags + embedding_dimtags, output_mapping):
+                print(domain, mapping)
+                tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
+
+            for dom in objects:
+                dom.update_tags(tag_mapping)
+
         else:
             dimtags = final_dimtags
         
@@ -125,12 +152,25 @@ class Mesher:
         
         gmsh.model.occ.synchronize()
 
+    def set_size_in_domain(self, tags: list[int], max_size: float) -> None:
+        """Define the size of the mesh inside a domain
+
+        Args:
+            tags (list[int]): The tags of the geometry
+            max_size (float): The maximum size (in meters)
+        """
+        ctag = gmsh.model.mesh.field.add("Constant")
+        gmsh.model.mesh.field.set_numbers(ctag, "VolumesList", tags)
+        gmsh.model.mesh.field.set_number(ctag, "VIn", max_size)
+        self.mesh_fields.append(ctag)
+
     def set_mesh_size(self, discretizer: Callable, resolution: float):
         
-        mintag = gmsh.model.mesh.field.add("Min")
+        dimtags = gmsh.model.occ.get_entities(2)
+        for dim, tag in dimtags:
+            gmsh.model.mesh.setSizeFromBoundary(2, tag, 0)
 
-        gmsh.model.mesh.field.setNumbers(mintag, "FieldsList", self.mesh_fields)
-        gmsh.model.mesh.field.setAsBackgroundMesh(mintag)
+        mintag = gmsh.model.mesh.field.add("Min")
 
         for obj in self.objects:
             if obj._unset_constraints:
@@ -139,9 +179,11 @@ class Mesher:
             size = discretizer(obj.material)*resolution*obj.mesh_multiplier
             size = min(size, obj.max_meshsize)
             logger.info(f'Setting mesh size for domain {obj.dim} {obj.tags} to {size}')
-            
-            gmsh.model.mesh.setSize(gmsh.model.getBoundary(obj.dimtags, recursive=True), size)
-            
+            self.set_size_in_domain(obj.tags, size)
+
+        gmsh.model.mesh.field.setNumbers(mintag, "FieldsList", self.mesh_fields)
+        gmsh.model.mesh.field.setAsBackgroundMesh(mintag)
+
         for tag, size in self.size_definitions:
             print('overwriting:', tag, size)
             gmsh.model.mesh.setSize([tag,], size)
@@ -151,15 +193,25 @@ class Mesher:
         for dimtag in dimtags:
             gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
             
-    def set_boundary_size(self, dimtags: list[tuple[int,int]], 
-                          size:float, 
-                          max_size: float, 
-                          edge_only: bool = False,
-                          growth_distance: float = 3):
+    def set_boundary_size(self, object: GMSHSurface | FaceSelection, 
+                          size:float,
+                          growth_distance: float = 5,
+                          max_size: float = None):
+        """D
+
+        Args:
+            dimtags (list[tuple[int,int]]): _description_
+            size (float): _description_
+            growth_distance (float, optional): _description_. Defaults to 5.
+            max_size (float, optional): _description_. Defaults to None.
+        """
+        dimtags = object.dimtags
+
+        if max_size is None:
+            self._check_ready()
+            max_size = self.max_size
         
         nodes = gmsh.model.getBoundary(dimtags, combined=False, oriented=False, recursive=False)
-
-        print(f'Setting size for {dimtags} yielding nodes:', nodes)
 
         disttag = gmsh.model.mesh.field.add("Distance")
 
@@ -174,12 +226,6 @@ class Mesher:
         gmsh.model.mesh.field.setNumber(thtag, "DistMax", growth_distance*size)
     
         self.mesh_fields.append(thtag)
-
-        if not edge_only:
-            return
-        
-        for dimtag in dimtags:
-            gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
 
     def refine_conductor_edge(self, dimtags: list[tuple[int,int]], size):
         nodes = gmsh.model.getBoundary(dimtags, combined=False, recursive=False)

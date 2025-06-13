@@ -108,6 +108,7 @@ class EMDataSet(DataSet):
         self.k0: float = None
         self.Sp: Sparam = None
         self._fields: dict[np.ndarray] = dict()
+        self._mode_field: np.ndarray = None
         self.excitation: dict[int, complex] = dict()
         self._basis: FEMBasis = None
         self.Nports: int = None
@@ -126,6 +127,8 @@ class EMDataSet(DataSet):
 
     @property
     def _field(self) -> np.ndarray:
+        if self._mode_field is not None:
+            return self._mode_field
         return sum([self.excitation[mode.port_number]*self._fields[mode.port_number] for mode in self.port_modes]) 
     
     def set_field_vector(self) -> None:

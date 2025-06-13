@@ -330,7 +330,7 @@ class Electrodynamics3D:
             Emode = Emode * np.exp(-1j*np.angle(np.max(Emode)))
 
             beta = min(np.emath.sqrt(-eigen_values[i]).real,kmax.real)
-            data._field = Emode
+            data._mode_field = Emode
             residuals = -1
 
             portfE = nlf.interpolate_Ef(Emode)
@@ -358,7 +358,6 @@ class Electrodynamics3D:
                 voltage = np.sum(Ex*dls[0,:] + Ey*dls[1,:] + Ez*dls[2,:])
                 mode.Z0 = voltage**2/(2*P)
                 logger.debug(f'Port Z0 = {mode.Z0}')
-
                 
         logger.info(f'Total of {port.nmodes} found')
 

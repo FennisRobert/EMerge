@@ -2,11 +2,11 @@
 name = "EMerge"
 version = "0.1.0"
 description = "An Open-Source FEM EM Simulator"
-authors = ["Robert Fennis fennisrobert@gmail.com"]
+authors = [{name = "Robert Fennis", email = "fennisrobert@gmail.com"}]
 license = "GPL-2.0-only"
-packages = ["fem"]
 license-files = ["LICENSE"]
 requires-python = ">=3.8"
+readme = "README.md"
 dependencies = [
 "numpy",
 "scipy",
@@ -23,3 +23,6 @@ dependencies = [
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://emege-tools.org"

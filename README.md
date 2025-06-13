@@ -8,7 +8,7 @@ If all is well it should not be possible for others to push anything to this rep
 
 ## Compatibility
 
-As far as I know, the library should work on all systems. PyPARDISO is not supported on ARM but the current SuperLU solver settings should work on ARM as well. Its not as fast on PARDISO yet but I'm working on distributing frequency sweeps on multiple threats. It will eat your RAM memory but it might prove very fast on ARM as well. This is work in progress!
+As far as I know, the library should work on all systems. PyPARDISO is not supported on ARM but the current SuperLU solver settings should work on ARM as well. I have now implemented a proto version of parallel processing for the `.frequency_domain()` method that can run a simulation on multiple parallel threads. This is work in progress!
 
 ## Required libraries
 

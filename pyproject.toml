@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "An Open-Source FEM EM Simulator"
 authors = ["Robert Fennis fennisrobert@gmail.com"]
 license = "GPL-2.0-only"
+packages = ["fem"]
 license-files = ["LICENSE"]
 requires-python = ">=3.8"
 dependencies = [
@@ -13,8 +14,8 @@ dependencies = [
 "gmsh",
 "loguru",
 "numba",
-"matplotlib"
-"pyvista"
+"matplotlib",
+"pyvista",
 "numba-progress",
 "threadpoolctl"
 ]

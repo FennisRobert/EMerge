@@ -23,6 +23,7 @@ To run this FEM library you need the following libraries
  - matplotlib (for the matplotlib base display)
  - pyvista (for the PyVista base display)
  - numba-progress
+ - threadpoolctl (for SuperLU settings)
 
 ## NOTICE
 

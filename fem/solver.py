@@ -23,7 +23,7 @@ from scipy.linalg import eig
 from scipy import sparse
 import numpy as np
 from loguru import logger
-
+from threadpoolctl import threadpool_limits, threadpool_info
 import platform
 import time
 
@@ -254,11 +254,24 @@ class SolverSuperLU(Solver):
 
         self.lu = None
         
+        ### BLAS SETTINGS
+        lib_info = threadpool_info()
+        self._api = lib_info[0]['user_api']
+        self._limit = None
+        if any("openblas" in l["internal_api"] for l in lib_info):
+            self._limit = 1
+        
     def solve(self, A, b, precon, reuse_factorization: bool = False):
         logger.info('Calling SuperLU Solver')
-        if not reuse_factorization:
-            self.lu = splu(A, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.01, options=self.options)
-        x = self.lu.solve(b)
+        if self._limit is not None:
+            with threadpool_limits(limits=self._limit, user_api=self._api):
+                if not reuse_factorization:
+                    self.lu = splu(A, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.01, options=self.options)
+                x = self.lu.solve(b)
+        else:
+            if not reuse_factorization:
+                self.lu = splu(A, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.01, options=self.options)
+            x = self.lu.solve(b)
         return x, 0
 
 class SolverSP(Solver):

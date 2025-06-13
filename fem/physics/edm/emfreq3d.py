@@ -23,11 +23,11 @@ from .emdata import EMSimData
 from ...elements.femdata import FEMBasis
 from .assembler import Assembler
 from ...solver import DEFAULT_ROUTINE, SolveRoutine
-from ...selection import Selection, FaceSelection
+from ...selection import FaceSelection
 from ...mth.sparam import sparam_field_power, sparam_mode_power
 from ...coord import Line
 from .port_functions import compute_avg_power_flux
-from typing import Dict, List, Tuple, Callable
+from typing import Callable
 import numpy as np
 
 from scipy.sparse import identity
@@ -36,6 +36,13 @@ from loguru import logger
 
 class SimulationError(Exception):
     pass
+
+from .simjob import SimJob
+import multiprocessing
+
+def run_job(job: SimJob):
+    job.solve()
+    return job  
 
 def _dimstring(data: list[float]):
     return '(' + ', '.join([f'{x*1000:.1f}mm' for x in data]) + ')'
@@ -459,7 +466,145 @@ class Electrodynamics3D:
         group2 = groups[1]
 
         return group1, group2
- 
+    
+    def frequency_domain_par(self, njobs: int = 2) -> EMSimData:
+        ''' Executes the frequency domain study.'''
+        mesh = self.mesh
+        if self._bc_initialized is False:
+            raise SimulationError('Cannot run a modal analysis because no boundary conditions have been assigned.')
+        self._initialize_field()
+        self._initialize_bc_data()
+        
+        er = self.mesh.retreive(lambda mat,x,y,z: mat.fer3d_mat(x,y,z), self.mesher.volumes)
+        ur = self.mesh.retreive(lambda mat,x,y,z: mat.fur3d_mat(x,y,z), self.mesher.volumes)
+        
+        ertri = np.zeros((3,3,self.mesh.n_tris), dtype=np.complex128)
+        urtri = np.zeros((3,3,self.mesh.n_tris), dtype=np.complex128)
+
+        for itri in range(self.mesh.n_tris):
+            itet = self.mesh.tri_to_tet[0,itri]
+            ertri[:,:,itri] = er[:,:,itet]
+            urtri[:,:,itri] = ur[:,:,itet]
+
+        ### Does this move
+        logger.debug('Initializing frequency domain sweep.')
+        
+        self.data = EMSimData(self.basis)
+        
+        #### Port settings
+
+        all_ports = [bc for bc in self.boundary_conditions if isinstance(bc,PortBC)]
+        port_numbers = [port.port_number for port in all_ports]
+
+        ##### FOR PORT SWEEP SET ALL ACTIVE TO FALSE. THIS SHOULD BE FIXED LATER
+        ### COMPUTE WHICH TETS ARE CONNECTED TO PORT INDICES
+
+        all_port_vertices = set()
+        for port in all_ports:
+            port.active=False
+            tris = mesh.get_triangles(port.tags)
+            tri_vertices = mesh.tris[:,tris]
+            port._tri_ids = tris
+            port._tri_vertices = tri_vertices
+            all_port_vertices.update(set(list(tri_vertices.flatten())))
+        
+        all_port_tets = []
+        for itet in range(self.mesh.n_tets):
+            if not set(self.mesh.tets[:,itet]).isdisjoint(all_port_vertices):
+                all_port_tets.append(itet)
+        
+        all_port_tets = np.array(all_port_tets)
+
+        logger.info(f'Pre-assembling matrices of {len(self.frequencies)} frequency points.')
+
+        jobs = []
+        # ITERATE OVER FREQUENCIES
+        for freq in self.frequencies:
+            logger.debug(f'Frequency = {freq/1e9:.3f} GHz') 
+            job = SimJob(self.basis, self.boundary_conditions, freq, True)
+            
+            # Assembling matrix problem
+            K, b, solve_ids, port_vectors = self.assembler.assemble_freq_matrix(self.basis, er, ur, self.boundary_conditions, freq, cache_matrices=True)
+
+            job = SimJob(K, b, freq, True)
+            job.port_vectors = port_vectors
+            job.solve_ids = solve_ids
+            job.erttri = ertri.copy()
+            job.urtri = urtri.copy()
+            jobs.append(job)
+        
+        
+        logger.info(f'Starting parallel solve of {len(jobs)} jobs with {njobs} processes in parallel')
+
+        with multiprocessing.Pool(processes=njobs) as pool:
+            results: list[SimJob] = pool.map(run_job, jobs)
+
+        logger.info('Solving complete')
+
+        logger.debug('Computing S-parameters')
+
+        for freq, job in zip(self.frequencies, results):
+
+            k0 = 2*np.pi*freq/299792458
+            data = self.data.new(freq=freq,
+                                 k0=k0)
+            
+            data.init_sp(port_numbers)
+
+            data.er = np.squeeze(er[0,0,:])
+            data.ur = np.squeeze(ur[0,0,:])
+
+            logger.debug(f'Frequency = {freq/1e9:.3f} GHz') 
+
+            # Recording port information
+            for active_port in all_ports:
+                data.add_port_properties(active_port.port_number,
+                                         mode_number=active_port.mode_number,
+                                         k0 = k0,
+                                         beta = active_port.get_beta(k0),
+                                         Z0 = active_port.Z0,
+                                         Pout= active_port.power)
+            
+                # Set port as active and add the port mode to the forcing vector
+                active_port.active = True
+                
+                solution = job._fields[active_port.port_number]
+
+                data._fields = job._fields
+
+                # Compute the S-parameters
+                # Define the field interpolation function
+                fieldf = self.basis.interpolate_Ef(solution, tetids=all_port_tets)
+                Pout = 0
+
+                # Active port power
+                logger.debug('Active ports:')
+                tris = active_port._tri_ids
+                tri_vertices = active_port._tri_vertices
+                erp = ertri[:,:,tris]
+                urp = urtri[:,:,tris]
+                pfield, pmode = self._compute_s_data(active_port, fieldf, tri_vertices, k0, erp, urp)
+                logger.debug(f'    Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
+                Pout = pmode
+                
+                #Passive ports
+                logger.debug('Passive ports:')
+                for bc in all_ports:
+                    tris = bc._tri_ids
+                    tri_vertices = bc._tri_vertices
+                    erp = ertri[:,:,tris]
+                    urp = urtri[:,:,tris]
+                    pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, erp, urp)
+                    logger.debug(f'    Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
+                    data.write_S(bc.port_number, active_port.port_number, pfield/Pout)
+                active_port.active=False
+            
+            data.set_field_vector()
+
+            logger.info('Simulation Complete!')
+        
+        return self.data
+    
     def frequency_domain(self) -> EMSimData:
         ''' Executes the frequency domain study.'''
         mesh = self.mesh
@@ -526,7 +671,7 @@ class Electrodynamics3D:
             logger.info(f'Frequency = {freq/1e9:.3f} GHz') 
 
             # Recording port information
-            for port in all_ports:
+            for i, port in enumerate(all_ports):
                 data.add_port_properties(port.port_number,
                                          mode_number=port.mode_number,
                                          k0 = k0,
@@ -552,7 +697,7 @@ class Electrodynamics3D:
                 # From now reuse the factorization
                 reuse_factorization = True
 
-                data._field = solution
+                data._fields[active_port.port_number] = solution # TODO: THIS IS VERY FRAIL
 
                 # Compute the S-parameters
                 # Define the field interpolation function
@@ -581,7 +726,10 @@ class Electrodynamics3D:
                     data.write_S(bc.port_number, active_port.port_number, pfield/Pout)
 
                 active_port.active=False
-            logger.info('Simulation Complete!')
+            
+            data.set_field_vector()
+
+        logger.info('Simulation Complete!')
         return self.data
     
     def _compute_s_data(self, bc: PortBC, 

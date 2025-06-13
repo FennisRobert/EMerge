@@ -15,6 +15,7 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
+from __future__ import annotations
 from scipy.sparse import lil_matrix, csc_matrix
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from scipy.sparse.linalg import bicgstab, gmres, spsolve, gcrotmk, eigsh, splu, spilu
@@ -369,7 +370,7 @@ class SolveRoutine:
 
     def __str__(self) -> str:
         return f'SolveRoutine({self.sorter},{self.precon},{self.iterative_solver}, {self.direct_solver})'
-        
+    
     def get_solver(self, A: lil_matrix, b: np.ndarray) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
 
@@ -517,7 +518,39 @@ class AutomaticRoutine(SolveRoutine):
         else:
             self.use_preconditioner = False
             return self.direct_solver
+
+class ParallelRoutine(SolveRoutine):
+
+    def __init__(self):
+        self.sorter: Sorter = ReverseCuthillMckee()
+        self.precon: Preconditioner = None
+
+        self.iterative_solver: Solver = None
+        self.direct_solver: Solver = SolverSuperLU()
+
+        self.iterative_eig_solver: Solver = None
+        self.direct_eig_solver: Solver = None
+
+        self.use_sorter: bool = True
+        self.use_preconditioner: bool = False
+        self.use_direct: bool = True
+
+    def get_solver(self, A: np.ndarray, b: np.ndarray) -> Solver:
+        """Returns the relevant Solver object given a certain matrix and source vector
+
+        The current implementation only looks at matrix size to select the best solver. Matrices 
+        with a large size will use iterative solvers while smaller sizes will use either Pardiso
+        for medium sized problems or SPSolve for small ones.
         
+        Args:
+            A (np.ndarray): The Matrix to solve for
+            b (np.ndarray): the vector to solve for
+
+        Returns:
+            Solver: A solver object appropriate for solving the problem.
+
+        """
+        return self.direct_solver
     
 ### DEFAULTS
 

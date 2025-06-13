@@ -476,7 +476,6 @@ class PCBLayouter:
         self.width = (maxx - minx + mr + ml)
         self.length = (maxy - miny + mt + mb)
         self.origin = np.array([-ml+minx, -mb+miny, 0])
-        print(self.width, self.length, self.origin)
         
     def gen_pcb(self) -> GMSHVolume:
         """Generate the PCB Block object

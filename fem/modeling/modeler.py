@@ -118,7 +118,6 @@ class PartialFunction:
     def __call__(self, objects: list[GMSHObject], index: int) -> list[GMSHObject]:
         
         kwargs = self.kwargset[index]
-        print(kwargs, objects)
         if kwargs is None:
             return objects
         

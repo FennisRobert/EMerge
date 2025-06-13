@@ -107,7 +107,8 @@ class EMDataSet(DataSet):
         self.freq: float = None
         self.k0: float = None
         self.Sp: Sparam = None
-        self._field: np.ndarray = None
+        self._fields: dict[np.ndarray] = dict()
+        self.excitation: dict[int, complex] = dict()
         self._basis: FEMBasis = None
         self.Nports: int = None
         self.Ex: np.ndarray = None
@@ -119,8 +120,17 @@ class EMDataSet(DataSet):
         self.port_modes: list[PortProperties] = []
         self.mode: int = None
         self.beta: int = None
+        
 
         super().__init__(**vars)
+
+    @property
+    def _field(self) -> np.ndarray:
+        return sum([self.excitation[mode.port_number]*self._fields[mode.port_number] for mode in self.port_modes]) 
+    
+    def set_field_vector(self) -> None:
+        self.excitation = {key: 0.0 for key in self._fields.keys()}
+        self.excitation[self.port_modes[0].port_number] = 1.0 + 0j
 
     @property
     def EH(self) -> tuple[np.ndarray, np.ndarray]:

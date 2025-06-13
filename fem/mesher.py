@@ -139,7 +139,6 @@ class Mesher:
         if len(objects) > 1:
             dimtags, output_mapping = gmsh.model.occ.fragment(final_dimtags, embedding_dimtags)
             for domain, mapping in zip(final_dimtags + embedding_dimtags, output_mapping):
-                print(domain, mapping)
                 tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
 
             for dom in objects:
@@ -185,7 +184,6 @@ class Mesher:
         gmsh.model.mesh.field.setAsBackgroundMesh(mintag)
 
         for tag, size in self.size_definitions:
-            print('overwriting:', tag, size)
             gmsh.model.mesh.setSize([tag,], size)
 
     def unset_constraints(self, dimtags: list[tuple[int,int]]):

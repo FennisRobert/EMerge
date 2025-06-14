@@ -15,7 +15,7 @@ Hair = 31
 
 with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
 
-    pcbmat = fem.material.Material(2.2)
+    pcbmat = fem.material.Material(2.2, tand=0.1)
     pcbr = fem.modeling.PCBLayouter(th, Hair, unit=mil, material=pcbmat)
 
     pcbr.new(0,Wtot/2,W0, (1,0)).straight(L0, W0).straight(L1,W1).straight(L2,W2).straight(L3,W3)\
@@ -40,7 +40,7 @@ with fem.Simulation3D('Demo1_SIF', loglevel='DEBUG') as m:
     pcb.max_meshsize = 2*mm
     air.max_meshsize = 5*mm
 
-    m.physics.set_frequency(np.linspace(0.2e9, 2e9, 5))
+    m.physics.set_frequency(np.linspace(0.2e9, 2e9, 16))
 
     m.mesher.set_boundary_size(polies[0], 1*mm)
     m.mesher.set_boundary_size(p1, 2*mm)

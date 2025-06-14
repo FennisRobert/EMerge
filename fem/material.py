@@ -43,9 +43,9 @@ class Material:
     @property
     def ermat(self) -> np.ndarray:
         if isinstance(self.er, (float, complex, int, np.float64, np.complex128)):
-            return self.er*np.eye(3)
+            return self.er*(1-1j*self.tand)*np.eye(3)
         else:
-            return self.er
+            return self.er*(1-1j*self.tand)
     
     @property
     def urmat(self) -> np.ndarray:
@@ -66,7 +66,7 @@ class Material:
     @property
     def fer2d(self) -> callable:
         if self._fer is None:
-            return lambda x,y: self.er*np.ones_like(x)
+            return lambda x,y: self.er*(1-1j*self.tand)*np.ones_like(x)
         else:
             return self._fer
         
@@ -80,7 +80,7 @@ class Material:
     @property
     def fer3d(self) -> callable:
         if self._fer is None:
-            return lambda x,y,z: self.er*np.ones_like(x)
+            return lambda x,y,z: self.er*(1-1j*self.tand)*np.ones_like(x)
         else:
             return self._fer
     

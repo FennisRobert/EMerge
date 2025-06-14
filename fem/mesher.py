@@ -129,21 +129,18 @@ class Mesher:
         
 
         embedding_dimtags = unpack_lists([emb.dimtags for emb in embeddings])
-        for dom in objects:
-            embedding_dimtags.extend(dom.embeddings)
 
         tag_mapping: dict[int, dict] = {0: dict(),
                                         1: dict(),
                                         2: dict(),
                                         3: dict()}
-        if len(objects) > 1:
+        if len(objects) > 0:
             dimtags, output_mapping = gmsh.model.occ.fragment(final_dimtags, embedding_dimtags)
+
             for domain, mapping in zip(final_dimtags + embedding_dimtags, output_mapping):
                 tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
-
             for dom in objects:
                 dom.update_tags(tag_mapping)
-
         else:
             dimtags = final_dimtags
         

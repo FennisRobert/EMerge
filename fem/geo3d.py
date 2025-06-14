@@ -20,6 +20,15 @@ import gmsh
 from .material import Material, AIR
 from .selection import FaceSelection, DomainSelection, EdgeSelection
 from loguru import logger
+from typing import Literal
+
+def _map_tags(tags: list[int], mapping: dict[int, list[int]]):
+    new_tags = []
+    for tag in tags:
+        new_tags.extend(mapping.get(tag, [tag,]))
+    return new_tags
+
+FaceNames = Literal['back','front','left','right','top','bottom']
 
 class GMSHObject:
     """A generalization of any OpenCASCADE entity described by a dimension and a set of tags.
@@ -33,11 +42,6 @@ class GMSHObject:
         self.max_meshsize: float = 1e9
         self._unset_constraints: bool = False
         self._embeddings: list[GMSHObject] = []
-
-        self._aux_tags: dict[int, list[int]] = {0: [],
-                                                1: [],
-                                                2: [],
-                                                3: []}
 
     @property
     def color(self) -> tuple[int,int,int]:
@@ -68,16 +72,25 @@ class GMSHObject:
         self.tags = newtags
         logger.debug(f'Replaced {self.old_tags} with {self.tags}')
     
-    def update_tags(self, tag_mapping: dict[int,dict]) -> None:
+    def update_tags(self, tag_mapping: dict[int,dict]) -> GMSHObject:
         ''' Update the tag definition of a GMSHObject after fragementation.'''
         self.replace_tags(tag_mapping[self.dim])
+        return self
+    
+    def _take_tags(self, other: GMSHObject) -> GMSHObject:
+        self._aux_tags = other._aux_tags
+        return self
+    
+    def _face_tags(self, name: FaceNames) -> list[int]:
+        if name not in self._all_labels:
+            raise ValueError(f'The face {name} does not exist in {self}')
+        return self._all_labels[name]
+    
+    def face(self, name: FaceNames) -> FaceSelection:
+        if name not in self._all_labels:
+            raise ValueError(f'The face {name} does not exist in {self}')
+        return FaceSelection(self._all_labels[name])
 
-        for dim in range(4):
-            new_tags = []
-            for tag in self._aux_tags[dim]:
-                new_tags.extend(tag_mapping[dim].get(tag, [tag,]))
-            self._aux_tags[dim] = new_tags
-        
     @property
     def dimtags(self) -> list[tuple[int, int]]:
         return [(self.dim, tag) for tag in self.tags]

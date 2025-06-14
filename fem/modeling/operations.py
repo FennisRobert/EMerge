@@ -23,6 +23,15 @@ import numpy as np
 
 T = TypeVar('T', GMSHSurface, GMSHVolume)
 
+def _gen_mapping(obj_in, obj_out) -> dict:
+    tag_mapping: dict[int, dict] = {0: dict(),
+                                        1: dict(),
+                                        2: dict(),
+                                        3: dict()}
+    for domain, mapping in zip(obj_in, obj_out):
+        tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
+    return tag_mapping
+
 def add(main: T, tool: T, 
              remove_object: bool = True,
              remove_tool: bool = True) -> T:
@@ -43,7 +52,6 @@ def add(main: T, tool: T,
         A new object that is the union of the main and tool objects.
     '''
     out_dim_tags, out_dim_tags_map = gmsh.model.occ.fuse(main.dimtags, tool.dimtags, removeObject=remove_object, removeTool=remove_tool)
-    
     if out_dim_tags[0][0] == 3:
         return GMSHVolume([dt[1] for dt in out_dim_tags])
     elif out_dim_tags[0][0] == 2:

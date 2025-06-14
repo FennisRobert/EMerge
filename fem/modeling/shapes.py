@@ -381,41 +381,7 @@ class SidedBox(GMSHVolume):
 
         volume_tag: int = gmsh.model.occ.addVolume([sv,])
 
-        self._aux_tags[2] = [bottom_tag, top_tag, front_tag, back_tag, left_tag, right_tag]
-        self._aux_tags[3] = [volume_tag]
-
         self.tags: list[int] = [volume_tag,]
-    
-    @property
-    def embeddings(self) -> list[tuple[int,int]]:
-        return [(2,t) for t in self._outside_tags]
-    
-    @property
-    def _outside_tags(self) -> list[int]:
-        return self._aux_tags[2]
-    @property
-    def left(self) -> FaceSelection:
-        return FaceSelection([self._aux_tags[2][3],])
-    
-    @property
-    def right(self) -> FaceSelection:
-        return FaceSelection([self._aux_tags[2][2],])
-    
-    @property
-    def top(self) -> FaceSelection:
-        return FaceSelection([self._aux_tags[2][1],])
-    
-    @property
-    def back(self) -> FaceSelection:
-        return FaceSelection([self._aux_tags[2][5],])
-    
-    @property
-    def front(self) -> FaceSelection:
-        return FaceSelection([self._aux_tags[2][4],])
-    
-    @property
-    def bottom(self) -> FaceSelection:
-        return FaceSelection([self._aux_tags[2][0],])
     
     def outside(self, *exclude: Literal['bottom','top','right','left','front','back']) -> FaceSelection:
         """Select all outside faces except for the once specified by outside
@@ -423,5 +389,5 @@ class SidedBox(GMSHVolume):
         Returns:
             FaceSelection: The resultant face selection
         """
-        tags = [t for e,t in zip(['bottom','top','right','left','front','back'], self._outside_tags) if e not in exclude]
+        tags = sum([self._face_tags(name) for name in  ['bottom','top','right','left','front','back'] if name not in exclude])
         return FaceSelection(tags)

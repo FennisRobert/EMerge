@@ -24,6 +24,7 @@ To run this FEM library you need the following libraries
  - pyvista (for the PyVista base display)
  - numba-progress
  - threadpoolctl (for SuperLU settings)
+ - scikit-rf (for touchstone export only)
 
 ## NOTICE
 

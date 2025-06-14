@@ -93,3 +93,6 @@ tests_2D/
 
 # Meshes
 *.msh
+
+# tests
+text_*

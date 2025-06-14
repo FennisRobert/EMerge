@@ -21,7 +21,7 @@ from ...elements.femdata import FEMBasis
 from dataclasses import dataclass
 import numpy as np
 from typing import Sequence, Type, Literal
-
+from loguru import logger
 EMField = Literal[
     "er", "ur", "freq", "k0",
     "_Spdata", "_Spmapping", "_field", "_basis",
@@ -302,3 +302,22 @@ class EMSimData(SimData[EMDataSet]):
         """
         # find the real DataSet
         return _DataSetProxy(field, self.datasets)
+
+    def export_touchstone(self, 
+                          filename: str,
+                          format: Literal['RI','MA','DB']):
+        from .touchstone import generate_touchstone
+        logger.info(f'Exporting S-data to {filename}')
+        # We will assume for now all ports are also numbered 1 to Nports+1
+        Nports = len(self.datasets[0].excitation)
+        freqs, _ = self.ax('freq').k0
+
+        Smat = np.zeros((len(freqs),Nports,Nports), dtype=np.complex128)
+        
+        for i in range(1,Nports+1):
+            for j in range(1,Nports+1):
+                _, S = self.ax('freq').S(i,j)
+                Smat[:,i-1,j-1] = S
+        
+        generate_touchstone(filename, freqs, Smat, data_format=format)
+        logger.info('Export complete!')

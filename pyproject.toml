@@ -17,7 +17,8 @@ dependencies = [
 "matplotlib",
 "pyvista",
 "numba-progress",
-"threadpoolctl"
+"threadpoolctl",
+"scikit-rf"
 ]
 
 [build-system]

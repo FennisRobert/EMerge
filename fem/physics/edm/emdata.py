@@ -306,6 +306,15 @@ class EMSimData(SimData[EMDataSet]):
     def export_touchstone(self, 
                           filename: str,
                           format: Literal['RI','MA','DB']):
+        """Export the S-parameter data to a touchstone file
+
+        This function assumes that all ports are numbered in sequence 1,2,3,4... etc with
+        no missing ports. Otherwise it crashes. Will be update/improved soon with more features.
+
+        Args:
+            filename (str): The File name
+            format (Literal[DB, RI, MA]): The dataformat used in the touchstone file.
+        """
         from .touchstone import generate_touchstone
         logger.info(f'Exporting S-data to {filename}')
         # We will assume for now all ports are also numbered 1 to Nports+1
@@ -320,4 +329,5 @@ class EMSimData(SimData[EMDataSet]):
                 Smat[:,i-1,j-1] = S
         
         generate_touchstone(filename, freqs, Smat, data_format=format)
+        
         logger.info('Export complete!')

@@ -95,4 +95,4 @@ tests_2D/
 *.msh
 
 # tests
-text_*
+**/text_*

@@ -18,7 +18,7 @@
 from __future__ import annotations
 import numpy as np
 from typing import Callable, Iterable
-from .shapes import Box, Cyllinder, Alignment
+from .shapes import Box, Cylinder, Alignment
 from ..geometry import GeoVolume, GeoObject
 from .operations import rotate, mirror, translate, add, subtract, embed
 from numbers import Number
@@ -381,7 +381,7 @@ class Modeler:
         self._add_function(function)
         return self
     
-    def cyllinder(self,
+    def cylinder(self,
                   radius: float | Series,
                   height: float | Series,
                   position: tuple[float | Series, float | Series, float | Series],
@@ -400,7 +400,7 @@ class Modeler:
                 if NPoly:
                     cyl = XYPolygon.circle(r, Nsections=NPoly).extrude(h, cs2)
                 else:
-                    cyl  = Cyllinder(r,h, cs2)
+                    cyl  = Cylinder(r,h, cs2)
                 cyls.append(cyl)
 
         self.ndimcont.set_copies(N)

@@ -28,8 +28,8 @@ th = 1 * mm            # PML thickness
 dx = 2 * mm              # distance from horn exit to PML start
 
 # Create simulation object
-m = em.Simulation3D('HornAntenna', loglevel='DEBUG')
-
+m = em.Simulation('HornAntenna')
+m.check_version("0.6.7") # Checks version compatibility.
 # --- Coordinate system for horn geometry -------------------------------
 hornCS = em.CS(em.YAX, em.ZAX, em.XAX)
 
@@ -81,13 +81,13 @@ m.generate_mesh()
 # --- Boundary conditions ------------------------------------------------
 p1 = m.mw.bc.ModalPort(feed.face('left'), 1)     # excite TE10 in feed
 PMC = m.mw.bc.PMC(m.select.face.inplane(0, 0, 0, 0, 1, 0))  # perfect magnetic on symmetry
-radiation_boundary = air.outside('front', 'left', 'bottom')  # open faces
+radiation_boundary = air2.faces('back','top','right', tool=air)  # open faces
 abc = m.mw.bc.AbsorbingBoundary(m.select.face.inplane(Lhorn-dx,0,0,1,0,0))
 # View mesh and BC selections
 m.view(selections=[p1.selection, PMC.selection, radiation_boundary])
 
 # --- Run frequency-domain solver ----------------------------------------
-data = m.mw.frequency_domain()
+data = m.mw.run_sweep()
 
 # --- Plot return loss ---------------------------------------------------
 scal = data.scalar.grid
@@ -95,17 +95,18 @@ plot_sp(scal.freq, scal.S(1,1))  # S11 vs frequency
 
 # --- Far-field radiation pattern ----------------------------------------
 # Compute E and H on 2D cut for phi=0 plane over -90° to 90°
-ang, E, H = data.field[0].farfield_2d(
+ff_data = data.field[0].farfield_2d(
     (1, 0, 0), (0, 1, 0), radiation_boundary,
     (-90, 90), syms=['Ez','Hy']
 )
+plot_ff(ff_data.ang * 180/np.pi, ff_data.normE/em.lib.EISO, dB=True)
 # Normalize to free-space impedance and convert to dB
 
 m.display.add_object(horn_in, opacity=0.1)
 m.display.add_object(air2, opacity=0.1)
 m.display.add_object(feed, opacity=0.1)
 m.display.add_surf(*data.field[0].farfield_3d(radiation_boundary, syms=['Ez','Hy'])\
-                .surfplot('normE', True, True, -30, 5*mm, (Lhorn,0,0)), cmap='viridis', symmetrize=False)
+                .surfplot('normE', 'abs', True, True, -30, 5*mm, (Lhorn,0,0)), cmap='viridis', symmetrize=False)
 m.display.add_surf(*data.field[0].cutplane(0.5*mm, z=0).scalar('Ez','real'))
 m.display.show()
 

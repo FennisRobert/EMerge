@@ -94,8 +94,8 @@ def _ne1(coeff, coords):
     xs = coords[0,:]
     ys = coords[1,:]
     out=np.empty((2,xs.shape[0]), dtype=np.complex128)
-    out[0,:] = (b1*(a2 + b2*xs + c2*ys) - b2*(a1 + b1*xs + c1*ys))*(a1 + b1*xs + c1*ys)
-    out[1,:] = (c1*(a2 + b2*xs + c2*ys) - c2*(a1 + b1*xs + c1*ys))*(a1 + b1*xs + c1*ys)
+    out[0,:] = (-b1*(a2 + b2*xs + c2*ys) + b2*(a1 + b1*xs + c1*ys))
+    out[1,:] = (-c1*(a2 + b2*xs + c2*ys) + c2*(a1 + b1*xs + c1*ys))
     return out
 
 @njit(c16[:,:](f8[:,:], f8[:,:]), cache=True, nogil=True)
@@ -105,8 +105,8 @@ def _ne2(coeff, coords):
     xs = coords[0,:]
     ys = coords[1,:]
     out=np.empty((2,xs.shape[0]), dtype=np.complex128)
-    out[0,:] = (b1*(a2 + b2*xs + c2*ys) - b2*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys)
-    out[1,:] = (c1*(a2 + b2*xs + c2*ys) - c2*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys)
+    out[0,:] = (-b1*(a2 + b2*xs + c2*ys) + b2*(a1 + b1*xs + c1*ys))*(a1 - a2 + b1*xs - b2*xs + c1*ys - c2*ys)
+    out[1,:] = (-c1*(a2 + b2*xs + c2*ys) + c2*(a1 + b1*xs + c1*ys))*(a1 - a2 + b1*xs - b2*xs + c1*ys - c2*ys)
     return out
 
 @njit(c16[:,:](f8[:,:], f8[:,:]), cache=True, nogil=True)
@@ -117,8 +117,8 @@ def _nf1(coeff, coords):
     xs = coords[0,:]
     ys = coords[1,:]
     out=np.empty((2,xs.shape[0]), dtype=np.complex128)
-    out[0,:] = -(b1*(a3 + b3*xs + c3*ys) - b3*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys)
-    out[1,:] = -(c1*(a3 + b3*xs + c3*ys) - c3*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys)
+    out[0,:] = -(b1*(a3 + b3*xs + c3*ys) - b3*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys) - (b2*(a3 + b3*xs + c3*ys) - b3*(a2 + b2*xs + c2*ys))*(a1 + b1*xs + c1*ys)
+    out[1,:] = -(c1*(a3 + b3*xs + c3*ys) - c3*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys) + (-c2*(a3 + b3*xs + c3*ys) + c3*(a2 + b2*xs + c2*ys))*(a1 + b1*xs + c1*ys)
     return out
 
 @njit(c16[:,:](f8[:,:], f8[:,:]), cache=True, nogil=True)
@@ -129,8 +129,8 @@ def _nf2(coeff, coords):
     xs = coords[0,:]
     ys = coords[1,:]
     out=np.empty((2,xs.shape[0]), dtype=np.complex128)
-    out[0,:] = (b1*(a2 + b2*xs + c2*ys) - b2*(a1 + b1*xs + c1*ys))*(a3 + b3*xs + c3*ys)
-    out[1,:] = (c1*(a2 + b2*xs + c2*ys) - c2*(a1 + b1*xs + c1*ys))*(a3 + b3*xs + c3*ys)
+    out[0,:] = (b1*(a2 + b2*xs + c2*ys) - b2*(a1 + b1*xs + c1*ys))*(a3 + b3*xs + c3*ys) + (b1*(a3 + b3*xs + c3*ys) - b3*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys)
+    out[1,:] = -(-c1*(a2 + b2*xs + c2*ys) + c2*(a1 + b1*xs + c1*ys))*(a3 + b3*xs + c3*ys) + (c1*(a3 + b3*xs + c3*ys) - c3*(a1 + b1*xs + c1*ys))*(a2 + b2*xs + c2*ys)
     return out
 
 @njit(c16[:](f8[:], f8[:,:]), cache=True, nogil=True)
@@ -175,7 +175,7 @@ def _ne1_curl(coeff, coords):
     a2, b2, c2 = coeff[:,1]
     xs = coords[0,:]
     ys = coords[1,:]
-    return -3*a1*b1*c2 + 3*a1*b2*c1 - 3*b1**2*c2*xs + 3*b1*b2*c1*xs - 3*b1*c1*c2*ys + 3*b2*c1**2*ys + 0j
+    return (2*b1*c2 - 2*b2*c1)*np.ones_like(xs) + 0j#-3*a1*b1*c2 + 3*a1*b2*c1 - 3*b1**2*c2*xs + 3*b1*b2*c1*xs - 3*b1*c1*c2*ys + 3*b2*c1**2*ys + 0j
 
 
 @njit(c16[:](f8[:,:], f8[:,:]), cache=True, nogil=True)
@@ -184,7 +184,7 @@ def _ne2_curl(coeff, coords):
     a2, b2, c2 = coeff[:,1]
     xs = coords[0,:]
     ys = coords[1,:]
-    return -3*a2*b1*c2 + 3*a2*b2*c1 - 3*b1*b2*c2*xs - 3*b1*c2**2*ys + 3*b2**2*c1*xs + 3*b2*c1*c2*ys+ 0j
+    return (-(b1 - b2)*(c1*(a2 + b2*xs + c2*ys) - c2*(a1 + b1*xs + c1*ys)) + (c1 - c2)*(b1*(a2 + b2*xs + c2*ys) - b2*(a1 + b1*xs + c1*ys)) + 2*(b1*c2 - b2*c1)*(a1 - a2 + b1*xs - b2*xs + c1*ys - c2*ys)) + 0j
 
 @njit(c16[:](f8[:,:], f8[:,:]), cache=True, nogil=True)
 def _nf1_curl(coeff, coords):
@@ -193,7 +193,7 @@ def _nf1_curl(coeff, coords):
     a3, b3, c3 = coeff[:,2]
     xs = coords[0,:]
     ys = coords[1,:]
-    return -b2*(c1*(a3 + b3*xs + c3*ys) - c3*(a1 + b1*xs + c1*ys)) + c2*(b1*(a3 + b3*xs + c3*ys) - b3*(a1 + b1*xs + c1*ys)) + 2*(b1*c3 - b3*c1)*(a2 + b2*xs + c2*ys) + 0*1j
+    return 3*a1*b2*c3 - 3*a1*b3*c2 + 3*a2*b1*c3 - 3*a2*b3*c1 + 6*b1*b2*c3*xs - 3*b1*b3*c2*xs + 3*b1*c2*c3*ys - 3*b2*b3*c1*xs + 3*b2*c1*c3*ys - 6*b3*c1*c2*ys + 0*1j
            
 @njit(c16[:](f8[:,:], f8[:,:]), cache=True, nogil=True)
 def _nf2_curl(coeff, coords):
@@ -202,7 +202,7 @@ def _nf2_curl(coeff, coords):
     a3, b3, c3 = coeff[:,2]
     xs = coords[0,:]
     ys = coords[1,:]
-    return b3*(c1*(a2 + b2*xs + c2*ys) - c2*(a1 + b1*xs + c1*ys)) - c3*(b1*(a2 + b2*xs + c2*ys) - b2*(a1 + b1*xs + c1*ys)) - 2*(b1*c2 - b2*c1)*(a3 + b3*xs + c3*ys) + 0*1j
+    return -3*a2*b1*c3 + 3*a2*b3*c1 - 3*a3*b1*c2 + 3*a3*b2*c1 - 3*b1*b2*c3*xs - 3*b1*b3*c2*xs - 6*b1*c2*c3*ys + 6*b2*b3*c1*xs + 3*b2*c1*c3*ys + 3*b3*c1*c2*ys + 0*1j
            
 
 ############################################################
@@ -412,7 +412,7 @@ def generalized_matrix_GQ(tri_vertices, local_edge_map, Ms, Mm, k0):
     B[:8,8:] = Dzt.T
     B[8:,8:] = Dzz1 - k0**2 * Dzz2
 
-    #Ls = np.ones((14,14), dtype=np.float64)
+    Ls = np.ones((14,14), dtype=np.float64)
     
     B = Ls*B*np.abs(Area)
     A = Ls*A*np.abs(Area)

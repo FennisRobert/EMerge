@@ -11,10 +11,11 @@ direction (+Z vs -Z). In EMerge we can alignm modes using the .align_mode() meth
 """
 
 # First we define our simulation
-m = em.Simulation3D('aligntest', loglevel='INFO')
+m = em.Simulation('aligntest')
+m.check_version("0.6.7") # Checks version compatibility.
 
 # We create a cyllindrical waveguide in the Y-axis.
-cyl = em.geo.Cyllinder(0.012, 0.05, em.CS(em.XAX, em.ZAX, em.YAX))
+cyl = em.geo.Cylinder(0.012, 0.05, em.CS(em.XAX, em.ZAX, em.YAX))
 
 # We remove 4 ridges from this with a width of 2mm. 
 wr= 0.002
@@ -61,7 +62,7 @@ p2.align_modes(em.ZAX, em.XAX)
 for i1, i2 in m.parameter_sweep(False, p1=(0,1), p2=(0,1)):
     p1.selected_mode = i1
     p2.selected_mode = i2
-    data = m.mw.frequency_domain()
+    data = m.mw.run_sweep()
 
 # We can now visualize the mode fields in order. Please keep in mind that by default we look into the -X, -Y, -Z direction.
 

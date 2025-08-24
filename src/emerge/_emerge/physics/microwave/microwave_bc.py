@@ -391,8 +391,8 @@ class FloquetPort(PortBC):
         """
         return 1j*self.get_beta(k0)
     
-    def get_Uinc(self, x_local: np.ndarray, y_local: np.ndarray, k0: float) -> np.ndarray:
-        return -2*1j*self.get_beta(k0)*self.port_mode_3d(x_local, y_local, k0)
+    def get_Uinc(self, x_global: np.ndarray, y_global: np.ndarray, z_global: np.ndarray, k0: float) -> np.ndarray:
+        return -2*1j*self.get_beta(k0)*self.port_mode_3d_global(x_global, y_global, z_global, k0)
     
     def port_mode_3d(self, 
                      x_local: np.ndarray,
@@ -630,8 +630,8 @@ class ModalPort(PortBC):
     def get_gamma(self, k0: float) -> complex:
         return 1j*self.get_beta(k0)
     
-    def get_Uinc(self, x_local, y_local, k0) -> np.ndarray:
-        return -2*1j*self.get_beta(k0)*self.port_mode_3d(x_local, y_local, k0)
+    def get_Uinc(self, x_global: np.ndarray, y_global: np.ndarray, z_global: np.ndarray, k0) -> np.ndarray:
+        return -2*1j*self.get_beta(k0)*self.port_mode_3d_global(x_global, y_global, z_global, k0)
     
     def port_mode_3d(self, 
                      x_local: np.ndarray,
@@ -743,8 +743,8 @@ class RectangularWaveguide(PortBC):
         """
         return 1j*self.get_beta(k0)
     
-    def get_Uinc(self, x_local: np.ndarray, y_local: np.ndarray, k0: float) -> np.ndarray:
-        return -2*1j*self.get_beta(k0)*self.port_mode_3d(x_local, y_local, k0)
+    def get_Uinc(self, x_global: np.ndarray, y_global: np.ndarray, z_global: np.ndarray, k0: float) -> np.ndarray:
+        return -2*1j*self.get_beta(k0)*self.port_mode_3d_global(x_global, y_global, z_global, k0)
     
     def port_mode_3d(self, 
                      x_local: np.ndarray,
@@ -787,7 +787,6 @@ class LumpedPort(PortBC):
                  width: float | None = None,
                  height: float | None = None,
                  direction: Axis | None = None,
-                 Idirection: Axis | None = None,
                  active: bool = False,
                  power: float = 1,
                  Z0: float = 50):
@@ -814,7 +813,7 @@ class LumpedPort(PortBC):
         if width is None:
             if not isinstance(face, GeoObject):
                 raise ValueError(f'The width, height and direction must be defined. Information cannot be extracted from {face}')
-            width, height, direction, Idirection = face._data('width','height','vdir', 'idir')
+            width, height, direction = face._data('width','height','vdir')
             if width is None or height is None or direction is None:
                 raise ValueError(f'The width, height and direction could not be extracted from {face}')
         
@@ -828,7 +827,6 @@ class LumpedPort(PortBC):
         self.width: float = width
         self.height: float = height # type: ignore
         self.Vdirection: Axis = direction # type: ignore
-        self.Idirection: Axis = Idirection # type: ignore
         self.type = 'TEM'
         
         logger.info('Constructing coordinate system from normal port')
@@ -836,7 +834,6 @@ class LumpedPort(PortBC):
 
         self.vintline: Line | None = None
         self.v_integration = True
-        self.iintline: Line | None = None
 
     @property
     def surfZ(self) -> float:
@@ -878,9 +875,9 @@ class LumpedPort(PortBC):
         """
         return 1j*k0*Z0/self.surfZ
     
-    def get_Uinc(self, x_local, y_local, k0) -> np.ndarray:
+    def get_Uinc(self, x_global: np.ndarray, y_global: np.ndarray, z_global: np.ndarray, k0) -> np.ndarray:
         Emag = -1j*2*k0 * self.voltage/self.height * (Z0/self.surfZ)
-        return Emag*self.port_mode_3d(x_local, y_local, k0)
+        return Emag*self.port_mode_3d_global(x_global, y_global, z_global, k0)
     
     def port_mode_3d(self, 
                      x_local: np.ndarray,
@@ -922,6 +919,7 @@ class LumpedPort(PortBC):
         Ex, Ey, Ez = self.port_mode_3d(xl, yl, k0)
         Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
         return np.array([Exg, Eyg, Ezg])
+
 
 class LumpedElement(RobinBC):
     

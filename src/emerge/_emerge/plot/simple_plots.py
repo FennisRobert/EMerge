@@ -242,38 +242,168 @@ def plot(
 
     plt.show()
 
-def smith(f: np.ndarray, S: np.ndarray) -> None:
-    """ Plot the Smith Chart
+def smith(
+    S: np.ndarray | Sequence[np.ndarray],
+    f: Optional[np.ndarray | Sequence[np.ndarray]] = None,
+    colors: Optional[Union[str, Sequence[Optional[str]]]] = None,
+    markers: Optional[Union[str, Sequence[str]]] = None,
+    labels: Optional[Union[str, Sequence[str]]] = None,
+    title: Optional[str] = None,
+    linewidth: Optional[Union[float, Sequence[Optional[float]]]] = None,
+    n_flabels: int = 8,
+    funit: str = 'GHz'
+) -> None:
+    """Plot S-parameter traces on a Smith chart with optional per-trace styling
+and sparse frequency annotations (e.g., labeled by frequency).
 
     Args:
-        f (np.ndarray): Frequency vector (Not used yet)
-        S (np.ndarray): S-parameters to plot
-    """     
-    if not isinstance(S, list):
-        Ss = [S]
+    S (np.ndarray | Sequence[np.ndarray]): One or more 1D complex arrays of
+        reflection coefficients (Γ) to plot (each shaped like (N,)).
+    f (Optional[np.ndarray  |  Sequence[np.ndarray]], optional): Frequency
+        vector(s) aligned with `S` for sparse on-curve labels; provide a
+        single array for all traces or one array per trace. Defaults to None.
+    colors (Optional[Union[str, Sequence[Optional[str]]]], optional): Color
+        for all traces or a sequence of per-trace colors. Defaults to None
+        (uses Matplotlib’s color cycle).
+    markers (Optional[Union[str, Sequence[str]]], optional): Marker style
+        for all traces or per-trace markers. Defaults to None (treated as 'none').
+    labels (Optional[Union[str, Sequence[str]]], optional): Legend label for
+        all traces or a sequence of per-trace labels. If omitted, no legend
+        is shown. Defaults to None.
+    title (Optional[str], optional): Axes title. Defaults to None.
+    linewidth (Optional[Union[float, Sequence[Optional[float]]]], optional):
+        Line width for all traces or per-trace widths. Defaults to None
+        (Matplotlib default).
+    n_flabels (int, optional): Approximate number of frequency labels to
+        place per trace (set 0 to disable, even if `f` is provided).
+        Defaults to 8.
+    funit (str, optional): Frequency unit used to scale/format labels.
+        One of {'Hz','kHz','MHz','GHz','THz'} (case-insensitive).
+        Defaults to 'GHz'.
+
+    Raises:
+    ValueError: If a style argument (`colors`, `markers`, `linewidth`, or
+        `labels`) is a sequence whose length does not match the number of traces.
+    ValueError: If `f` is a sequence whose length does not match the number
+        of traces.
+    ValueError: If `funit` is not one of {'Hz','kHz','MHz','GHz','THz'}.
+
+    Returns:
+    None: Draws the Smith chart on a new figure/axes and displays it with `plt.show()`.
+"""
+    # --- normalize S into a list of 1D complex arrays ---
+    if isinstance(S, (list, tuple)):
+        Ss: List[np.ndarray] = [np.asarray(s).ravel() for s in S]
     else:
-        Ss = S
-    
-    fig, ax = plt.subplots()
+        Ss = [np.asarray(S).ravel()]
+
+    n_traces = len(Ss)
+
+    # --- helper: broadcast a scalar or single value to n_traces, or validate a sequence ---
+    def _broadcast(value, default, name: str) -> List:
+        if value is None:
+            return [default for _ in range(n_traces)]
+        # treat bare strings specially (they’re Sequences but should broadcast)
+        if isinstance(value, str):
+            return [value for _ in range(n_traces)]
+        if not isinstance(value, (list, tuple)):
+            return [value for _ in range(n_traces)]
+        if len(value) != n_traces:
+            raise ValueError(f"`{name}` must have length {n_traces}, got {len(value)}.")
+        return list(value)
+
+    # --- style parameters (broadcast as needed) ---
+    markers_list = _broadcast(markers, 'none', 'markers')
+    colors_list  = _broadcast(colors, None, 'colors')
+    lw_list      = _broadcast(linewidth, None, 'linewidth')
+    labels_list: Optional[List[Optional[str]]]
+    if labels is None:
+        labels_list = None
+    else:
+        labels_list = _broadcast(labels, None, 'labels')
+
+    # --- frequencies (broadcast as needed) ---
+    if f is None:
+        fs_list: List[Optional[np.ndarray]] = [None for _ in range(n_traces)]
+    else:
+        if isinstance(f, (list, tuple)):
+            if len(f) != n_traces:
+                raise ValueError(f"`f` must have length {n_traces}, got {len(f)}.")
+            fs_list = [np.asarray(fi).ravel() for fi in f]
+        else:
+            fi = np.asarray(f).ravel()
+            fs_list = [fi for _ in range(n_traces)]
+
+    # --- unit scaling ---
+    units = {'hz':1.0, 'khz':1e3, 'mhz':1e6, 'ghz':1e9, 'thz':1e12}
+    key = funit.lower()
+    if key not in units:
+        raise ValueError(f"Unknown funit '{funit}'. Choose from {list(units.keys())}.")
+    fdiv = units[key]
+
+    # --- figure/axes ---
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    # --- smith grid (kept out of legend) ---
     for line in _smith_transform(_generate_grids()):
-        ax.plot(line[0], line[1], color='grey', alpha=0.3, linewidth=0.7)
-    p = np.linspace(0,2*np.pi,101)
-    ax.plot(np.cos(p), np.sin(p), color='black', alpha=0.5)
-    # Add important numbers for the Impedance Axes
-    # X and Y values (0, 0.5, 1, 2, 10, 50)
-    for i in [0, 0.2, 0.5, 1, 2, 10]:
-        z = i + 1j*0
-        G = (z-1)/(z+1)
-        ax.annotate(f"{i}", (G.real, G.imag), color='black', fontsize=8)
-    for i in [0, 0.2, 0.5, 1, 2, 10]:
-        z = 0 + 1j*i
-        G = (z-1)/(z+1)
-        ax.annotate(f"{i}", (G.real, G.imag), color='black', fontsize=8)       
-        ax.annotate(f"{-i}", (G.real, -G.imag), color='black', fontsize=8)  
-    for s in Ss:
-        ax.plot(s.real, s.imag, color='blue')
+        ax.plot(line[0], line[1], color='0.6', alpha=0.3, linewidth=0.7, label='_nolegend_')
+
+    # unit circle
+    p = np.linspace(0, 2*np.pi, 361)
+    ax.plot(np.cos(p), np.sin(p), color='black', alpha=0.5, linewidth=0.8, label='_nolegend_')
+
+    # --- annotate a few impedance reference ticks (kept out of legend) ---
+    ref_vals = [0, 0.2, 0.5, 1, 2, 10]
+    for r in ref_vals:
+        z = r + 1j*0
+        G = (z - 1) / (z + 1)
+        ax.annotate(f"{r}", (G.real, G.imag), color='black', fontsize=8)
+    for x in ref_vals:
+        z = 0 + 1j*x
+        G = (z - 1) / (z + 1)
+        ax.annotate(f"{x}", (G.real, G.imag), color='black', fontsize=8)
+        ax.annotate(f"{-x}", (G.real, -G.imag), color='black', fontsize=8)
+
+    # --- plot traces ---
+    for i, s in enumerate(Ss):
+        lbl = labels_list[i] if labels_list is not None else None
+        line, = ax.plot(
+            s.real, s.imag,
+            color=colors_list[i],
+            marker=markers_list[i],
+            linewidth=lw_list[i],
+            label=lbl
+        )
+
+        # frequency labels (sparse)
+        fi = fs_list[i]
+        if fi[0] is not None and n_flabels > 0 and len(s) > 0 and len(fi) > 0:
+            n = min(len(s), len(fi))
+            step = max(1, int(round(n / n_flabels))) if n_flabels > 0 else n  # avoid step=0
+            idx = np.arange(0, n, step)
+            # small offset so labels don't sit right on the curve
+            dx = 0.03
+            for k in idx:
+                fk = fi[k] / fdiv
+                # choose a compact format (3 significant digits)
+                idigit = 3
+                if np.log10(fk)>3:
+                    idigit = 1
+                ftxt = f"{fk:.{idigit}f}{funit}"
+                ax.annotate(ftxt, (s[k].real + dx, s[k].imag), fontsize=8, color=line.get_color())
+
+    # legend only if labels were given
+    if labels_list is not None:
+        ax.legend(loc='best')
+
+    if title:
+        ax.set_title(title)
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlim(-1.1, 1.1)
+    ax.set_ylim(-1.1, 1.1)
     ax.grid(False)
-    ax.axis('equal')
+    plt.tight_layout()
     plt.show()
 
 def plot_sp(f: np.ndarray, S: list[np.ndarray] | np.ndarray, 

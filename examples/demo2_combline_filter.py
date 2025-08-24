@@ -42,26 +42,26 @@ rin = 12.5*mil
 lfeed = 100*mil
 
 # A usual we start our simulation file
-model = em.Simulation3D('Combline_DEMO', loglevel='DEBUG')
-
+model = em.Simulation('Combline_DEMO')
+model.check_version("0.6.7") # Checks version compatibility.
 
 # The filter consists of quarter lamba cylindrical pins inside an airbox.
 # First we create the airbox
 box = em.geo.Box(Lbox, a, b, position=(0,-a/2,0))
 
-# Next we create 5 cyllinders using the Modeler class.
+# Next we create 5 cylinders using the Modeler class.
 # The modeler class also implements a method chaining interface. In this example we stick to simpler features.
 # The modeler class allows us to create a parameter series using the modeler.series() method. We provid it with quantities.
 # We can do this for multiple at the same time (as you can also see with the position). The modeler class
-# will recognize the multiple quantities and simply create 5 different cyllinders, one for each parameter pair.
-stubs = model.modeler.cyllinder(W/2, model.modeler.series(C1, lr1, lr2, lr1, C1), position=(model.modeler.series(x1, x2, x3, x4, x5), 0, 0), NPoly=10)
+# will recognize the multiple quantities and simply create 5 different cylinders, one for each parameter pair.
+stubs = model.modeler.cylinder(W/2, model.modeler.series(C1, lr1, lr2, lr1, C1), position=(model.modeler.series(x1, x2, x3, x4, x5), 0, 0), NPoly=10)
 
-# Next we create the in and output feed cyllinders for the coaxial cable. We will use the Nsections feature in order to guarantee a better
+# Next we create the in and output feed cylinders for the coaxial cable. We will use the Nsections feature in order to guarantee a better
 # adherence to the boundary.
-feed1out = em.geo.Cyllinder(rout, lfeed, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([-lfeed, 0, h])), Nsections=12)
-feed1in = em.geo.Cyllinder(rin, lfeed+wi+W/2, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([-lfeed, 0, h])), Nsections=8)
-feed2out = em.geo.Cyllinder(rout, lfeed, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([Lbox, 0, h])), Nsections=12)
-feed2in = em.geo.Cyllinder(rin, lfeed+wi+W/2, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([Lbox-wi-W/2, 0, h])), Nsections=8)
+feed1out = em.geo.Cylinder(rout, lfeed, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([-lfeed, 0, h])), Nsections=12)
+feed1in = em.geo.Cylinder(rin, lfeed+wi+W/2, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([-lfeed, 0, h])), Nsections=8)
+feed2out = em.geo.Cylinder(rout, lfeed, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([Lbox, 0, h])), Nsections=12)
+feed2in = em.geo.Cylinder(rin, lfeed+wi+W/2, em.CoordinateSystem(em.ZAX, em.YAX, em.XAX, np.array([Lbox-wi-W/2, 0, h])), Nsections=8)
 
 # Next we subtract the stubs and the center conductor from the box and feedline.
 for ro in stubs:
@@ -94,7 +94,7 @@ port1 = model.mw.bc.ModalPort(model.select.face.near(-lfeed, 0, h), 1, TEM=True)
 port2 = model.mw.bc.ModalPort(model.select.face.near(Lbox+lfeed, 0, h), 2, TEM=True)
 
 # At last we can compute the frequency domain study
-data = model.mw.frequency_domain(parallel=True)
+data = model.mw.run_sweep(parallel=True)
 
 # Next we will use the Vector Fitting algorithm to model our S-parameters with a Rational function
 
@@ -103,7 +103,7 @@ fdense = np.linspace(6e9, 9e9, 2001)
 S11 = data.scalar.grid.model_S(1,1,fdense)
 S21 = data.scalar.grid.model_S(2,1,fdense)
 
-plot_sp(fdense/1e9, [S11, S21], labels=['S11','S21'])
+plot_sp(fdense, [S11, S21], labels=['S11','S21'])
 
 # We can also plot the field inside. First we create a grid of sample point coordinates
 xs = np.linspace(0, Lbox, 41)

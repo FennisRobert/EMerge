@@ -15,13 +15,11 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-from numba_progress import ProgressBar
 from ...mesh3d import SurfaceMesh
 import numpy as np
 from loguru import logger
 from numba import c16, njit, prange, f8
 from numba.types import Tuple as TupleType  # ty: ignore
-from numba_progress.progress import ProgressBarType
 from ...const import Z0
 
 LR = 0.001
@@ -34,14 +32,13 @@ LR = 0.001
         f8[:, :],
         f8[:, :],
         f8,
-        ProgressBarType,
     ),
     parallel=True,
     fastmath=True,
     cache=True,
     nogil=True,
 )
-def stratton_chu_ff(Ein, Hin, vis, wns, tpout, k0, pgb):
+def stratton_chu_ff(Ein, Hin, vis, wns, tpout, k0):
     
     Ex = Ein[0, :].flatten()
     Ey = Ein[1, :].flatten()
@@ -125,7 +122,6 @@ def stratton_chu_ff(Ein, Hin, vis, wns, tpout, k0, pgb):
         Eoutz += Q * (rx * ie1y - ry * ie1x)
 
         # ii += iadd
-        pgb.update(1)
     Eout[0, :] = Eoutx
     Eout[1, :] = Eouty
     Eout[2, :] = Eoutz
@@ -162,14 +158,13 @@ def stratton_chu(Ein, Hin, mesh: SurfaceMesh, theta: np.ndarray, phi: np.ndarray
     Eout = None
     Hout = None
     tpout = np.array([theta, phi])
-    with ProgressBar(total=Ntot, ncols=100, dynamic_ncols=False) as pgb:
-        Eout, Hout = stratton_chu_ff(
-            Ein.astype(np.complex128),
-            Hin.astype(np.complex128),
-            vis.astype(np.float64),
-            wns.astype(np.float64),
-            tpout.astype(np.float64),
-            np.float64(k0),
-            pgb,
-        )
+
+    Eout, Hout = stratton_chu_ff(
+        Ein.astype(np.complex128),
+        Hin.astype(np.complex128),
+        vis.astype(np.float64),
+        wns.astype(np.float64),
+        tpout.astype(np.float64),
+        np.float64(k0),
+    )
     return Eout.astype(np.complex128), Hout.astype(np.complex128)

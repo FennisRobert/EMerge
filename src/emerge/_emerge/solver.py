@@ -674,7 +674,7 @@ class SolverARPACK(EigSolver):
             target_k0: float = 0,
             which: str = 'LM',
             sign: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-        logger.info(f'Searching around 	β = {target_k0:.2f} rad/m')
+        logger.info(f'Searching around 	β = {target_k0:.2f} rad/m with ARPACK')
         sigma = sign*(target_k0**2)
         eigen_values, eigen_modes = eigs(A, k=nmodes, M=B, sigma=sigma, which=which)
         return eigen_values, eigen_modes
@@ -698,7 +698,7 @@ class SmartARPACK_BMA(EigSolver):
             which: str = 'LM',
             sign: float = 1.) -> tuple[np.ndarray, np.ndarray]:
 
-        logger.info(f'Searching around 	β = {target_k0:.2f} rad/m')
+        logger.info(f'Searching around 	β = {target_k0:.2f} rad/m with SmartARPACK (BMA)')
         qs = np.geomspace(1, self.search_range, self.symmetric_steps)
         tot_eigen_values = []
         tot_eigen_modes = []
@@ -747,7 +747,7 @@ class SmartARPACK(EigSolver):
             target_k0: float = 0,
             which: str = 'LM',
             sign: float = 1.) -> tuple[np.ndarray, np.ndarray]:
-        logger.info(f'Searching around 	β = {target_k0:.2f} rad/m')
+        logger.info(f'Searching around 	β = {target_k0:.2f} rad/m with SmartARPACK')
         qs = np.geomspace(1, self.search_range, self.symmetric_steps)
         tot_eigen_values = []
         tot_eigen_modes = []
@@ -1062,7 +1062,7 @@ class SolveRoutine:
         if direct or A.shape[0] < 1000:
             return self.solvers[EMSolver.LAPACK]  # type: ignore
         else:
-            return self.solvers[EMSolver.ARPACK]  # type: ignore
+            return self.solvers[EMSolver.SMART_ARPACK_BMA]  # type: ignore
     
     def solve(self, A: csr_matrix | csr_matrix, 
               b: np.ndarray, 

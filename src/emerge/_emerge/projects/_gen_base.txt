@@ -13,7 +13,7 @@ wga = 22.86*mm
 wgb = 10.16*mm
 wgl = 50*mm
 
-with em.Simulation3D("myfile", save_file=True) as m:
+with em.Simulation("myfile", save_file=True) as m:
     m['box'] = em.geo.Box(wga,wgl,wgb,(0,0,0))
     
     m.commit_geometry()
@@ -29,4 +29,4 @@ with em.Simulation3D("myfile", save_file=True) as m:
     port2 = m.mw.bc.RectangularWaveguide(m['box'].face('back'), 2)
 
     # Run simulation steps
-    m.mw.frequency_domain()
+    m.mw.run_sweep()

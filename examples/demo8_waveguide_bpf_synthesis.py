@@ -19,8 +19,8 @@ c0 = 299792458            # speed of light in vacuum (m/s)
 wga = 22.86 * mm          # a-dimension of WR-90 waveguide
 wgb = 10.16 * mm              # b-dimension (height) of waveguide
 # frequency band for final filter response
-f1 = 9.5e9                # start frequency (Hz)
-f2 = 9.8e9                # stop frequency (Hz)
+f1 = 9.6e9                # start frequency (Hz)
+f2 = 10e9                # stop frequency (Hz)
 
 # feed line length and iris thickness
 Lfeed = 20 * mm           # length of input/output waveguide sections
@@ -79,7 +79,8 @@ def KZ0(S11, S12, S21, S22):
 wgaps = np.linspace(1*mm, 20*mm, 21)
 Ks = []
 hphis = []
-with em.Simulation3D('IrisSim', loglevel='DEBUG') as sim:
+with em.Simulation('IrisSim') as sim:
+    sim.check_version("0.6.7") # Checks version compatibility.
     for (wgap,) in sim.parameter_sweep(True, wgap=wgaps):
         # Define two short waveguide sections separated by iris plate
         wg1 = em.geo.Box(wga, Lfeed, wgb, (-wga/2, -Lfeed - t_thickness/2, 0))
@@ -96,7 +97,7 @@ with em.Simulation3D('IrisSim', loglevel='DEBUG') as sim:
         sim.mw.bc.RectangularWaveguide(wg1.face('front'), 1)
         sim.mw.bc.RectangularWaveguide(wg2.face('back'), 2)
 
-        data = sim.mw.frequency_domain()
+        data = sim.mw.run_sweep()
         # Compensate phase from feed line length
         S11 = data.scalar.select(wgap=wgap).S(1,1) * np.exp(1j*2*kz(f0)*Lfeed)
         S12 = data.scalar.select(wgap=wgap).S(1,2) * np.exp(1j*2*kz(f0)*Lfeed)
@@ -128,7 +129,7 @@ cavity_lengths = (1/beta0 * np.array([
 ])).real
 
 # --- Build and simulate full filter -------------------------------------
-with em.Simulation3D('FullFilter', loglevel='DEBUG') as mf:
+with em.Simulation('FullFilter') as mf:
     # Input feed section
     feed1 = em.geo.Box(wga, Lfeed, wgb, (-wga/2, -Lfeed, 0))
     # Create cavities and irises sequentially
@@ -149,7 +150,7 @@ with em.Simulation3D('FullFilter', loglevel='DEBUG') as mf:
     mf.commit_geometry(feed1, feed2, last_iris, *(cavities + irises))
 
     # Simulation settings and mesh
-    mf.mw.set_frequency_range(f1 - 0.2e9, f2 + 0.2e9, 101)
+    mf.mw.set_frequency_range(f1 - 0.2e9, f2 + 0.2e9, 51)
     mf.mw.set_resolution(0.10)
     for ir in irises:
         mf.mesher.set_domain_size(ir, 2*mm)
@@ -160,7 +161,7 @@ with em.Simulation3D('FullFilter', loglevel='DEBUG') as mf:
     p2 = mf.mw.bc.RectangularWaveguide(feed2.face('back'), 2)
 
     # Run frequency-domain sweep and extract S-parameters
-    data = mf.mw.frequency_domain(parallel=True, njobs=3, frequency_groups=8)
+    data = mf.mw.run_sweep(parallel=True, njobs=3, frequency_groups=8)
     grid = data.scalar.grid
     freqs = grid.freq
     fdense = np.linspace(freqs[0], freqs[-1], 2001)

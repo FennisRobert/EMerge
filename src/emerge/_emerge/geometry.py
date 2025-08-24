@@ -411,8 +411,8 @@ class GeoObject:
         self._priority = _GEOMANAGER.highest_priority()+10
         return self
     
-    def outside(self, *exclude: FaceNames, tags: list[int] | None = None) -> FaceSelection:
-        """Returns the complete set of outside faces.
+    def boundary(self, exclude: tuple[FaceNames,...] | None = None, tags: list[int] | None = None) -> FaceSelection:
+        """Returns the complete set of boundary faces.
 
         If implemented, it is possible to exclude a set of faces based on their name
         or a list of tags (integers)
@@ -420,8 +420,15 @@ class GeoObject:
         Returns:
             FaceSelection: The selected faces
         """
+        if exclude is None:
+            exclude = tuple()
+            
         if tags is None:
             tags = []
+        
+        
+        for name in exclude:
+            tags.extend(self.face(name).tags)
         dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
         return FaceSelection([t for d,t in dimtags if t not in tags])
     
@@ -439,6 +446,22 @@ class GeoObject:
         
         return FaceSelection(self._face_tags(name, tool))
 
+    def faces(self, *names: FaceNames, tool: GeoObject | None = None) -> FaceSelection:
+        """Returns the FaceSelection for a given face names.
+        
+        The face name must be defined for the type of geometry.
+
+        Args:
+            name (FaceNames): The name of the face to select.
+
+        Returns:
+            FaceSelection: The selected face
+        """
+        tags = []
+        for name in names:
+            tags.extend(self._face_tags(name, tool))
+        return FaceSelection(tags)
+        
     @property
     def dimtags(self) -> list[tuple[int, int]]:
         return [(self.dim, tag) for tag in self.tags]
@@ -446,15 +469,6 @@ class GeoObject:
     @property
     def embeddings(self) -> list[tuple[int,int]]:
         return []
-    
-    def boundary(self) -> FaceSelection:
-        if self.dim == 3:
-            tags = gmsh.model.get_boundary(self.dimtags, oriented=False)
-            return FaceSelection([t[1] for t in tags])
-        if self.dim == 2:
-            return FaceSelection(self.tags)
-        else:
-            raise ValueError('Can only generate faces for objects of dimension 2 or higher.')
 
     @staticmethod
     def from_dimtags(dimtags: list[tuple[int,int]]) -> GeoVolume | GeoSurface | GeoObject:
@@ -470,6 +484,10 @@ class GeoObject:
             return GeoVolume(tags)
         return GeoObject(tags)
     
+    def remove(self) -> None:
+        self._exists = False
+        gmsh.model.occ.remove(self.dimtags, True)
+        
 class GeoVolume(GeoObject):
     '''GeoVolume is an interface to the GMSH CAD kernel. It does not represent EMerge
     specific geometry data.'''
@@ -543,6 +561,25 @@ class GeoPolygon(GeoSurface):
         self.points: list[int] = []
         self.lines: list[int] = []
 
-    
-T = TypeVar('T', GeoVolume, GeoEdge, GeoPoint, GeoSurface)
-    
+
+############################################################
+#                      SHORT FUNCTIONS                     #
+############################################################
+
+def select(*items: Selection | GeoObject) -> Selection:
+    """Generate a selection from a series of selections and/or objects that share the same dimension.
+
+    Raises:
+        ValueError: Raised if the dimensions provided are not consistent
+
+    Returns:
+        Selection: An output selection object.
+    """
+    dim = items[0].dim
+    tags = []
+    for item in items:
+        if item.dim!=dim:
+            raise ValueError(f'Cannot group of objects with a dissimilar dimensions. Trying to include {item} in a list of dimension {dim}.')
+        tags.extend(item.tags)
+    return Selection.from_dim_tags(dim, tags)
+            

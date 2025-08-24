@@ -27,11 +27,11 @@ class _HowtoClass:
         """
         To start a simulation simply create a model object through:
 
-        >>> model = emerge.Simulation3D('MyProjectName')
+        >>> model = emerge.Simulation('MyProjectName')
 
         Optionally, you can use a context manager for a more explicit handling of exiting the GMSH api and storing data after simulations.
 
-        >>> with emerge.Simulation3D('MyProjectName') as model:
+        >>> with emerge.Simulation('MyProjectName') as model:
 
         """
         pass
@@ -45,7 +45,7 @@ class _HowtoClass:
         >>> sphere = emerge.geo.Sphere(...)
         >>> pcb_layouter = emerge.geo.PCBLayout(...)
         >>> plate = emerge.geo.Plate(...)
-        >>> cyl = emerge.geo.Cyllinder(...)
+        >>> cyl = emerge.geo.Cylinder(...)
 
         After making geometries, you should pass all of them to
         the simulation object
@@ -69,7 +69,7 @@ class _HowtoClass:
         
         The naming convention is left(-X), right(+X), front(-Y), back(+Y), bottom(-Z), top(+Z)
         All outside faces can be selected using
-        >>> outside = object.outside()
+        >>> outside = object.boundary()
         
         If objects are the results from operations, you can access the faces from the
         source objects using the optional tool argument
@@ -77,7 +77,7 @@ class _HowtoClass:
         >>> face = cutout.face('front', tool=box)
         
         Exclusions or specific isolations can be added with optional arguments.
-        There is also a select object in your Simulation3D class that has various convenient selection options
+        There is also a select object in your Simulation class that has various convenient selection options
         >>> faces = model.select.face.inlayer()
         >>> faces = model.select.inplane()
         >>> faces = model.select.face.near(x,y,z)
@@ -99,15 +99,15 @@ class _HowtoClass:
 
         """
 
-    def run_frequency_domain(self):
+    def run_sweep(self):
         """
         You can run a frequency domain study by simply calling:\
         
-        >>> results = model.mw.frequency_domain(...)
+        >>> results = model.mw.run_sweep(...)
 
         You can distribute your frequency sweep across multiple threads using
         
-        >>> results = model.mw.frequency_domain(parallel=True, njobs=3)
+        >>> results = model.mw.run_sweep(parallel=True, njobs=3)
 
         The frequency domain study will return an MWSimData object that contains all data.
         """
@@ -154,7 +154,7 @@ class _HowtoClass:
     def save_and_load(self):
         """
         You can save your project data by setting save_file to True:
-        >>> model = emerge.Simulation3D(..., save_file=True)
+        >>> model = emerge.Simulation(..., save_file=True)
 
         Whenever you want, you can save all data by calling the .save() method
 
@@ -166,7 +166,7 @@ class _HowtoClass:
         
         You can load the data from a simulation using:
 
-        >>> model = emerge.Simulation3D(..., load_file=True)
+        >>> model = emerge.Simulation(..., load_file=True)
 
         The data from a simulation can be found in:
 

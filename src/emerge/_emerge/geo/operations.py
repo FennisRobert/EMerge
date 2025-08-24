@@ -15,8 +15,8 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-from typing import TypeVar
-from ..geometry import GeoSurface, GeoVolume, GeoObject, GeoPoint, GeoEdge
+from typing import TypeVar, overload
+from ..geometry import GeoSurface, GeoVolume, GeoObject, GeoPoint, GeoEdge, GeoPolygon
 from ..cs import CoordinateSystem, GCS
 import gmsh
 import numpy as np
@@ -60,7 +60,7 @@ def add(main: T, tool: T,
         main._exists = False
     if remove_tool:
         tool._exists = False
-    return output # type: ignore
+    return output.set_material(main.material) # type: ignore
 
 def remove(main: T, tool: T, 
              remove_object: bool = True,
@@ -90,7 +90,7 @@ def remove(main: T, tool: T,
         main._exists = False
     if remove_tool:
         tool._exists = False
-    return output # type: ignore
+    return output.set_material(main.material) # type: ignore
 
 subtract = remove
 
@@ -122,7 +122,7 @@ def intersect(main: T, tool: T,
         main._exists = False
     if remove_tool:
         tool._exists = False
-    return output #type:ignore
+    return output.set_material(main.material) #type:ignore
 
 def embed(main: GeoVolume, other: GeoSurface) -> None:
     ''' Embeds a surface into a volume in the GMSH model.
@@ -144,7 +144,8 @@ def rotate(main: GeoVolume,
            c0: tuple[float, float, float],
            ax: tuple[float, float, float],
            angle: float,
-           degree=True) -> GeoVolume:
+           make_copy: bool = False,
+           degree=True) -> GeoObject:
     """Rotates a GeoVolume object around an axist defined at a coordinate.
 
     Args:
@@ -159,17 +160,23 @@ def rotate(main: GeoVolume,
     """
     if degree:
         angle = angle * np.pi/180
-    gmsh.model.occ.rotate(main.dimtags, *c0, *ax, -angle)
-
+    
+    if make_copy:
+        rotate_obj = main.make_copy()
+    else:
+        rotate_obj = main
+     
+    gmsh.model.occ.rotate(rotate_obj.dimtags, *c0, *ax, -angle)
     # Rotate the facepointers
-    for fp in main._all_pointers:
+    for fp in rotate_obj._all_pointers:
         fp.rotate(c0, ax, angle)
-    return main
+    return rotate_obj
 
 def translate(main: GeoVolume,
               dx: float = 0,
               dy: float = 0,
-              dz: float = 0) -> GeoVolume:
+              dz: float = 0,
+              make_copy: bool = False) -> GeoObject:
     """Translates the GeoVolume object along a given displacement
 
     Args:
@@ -177,17 +184,23 @@ def translate(main: GeoVolume,
         dx (float, optional): The X-displacement in meters. Defaults to 0.
         dy (float, optional): The Y-displacement in meters. Defaults to 0.
         dz (float, optional): The Z-displacement in meters. Defaults to 0.
+        make_copy (bool, optional): Whether to make a copy first before translating.
 
     Returns:
-        GeoVolume: The translated object
+        GeoObject: The translated object
     """
-    gmsh.model.occ.translate(main.dimtags, dx, dy, dz)
+    
+    if make_copy:
+        trans_obj = main.make_copy()
+    else:
+        trans_obj = main
+    gmsh.model.occ.translate(trans_obj.dimtags, dx, dy, dz)
     
      # Rotate the facepointers
-    for fp in main._all_pointers:
+    for fp in trans_obj._all_pointers:
         fp.translate(dx, dy, dz)
 
-    return main
+    return trans_obj
 
 def mirror(main: GeoObject,
            origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -199,6 +212,7 @@ def mirror(main: GeoObject,
         main (GeoVolume): The object to mirror
         origin (tuple[float, float, float], optional): The point of origin in meters. Defaults to (0.0, 0.0, 0.0).
         direction (tuple[float, float, float], optional): The normal axis defining the plane of reflection. Defaults to (1.0, 0.0, 0.0).
+        make_copy (bool, optional): Whether to make a copy first before mirroring.
 
     Returns:
         GeoVolume: The mirrored GeoVolume object
@@ -211,14 +225,12 @@ def mirror(main: GeoObject,
     d = -(a*x0 + b*y0 + c*z0)
     if (a==0) and (b==0) and (c==0):
         return main
+    
     mirror_obj = main
     if make_copy:
-        new_obj = main.make_copy()
-        gmsh.model.occ.mirror(new_obj.dimtags, a,b,c,d)
-        mirror_obj = new_obj
-    else:
-        gmsh.model.occ.mirror(main.dimtags, a,b,c,d)
-
+        mirror_obj = main.make_copy()
+    gmsh.model.occ.mirror(mirror_obj.dimtags, a,b,c,d)
+    
     for fp in mirror_obj._all_pointers:
         fp.mirror(origin, direction)
     return mirror_obj
@@ -237,7 +249,7 @@ def change_coordinate_system(main: GeoObject,
         old_cs (CoordinateSystem, optional): The old coordinate system. Defaults to GCS.
 
     Returns:
-        _type_: _description_
+        GeoObject: The output object
     """
     if new_cs._is_global and old_cs._is_global:
         return main
@@ -255,3 +267,65 @@ def change_coordinate_system(main: GeoObject,
         fp.affine_transform(M1)
         fp.affine_transform(M2)
     return main
+
+@overload
+def unite(*objects: GeoVolume) -> GeoVolume: ...
+
+@overload
+def unite(*objects: GeoSurface) -> GeoSurface: ...
+
+@overload
+def unite(*objects: GeoEdge) -> GeoEdge: ...
+
+@overload
+def unite(*objects: GeoPolygon) -> GeoSurface: ...
+
+def unite(*objects: GeoObject) -> GeoObject:
+    """Applies a fusion consisting of all geometries in the argument.
+
+    Returns:
+        GeoObject: The resultant object
+    """
+    main, *rest = objects
+    if not rest:
+        return main
+    main._exists = False
+    dts = []
+    for other in rest:
+        dts.extend(other.dimtags)
+        other._exists = False
+    
+    new_dimtags, mapping = gmsh.model.occ.fuse(main.dimtags, dts)
+    
+    new_obj = GeoObject.from_dimtags(new_dimtags)._take_tools(*objects)
+    new_obj.set_material(main.material)
+    new_obj.prio_set(main._priority)
+    
+    return new_obj
+
+def expand_surface(surface: GeoSurface, distance: float) -> GeoSurface:
+    """EXPERIMENTAL: Expands an input surface. The surface must exist on a 2D plane.
+    
+    The output surface does not inherit material properties.
+    
+    If any problems occur, reach out through email.
+
+    Args:
+        surface (GeoSurface): The input surface to expand
+        distance (float): The exapansion distance
+
+    Returns:
+        GeoSurface: The output surface
+    """
+    surfs = [] 
+    for tag in surface.tags:
+        looptags, _ = gmsh.model.occ.get_curve_loops(tag)
+        new_curves = []
+        for looptag in looptags:
+            curve_tags = gmsh.model.occ.offset_curve(looptag, distance)
+            loop_tag = gmsh.model.occ.addCurveLoop([t for d,t in curve_tags])
+            new_curves.append(loop_tag)
+        surftag = gmsh.model.occ.addPlaneSurface(new_curves)
+        surfs.append(surftag)
+    surf = GeoSurface(surfs)
+    return surf

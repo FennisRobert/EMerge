@@ -11,7 +11,9 @@ PCB related demos (demo1 and demo3) to get more information on the PCBLayouter.
 mm = 0.001
 th = 1
 
-model = em.Simulation3D('Stripline_test', loglevel='DEBUG')
+model = em.Simulation('Stripline_test')
+model.check_version("0.6.7") # Checks version compatibility.
+
 # As usual we start by creating our layouter
 ly = em.geo.PCB(th, mm, em.GCS, em.lib.DIEL_RO4350B)
 
@@ -43,9 +45,9 @@ ly.determine_bounds(5,5,5,5)
 
 # Finally we can generate the PCB volumes. Because the trace start halfway through the PCB we turn
 # on the split-z function which cuts the PCB in multiple layers. This improves meshing around the striplines.
-diel = ly.gen_pcb(True, merge=True)
+diel = ly.generate_pcb(True, merge=True)
 # We also define the air-box
-air = ly.gen_air(3)
+air = ly.generate_air(3)
 
 # The rest is as usual
 model.commit_geometry()
@@ -57,9 +59,9 @@ model.mesher.set_boundary_size(trace, 0.001)
 
 model.generate_mesh()
 
-# We display the geometry with extra attention to the vias. With the vias.outside() method we can
+# We display the geometry with extra attention to the vias. With the vias.boundary() method we can
 # specifically show the outside faces of the via.
-model.view(selections=[vias.outside()])
+model.view(selections=[vias.boundary()])
 
 # We setup the lumped port boundary conditions. Because of an added functionality in the PCBLayouter 
 # class, you don't have to specify the width, height and direction of the lumped port, this information
@@ -72,16 +74,16 @@ p2 = model.mw.bc.LumpedPort(lp2, 2)
 pec = model.mw.bc.PEC(trace)
 
 #We also add a PEC for the outsides of our via.
-pecvia = model.mw.bc.PEC(vias.outside())
+pecvia = model.mw.bc.PEC(vias.boundary())
 
 # Finally we run the simulation!
-data = model.mw.frequency_domain(True, 4, frequency_groups=8)
+data = model.mw.run_sweep(True, 4, frequency_groups=8)
 
 freq = data.scalar.grid.freq
 S11 = data.scalar.grid.S(1,1)
 S21 = data.scalar.grid.S(2,1)
 
-plot_sp(freq/1e9, [S11, S21], labels=['S11','S21'])
+plot_sp(freq, [S11, S21], labels=['S11','S21'])
 
 model.display.add_object(diel, opacity=0.2)
 model.display.add_object(trace)

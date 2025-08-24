@@ -358,37 +358,6 @@ def local_mapping(vertex_ids, triangle_ids):
 
     return out
 
-@njit(f8[:,:](f8[:], f8[:], f8[:]), cache=True, nogil=True)
-def orthonormal_basis(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
-    """
-    Returns an orthonormal basis for the tetrahedron defined by the points
-    xs, ys, zs. The basis is given as a 3x3 matrix with the first column being
-    the normal vector of the face opposite to the first vertex.
-    """
-    x1, x2, x3 = xs
-    y1, y2, y3 = ys
-    z1, z2, z3 = zs
-    e1x, e1y, e1z = x2-x1, y2-y1, z2-z1
-    e2x, e2y, e2z = x3-x1, y3-y1, z3-z1
-
-    nn = np.array([e2y*e1z - e2z*e1y,
-                   e2z*e1x - e2x*e1z,
-                   e2y*e1x - e2x*e1y])
-    
-    nn = nn/np.sqrt(nn[0]**2 + nn[1]**2 + nn[2]**2)
-    n2 = np.array([e1x, e1y, e1z])/np.sqrt(e1x**2 + e1y**2 + e1z**2)
-    n1 = np.array([n2[1]*nn[2] - n2[2]*nn[1],
-                   n2[2]*nn[0] - n2[0]*nn[2],
-                   n2[0]*nn[1] - n2[1]*nn[0]])
-    
-    if dot(n1, cross(n2, nn)) < 0:
-        n1 = -n1
-    
-    B = np.zeros((3,3), dtype=np.float64)
-    B[:,0] = n1
-    B[:,1] = n2
-    B[:,2] = nn
-    return B
 
 @njit(f8[:,:](f8[:], f8[:], f8[:]), cache=True, nogil=True, fastmath=True)
 def compute_distances(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndarray:
@@ -413,6 +382,36 @@ def matinv(M: np.ndarray) -> np.ndarray:
         np.ndarray: The matrix inverse inv(M)
     """
     out = np.zeros((3,3), dtype=np.complex128)
+   
+    if M[0,1]==0 and M[0,2]==0 and M[1,0]==0 and M[1,2]==0 and M[2,0]==0 and M[2,1]==0:
+        out[0,0] = 1/M[0,0]
+        out[1,1] = 1/M[1,1]
+        out[2,2] = 1/M[2,2]
+    else:
+        det = M[0,0]*M[1,1]*M[2,2] - M[0,0]*M[1,2]*M[2,1] - M[0,1]*M[1,0]*M[2,2] + M[0,1]*M[1,2]*M[2,0] + M[0,2]*M[1,0]*M[2,1] - M[0,2]*M[1,1]*M[2,0]
+        out[0,0] = M[1,1]*M[2,2] - M[1,2]*M[2,1]
+        out[0,1] = -M[0,1]*M[2,2] + M[0,2]*M[2,1]
+        out[0,2] = M[0,1]*M[1,2] - M[0,2]*M[1,1]
+        out[1,0] = -M[1,0]*M[2,2] + M[1,2]*M[2,0]
+        out[1,1] = M[0,0]*M[2,2] - M[0,2]*M[2,0]
+        out[1,2] = -M[0,0]*M[1,2] + M[0,2]*M[1,0]
+        out[2,0] = M[1,0]*M[2,1] - M[1,1]*M[2,0]
+        out[2,1] = -M[0,0]*M[2,1] + M[0,1]*M[2,0]
+        out[2,2] = M[0,0]*M[1,1] - M[0,1]*M[1,0]
+        out = out*det
+    return out
+
+@njit(f8[:,:](f8[:,:]), cache=True, nogil=True)
+def matinv_r(M: np.ndarray) -> np.ndarray:
+    """Optimized matrix inverse of 3x3 matrix
+
+    Args:
+        M (np.ndarray): Input matrix M of shape (3,3)
+
+    Returns:
+        np.ndarray: The matrix inverse inv(M)
+    """
+    out = np.zeros((3,3), dtype=np.float64)
    
     if M[0,1]==0 and M[0,2]==0 and M[1,0]==0 and M[1,2]==0 and M[2,0]==0 and M[2,1]==0:
         out[0,0] = 1/M[0,0]

@@ -28,7 +28,9 @@ def Cf(C):
 # --- PCB and lumped-component parameters ---------------------------------
 pack = '0603'         # package footprint for lumped components
 # Create simulation and PCB layouter with substrate thickness and material
-m = em.Simulation3D('LumpedFilter', loglevel='DEBUG')
+m = em.Simulation('LumpedFilter')
+m.check_version("0.6.7") # Checks version compatibility.
+
 th = 0.5         # substrate thickness (meters)
 Hair = 2.0
 pcb = em.geo.PCB(th, unit=mm, cs=em.GCS,
@@ -68,8 +70,8 @@ pcb.determine_bounds(leftmargin=0, topmargin=1, rightmargin=0, bottommargin=1)
 # --- Define modal ports and generate environment ------------------------
 mp1 = pcb.modal_port(pcb.load('p1'), Hair)
 mp2 = pcb.modal_port(pcb.load('p2'), Hair)
-diel = pcb.gen_pcb()                   # substrate dielectric block
-air = pcb.gen_air(Hair)                  # surrounding air block
+diel = pcb.generate_pcb()                   # substrate dielectric block
+air = pcb.generate_air(Hair)                  # surrounding air block
 
 # Add all geometry to simulation
 m.commit_geometry()
@@ -87,7 +89,7 @@ m.mesher.set_domain_size(air, 3 * mm)
 # Build mesh and view
 m.generate_mesh()
 m.view()
-quit()
+
 # --- Boundary conditions -----------------------------------------------
 # Define modal (TEM) ports at input and output
 p1 = m.mw.bc.ModalPort(mp1, 1, TEM=True)
@@ -97,10 +99,10 @@ for le in LEs:
     m.mw.bc.LumpedElement(le)
 # Perfect conductor on copper traces and vias
 m.mw.bc.PEC(traces)
-m.mw.bc.PEC(vias.outside())
+m.mw.bc.PEC(vias.boundary())
 
 # --- Run frequency-domain simulation ------------------------------------
-data = m.mw.frequency_domain(parallel=True, njobs=4, frequency_groups=8)
+data = m.mw.run_sweep(parallel=True, njobs=4, frequency_groups=8)
 
 # --- Post-processing: plot S-parameters ---------------------------------
 f = data.scalar.grid.freq

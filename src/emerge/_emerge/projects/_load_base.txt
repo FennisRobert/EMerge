@@ -9,7 +9,7 @@ mil = 0.0254
 um = 0.000001
 PI = np.pi
 
-with em.Simulation3D("myfile", load_file=True) as m:
+with em.Simulation("myfile", load_file=True) as m:
     
     data = m.data.mw.scalar.grid
 

@@ -37,8 +37,8 @@ Dtot = 750              # total clearance (mil)
 extra = 100             # extra margin (mil)
 
 # --- Simulation setup ----------------------------------------------------
-model = em.Simulation3D('Demo3', loglevel='DEBUG')
-
+model = em.Simulation('Demo3')
+model.check_version("0.6.7") # Checks version compatibility.
 # --- Material and layouter -----------------------------------------------
 mat = em.Material(er=3.55, color="#488343", opacity=0.1)
 # Create PCB layouter with given substrate thickness and units
@@ -82,8 +82,8 @@ stripline = pcb.compile_paths(merge=True)
 pcb.determine_bounds(topmargin=150, bottommargin=150)
 
 # --- Generate dielectric and air blocks ----------------------------------
-diel = pcb.gen_pcb()                     # substrate dielectric block
-air = pcb.gen_air(4 * th)               # surrounding air box
+diel = pcb.generate_pcb()                     # substrate dielectric block
+air = pcb.generate_air(4 * th)               # surrounding air box
 # assign our custom material to the dielectric block
 diel.material = mat
 
@@ -114,20 +114,20 @@ pec = model.mw.bc.PEC(stripline)
 d = model.display
 # show dielectric block translucent green and stripline in red
 d.add_object(diel, color='green', opacity=0.5)
-d.add_object(stripline, color='red')
+d.add_object(stripline)
 d.show()
 
 # --- Run frequency-domain solver ----------------------------------------
-data = model.mw.frequency_domain(parallel=True, njobs=4, frequency_groups=8)
+data = model.mw.run_sweep(parallel=True, njobs=4, frequency_groups=8)
 
 # --- Extract and plot S-parameters ---------------------------------------
 f = data.scalar.grid.freq                  # frequency axis
 S11 = data.scalar.grid.S(1, 1)             # return loss
 S21 = data.scalar.grid.S(2, 1)             # insertion loss
-plot_sp(f / 1e9, [S11, S21], labels=['S11', 'S21'])
+plot_sp(f, [S11, S21], labels=['S11', 'S21'])
 
 # --- Vector fitting and supersampled plot -------------------------------
 f_fit = np.linspace(5.2e9, 6.2e9, 1001)
 S11_fit = data.scalar.grid.model_S(1, 1, f_fit)
 S21_fit = data.scalar.grid.model_S(2, 1, f_fit)
-plot_sp(f_fit / 1e9, [S11_fit, S21_fit], labels=['S11', 'S21'])
+plot_sp(f_fit, [S11_fit, S21_fit], labels=['S11', 'S21'])

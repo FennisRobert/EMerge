@@ -37,7 +37,7 @@ import inspect
 from pathlib import Path
 from atexit import register
 import signal
-
+from .. import __version__
 
 ############################################################
 #                   EXCEPTION DEFINITIONS                  #
@@ -54,20 +54,23 @@ Known problems/solutions:
 class SimulationError(Exception):
     pass
 
+class VersionError(Exception):
+    pass
+
 ############################################################
 #                 BASE 3D SIMULATION MODEL                 #
 ############################################################
 
-class Simulation3D:
+class Simulation:
 
     def __init__(self, 
                  modelname: str, 
-                 loglevel: Literal['DEBUG','INFO','WARNING','ERROR'] = 'INFO',
+                 loglevel: Literal['TRACE','DEBUG','INFO','WARNING','ERROR'] = 'INFO',
                  load_file: bool = False,
                  save_file: bool = False,
                  logfile: bool = False,
                  path_suffix: str = ".EMResults"):
-        """Generate a Simulation3D class object.
+        """Generate a Simulation class object.
 
         As a minimum a file name should be provided. Additionally you may provide it with any
         class that inherits from BaseDisplay. This will then be used for geometry displaying.
@@ -128,11 +131,11 @@ class Simulation3D:
         """Get the data from the current data container"""
         return self.data.sim[name]
     
-    def __enter__(self) -> Simulation3D:
+    def __enter__(self) -> Simulation:
         """This method is depricated with the new atexit system. It still exists for backwards compatibility.
 
         Returns:
-            Simulation3D: the Simulation3D object
+            Simulation: the Simulation object
         """
         return self
 
@@ -228,6 +231,28 @@ class Simulation3D:
     #                       PUBLIC FUNCTIONS                  #
     ############################################################
 
+    def check_version(self, version: str) -> None:
+        """Compares the provided version number with the version number of EMerge that is running the script.
+        
+        You may remove any call to check_version to suppress VersionErrors and warnings.
+        
+        Args:
+            version (str): The EMerge version you intend to write this code for.
+
+        Raises:
+            VersionError: A potential version error if incompatibility is possible
+        """
+        vM, vm, vp = [float(x) for x in version.split('.')]
+        cM, cm, cp = [float(x) for x in __version__.split('.')]
+        if vM != cM:
+            raise VersionError(f"You are running a script designed for version {version} with a possibly incompatible version of EMerge {__version__}")
+        if vm != cm:
+            raise VersionError(f"You are running a script designed for version {version} with a possibly incompatible version of EMerge {__version__}")
+        if vp != cp:
+            logger.warning(f"You are running a script designed for version {version} with a possibly incompatible version of EMerge {__version__}")
+            logger.warning("You may suppress this error by removing the call to .check_version().")
+            input('Press enter to proceed...')
+
     def save(self) -> None:
         """Saves the current model in the provided project directory."""
         # Ensure directory exists
@@ -294,26 +319,28 @@ class Simulation3D:
     def view(self, 
              selections: list[Selection] | None = None, 
              use_gmsh: bool = False,
-             volume_opacity: float = 0.1,
-             surface_opacity: float = 1,
-             show_edges: bool = True) -> None:
+             plot_mesh: bool = False,
+             volume_mesh: bool = True,
+             opacity: float | None = None) -> None:
         """View the current geometry in either the BaseDisplay object (PVDisplay only) or
         the GMSH viewer.
 
         Args:
-            selections (list[Selection], optional): Additional selections to highlight. Defaults to None.
-            use_gmsh (bool, optional): Whether to use the GMSH display. Defaults to False.
-            opacity (float, optional): The global opacity of all objects.. Defaults to None.
-            show_edges (bool, optional): Whether to show the geometry edges. Defaults to None.
+            selections (list[Selection] | None, optional): Optional selections to highlight. Defaults to None.
+            use_gmsh (bool, optional): If GMSH's GUI should be used. Defaults to False.
+            plot_mesh (bool, optional): If the mesh should be plot instead of the object. Defaults to False.
+            volume_mesh (bool, optional): If the internal mesh should be plot instead of only the surface boundary mesh. Defaults to True
+            opacity (float | None, optional): The object/mesh opacity. Defaults to None.
+
         """
         if not (self.display is not None and self.mesh.defined) or use_gmsh:
             gmsh.model.occ.synchronize()
             gmsh.fltk.run()
             return
         for geo in _GEOMANAGER.all_geometries():
-            self.display.add_object(geo)
+            self.display.add_object(geo, mesh=plot_mesh, opacity=opacity, volume_mesh=volume_mesh)
         if selections:
-            [self.display.add_object(sel, color='red', opacity=0.7) for sel in selections]
+            [self.display.add_object(sel, color='red', opacity=0.3) for sel in selections]
         self.display.show()
 
         return None
@@ -408,7 +435,7 @@ class Simulation3D:
         Example:
          >>> for W, H in model.parameter_sweep(True, width=widths, height=heights):
          >>>    // build simulation
-         >>>    data = model.frequency_domain()
+         >>>    data = model.run_sweep()
          >>> // Extract the data
          >>> widths, heights, frequencies, S21 = data.ax('width','height','freq').S(2,1)
         """
@@ -459,3 +486,4 @@ class Simulation3D:
         """
         logger.warning('define_geometry() will be derpicated. Use commit_geometry() instead.')
         self.commit_geometry(*args)
+        

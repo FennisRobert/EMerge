@@ -18,7 +18,7 @@ along with this program; if not, see
 """
 import os
 
-__version__ = "0.5.5"
+__version__ = "0.6.7"
 
 ############################################################
 #               HANDLE ENVIRONMENT VARIABLES              #
@@ -44,7 +44,7 @@ from loguru import logger
 LOG_CONTROLLER.set_default()
 logger.debug('Importing modules')
 
-from ._emerge.simmodel import Simulation3D
+from ._emerge.simmodel import Simulation
 from ._emerge.material import Material
 from ._emerge import bc
 from ._emerge.solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, Sorter, SolverPardiso, SolverUMFPACK, SolverSuperLU, EMSolver
@@ -52,6 +52,7 @@ from ._emerge.cs import CoordinateSystem, CS, GCS, Plane, Axis, XAX, YAX, ZAX, X
 from ._emerge.coord import Line
 from ._emerge import geo
 from ._emerge.selection import Selection, FaceSelection, DomainSelection, EdgeSelection
+from ._emerge.geometry import select
 from ._emerge.mth.common_functions import norm, coax_rout, coax_rin
 from ._emerge.physics.microwave.sc import stratton_chu
 from ._emerge.periodic import RectCell, HexCell

@@ -36,7 +36,8 @@ wga = 22.86*mm
 wgb = 10.16*mm
 L = 50*mm
 
-model = em.Simulation3D('Test Mode')
+model = em.Simulation('Test Mode')
+model.check_version("0.6.7") # Checks version compatibility.
 
 # first lets define a WR90 waveguide
 wg_box = em.geo.Box(L, wga, wgb, position=(-L, -wga/2, -wgb/2))
@@ -70,7 +71,7 @@ feed_port = wg_box_new.face('left', tool=wg_box)
 
 # We can also select the outside and exclude a given face. Because our airbox
 # is not modified, we don't have to work with tools.
-radiation_boundary = airbox.outside('left')
+radiation_boundary = airbox.boundary(exclude=('left',))
 
 # Lets view our result
 model.view(selections=[feed_port, radiation_boundary])
@@ -112,14 +113,14 @@ rad = model.mw.bc.AbsorbingBoundary(radiation_boundary)
 model.mw.modal_analysis(port, 1)
 
 # Run the simulation
-data = model.mw.frequency_domain()
+data = model.mw.run_sweep()
 
 
 # First the S11 plot
 f = data.scalar.grid.freq
 S11 = data.scalar.grid.S(1,1)
 
-plot_sp(f/1e9, S11, labels=['S11'])
+plot_sp(f, S11, labels=['S11'])
 
 # First we need to create a boundary mesh
 rad_surf = model.mesh.boundary_surface(radiation_boundary.tags, (0,0,0))

@@ -26,7 +26,7 @@ from typing import Iterable, Literal, Callable, Any
 from ..display import BaseDisplay
 from .display_settings import PVDisplaySettings
 from matplotlib.colors import ListedColormap
-
+from itertools import cycle
 ### Color scale
 
 # Define the colors we want to use
@@ -39,6 +39,40 @@ col5 = np.array([250, 75, 148, 255])/255
 cmap_names = Literal['bgy','bgyw','kbc','blues','bmw','bmy','kgy','gray','dimgray','fire','kb','kg','kr',
                      'bkr','bky','coolwarm','gwv','bjy','bwy','cwr','colorwheel','isolum','rainbow','fire',
                      'cet_fire','gouldian','kbgyw','cwr','CET_CBL1','CET_CBL3','CET_D1A']
+
+
+def _gen_c_cycle():
+    colors = [
+        "#0000aa",
+        "#aa0000",
+        "#009900",
+        "#990099",
+        "#994400",
+        "#005588"
+    ]
+    return cycle(colors)
+
+C_CYCLE = _gen_c_cycle()
+
+class _RunState:
+    
+    def __init__(self):
+        self.state: bool = False
+        self.ctr: int = 0
+        
+        
+    def run(self):
+        self.state = True
+        self.ctr = 0
+        
+    def stop(self):
+        self.state = False
+        self.ctr = 0
+        
+    def step(self):
+        self.ctr += 1
+    
+ANIM_STATE = _RunState()
 
 def gen_cmap(mesh, N: int = 256):
     # build a linear grid of data‐values (not strictly needed for pure colormap)
@@ -201,6 +235,7 @@ class PVDisplay(BaseDisplay):
         self._stop: bool = False
         self._objs: list[_AnimObject] = []
         self._do_animate: bool = False
+        self._closed_via_x: bool = False
         self._Nsteps: int  = 0
         self._fps: int = 25
         self._ruler: ScreenRuler = ScreenRuler(self, 0.001)
@@ -216,6 +251,15 @@ class PVDisplay(BaseDisplay):
         self._ctr: int = 0 
         
         self.camera_position = (1, -1, 1)     # +X, +Z, -Y
+    
+    def _wire_close_events(self):
+        self._closed = False
+
+        def mark_closed(*_):
+            self._closed = True
+            self._stop = True
+        
+        self._plot.add_key_event('q', lambda: mark_closed())
         
     def _update_camera(self):
         x,y,z = self._plot.camera.position
@@ -241,8 +285,12 @@ class PVDisplay(BaseDisplay):
         self._update_camera()
         self._add_aux_items()
         if self._do_animate:
+            self._wire_close_events()
+            self.add_text('Press Q to close!',color='red', position='upper_left')
             self._plot.show(auto_close=False, interactive_update=True, before_close_callback=self._close_callback)
             self._animate()
+            
+            
         else:
             self._plot.show()
         self._reset()
@@ -261,25 +309,55 @@ class PVDisplay(BaseDisplay):
         self._plot = pv.Plotter()
         self._stop = False
         self._objs = []
+        C_CYCLE = _gen_c_cycle()
 
-    def _close_callback(self):
+    def _close_callback(self, arg):
         """The private callback function that stops the animation.
         """
         self._stop = True
+        print('CLOSE!')
 
     def _animate(self) -> None:
         """Private function that starts the animation loop.
         """
-        self._plot.update()
-        while not self._stop:
-            for step in range(self._Nsteps):
-                if self._stop:
-                    break
+        
+        self._stop = False
+
+        # guard values
+        steps = max(1, int(self._Nsteps))
+        fps   = max(1, int(self._fps))
+        dt    = 1.0 / fps
+        next_tick = time.perf_counter()
+        step = 0
+
+        while (not self._stop
+                and not self._closed_via_x
+                and self._plot.render_window is not None):
+            # process window/UI events so close button works
+            self._plot.update()
+
+            now = time.perf_counter()
+            if now >= next_tick:
+                step = (step + 1) % steps
+                phi = np.exp(1j * (step / steps) * 2*np.pi)
+
+                # update all animated objects
                 for aobj in self._objs:
-                    phi = np.exp(1j*(step/self._Nsteps)*2*np.pi)
                     aobj.update(phi)
-                self._plot.update()
-                time.sleep(1/self._fps)
+
+                # draw one frame
+                self._plot.render()
+
+                # schedule next frame; catch up if we fell behind
+                next_tick += dt
+                if now > next_tick + dt:
+                    next_tick = now + dt
+
+            # be kind to the CPU
+            time.sleep(0.001)
+
+        # ensure cleanup pathway runs once
+        self._close_callback(None)
 
     def animate(self, Nsteps: int = 35, fps: int = 25) -> PVDisplay:
         """ Turns on the animation mode with the specified number of steps and FPS.
@@ -357,11 +435,29 @@ class PVDisplay(BaseDisplay):
             return None
 
     ## OBLIGATORY METHODS
-    def add_object(self, obj: GeoObject | Selection, *args, **kwargs):
-        kwargs = setdefault(kwargs, color=obj.color_rgb, opacity=obj.opacity, silhouette=False, show_edges=False, pickable=True)
+    def add_object(self, obj: GeoObject | Selection, mesh: bool = False, volume_mesh: bool = True, *args, **kwargs):
         
-        actor = self._plot.add_mesh(self.mesh(obj), *args, **kwargs)
-        self._plot.add_mesh(self._volume_edges(_select(obj)), color='#000000', line_width=1, show_edges=True)
+        show_edges = False
+        opacity = obj.opacity
+        line_width = 0.5
+        color = obj.color_rgb
+        style='surface'
+        
+        if mesh is True:
+            show_edges = True
+            opacity = 0.7
+            line_width= 1
+            style='wireframe'
+            color=next(C_CYCLE)
+        
+        kwargs = setdefault(kwargs, color=color, opacity=opacity, line_width=line_width, show_edges=show_edges, pickable=True, style=style)
+        mesh_obj = self.mesh(obj)
+        
+        if mesh is True and volume_mesh is True:
+            mesh_obj = mesh_obj.extract_all_edges()
+        
+        actor = self._plot.add_mesh(mesh_obj, *args, **kwargs)
+        self._plot.add_mesh(self._volume_edges(_select(obj)), color='#000000', line_width=2, show_edges=True)
 
     def add_scatter(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
         """Adds a scatter point cloud
@@ -471,6 +567,7 @@ class PVDisplay(BaseDisplay):
         grid = pv.StructuredGrid(x,y,z)
         field_flat = field.flatten(order='F')
 
+
         if scale=='log':
             T = lambda x: np.log10(np.abs(x))
         elif scale=='symlog':
@@ -486,25 +583,28 @@ class PVDisplay(BaseDisplay):
         self._ctr += 1
         grid[name] = static_field
 
+        grid_no_nan = grid.ptc().threshold(scalars=name)
+
+        # Determine color limits
         if clim is None:
-            fmin = np.min(static_field)
-            fmax = np.max(static_field)
+            fmin = np.nanmin(static_field)
+            fmax = np.nanmax(static_field)
             clim = (fmin, fmax)
-        
         if symmetrize:
-            lim = max(abs(clim[0]),abs(clim[1]))
+            lim = max(abs(clim[0]), abs(clim[1]))
             clim = (-lim, lim)
 
         kwargs = setdefault(kwargs, cmap=cmap, clim=clim, opacity=opacity, pickable=False, multi_colors=True)
-        actor = self._plot.add_mesh(grid, scalars=name, **kwargs)
+        actor = self._plot.add_mesh(grid_no_nan, scalars=name, **kwargs)
+
 
         if self._do_animate:
             def on_update(obj: _AnimObject, phi: complex):
-                field = obj.T(np.real(obj.field*phi))
-                obj.grid['anim'] = field
-            self._objs.append(_AnimObject(field_flat, T, grid, actor, on_update)) # type: ignore
-        
-        
+                field_anim = obj.T(np.real(obj.field * phi))
+                obj.grid[name] = field_anim
+            self._objs.append(_AnimObject(field_flat, T, grid_no_nan, actor, on_update))
+
+
     def add_title(self, title: str) -> None:
         """Adds a title
 
@@ -524,6 +624,8 @@ class PVDisplay(BaseDisplay):
         if abs_position is not None:
             final_position = abs_position
             viewport = True
+        else:
+            final_position = abs_position
         self._plot.add_text(
             text,
             position=final_position,

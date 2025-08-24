@@ -9,9 +9,12 @@ wheels/
 # Virtual environments
 .venv
 environment.yml
+.vscode
+.mypy_cache
 
 # paths
 meshes/
+scrap/
 
 # Meshes
 *.msh

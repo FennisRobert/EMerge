@@ -20,9 +20,9 @@ from __future__ import annotations
 from ..cs import CoordinateSystem, GCS, Axis
 from ..geometry import GeoPolygon, GeoVolume, GeoSurface
 from ..material import Material, AIR, COPPER
-from .shapes import Box, Plate, Cyllinder
+from .shapes import Box, Plate, Cylinder
 from .polybased import XYPolygon
-from .operations import change_coordinate_system
+from .operations import change_coordinate_system, unite
 from .pcb_tools.macro import parse_macro
 from .pcb_tools.calculator import PCBCalculator
 
@@ -310,7 +310,6 @@ class StripCurve(StripTurn):
         points: list[tuple[float, float]] = []
         Npts = int(np.ceil(abs(self.angle/self.dang)))
         R = self.radius-np.sign(self.angle)*self.width/2
-        print(R, self.circ_origin, self._xhat, self._yhat)
         for i in range(Npts):
             ang = abs((i+1)/Npts * self.angle * np.pi/180)
             pnew = self.circ_origin + R*(self._xhat*np.cos(ang)+self._yhat*np.sin(ang))
@@ -324,7 +323,6 @@ class StripCurve(StripTurn):
 
         Npts = int(np.ceil(abs(self.angle/self.dang)))
         R = self.radius+np.sign(self.angle)*self.width/2
-        print(R, self.circ_origin, self._xhat, self._yhat)
         for i in range(Npts):
             ang = abs((i+1)/Npts * self.angle * np.pi/180)
             pnew = self.circ_origin + R*(self._xhat*np.cos(ang)+self._yhat*np.sin(ang))
@@ -965,7 +963,17 @@ class PCB:
         Returns:
             float: the z-height
         """
+        if layer <= 0:
+            return self._zs[layer]
         return self._zs[layer-1]
+    
+    @property
+    def top(self) -> float:
+        return self._zs[-1]
+    
+    @property
+    def bottom(self) -> float:
+        return self._zs[0]
     
     def _get_z(self, element: RouteElement) -> float :
         """Return the z-height of a given Route Element
@@ -981,6 +989,31 @@ class PCB:
                 return path.z
         raise RouteException('Requesting z-height of route element that is not contained in a path.')
 
+    def add_vias(self, *coordinates: tuple[float, float], radius: float,
+                 z1: float | None = None,
+                 z2: float | None = None,
+                 segments: int = 6) -> None:
+        """Add a series of vias provided by a list of coordinates.
+        
+        Make sure to define the radius explicitly, otherwise the radius gets interpreted as a coordinate:
+        
+        >>> pcb.add_vias((x1,y1), (x1,y2), radius=1)
+
+        Args:
+            *coordinates (tuple(float, float)): A series of coordinates
+            radius (float): The radius
+            z1 (float | None, optional): The bottom z-coordinate. Defaults to None.
+            z2 (float | None, optional): The top z-coordinate. Defaults to None.
+            segments (int, optional): The number of segmets for the via. Defaults to 6.
+        """
+        if z1 is None:
+            z1 = self.z(0)
+        if z2 is None:
+            z2 = self.z(-1)
+        
+        for x,y in coordinates:
+            self.vias.append(Via(x,y,z1,z2,radius,segments))
+        
     def load(self, name: str) -> StripLine:
         """Acquire the x,y, coordinate associated with the label name.
         
@@ -1062,7 +1095,7 @@ class PCB:
             GeoSurface: _description_
         """
         if width is None or height is None or origin is None:
-            if self.width is None or self.length is None or self.origin:
+            if self.width is None or self.length is None or self.origin is None:
                 raise RouteException('Cannot define a plane with no possible definition of its size.')
             width = self.width
             height = self.length
@@ -1077,9 +1110,10 @@ class PCB:
 
         plane = Plate(origin, (width*self.unit, 0, 0), (0, height*self.unit, 0)) # type: ignore
         plane = change_coordinate_system(plane, self.cs) # type: ignore
+        plane.set_material(COPPER)
         return plane # type: ignore
     
-    def gen_pcb(self, 
+    def generate_pcb(self, 
                 split_z: bool = True,
                 layer_tolerance: float = 1e-6,
                 merge: bool = True) -> GeoVolume:
@@ -1119,11 +1153,11 @@ class PCB:
         box = change_coordinate_system(box, self.cs)
         return box # type: ignore
 
-    def gen_air(self, height: float) -> GeoVolume:
+    def generate_air(self, height: float) -> GeoVolume:
         """Generate the Air Block object
 
         This requires that the width, depth and origin are deterimed. This 
-        can either be done manually or via the .determine_boudns() method.
+        can either be done manually or via the .determine_bounds() method.
 
         Returns:
             GeoVolume: The PCB Block
@@ -1247,14 +1281,20 @@ class PCB:
         plate = change_coordinate_system(plate, self.cs)
         return plate # type: ignore
 
-    def generate_vias(self, merge=False) -> list[Cyllinder] | Cyllinder:
+    @overload
+    def generate_vias(self, merge=Literal[True]) -> GeoVolume: ...
+    
+    @overload
+    def generate_vias(self, merge=Literal[False]) -> list[Cylinder]: ...
+        
+    def generate_vias(self, merge=False) -> list[Cylinder] | GeoVolume:
         """Generates the via objects.
 
         Args:
             merge (bool, optional): Whether to merge the result into a final object. Defaults to False.
 
         Returns:
-            list[Cyllinder] | Cyllinder: Either al ist of cylllinders or a single one (merge=True)
+            list[Cylinder] | Cylinder: Either al ist of cylllinders or a single one (merge=True)
         """
         vias = []
         for via in self.vias:
@@ -1263,7 +1303,7 @@ class PCB:
             z0 = via.z1*self.unit
             xg, yg, zg = self.cs.in_global_cs(x0, y0, z0)
             cs = CoordinateSystem(self.cs.xax, self.cs.yax, self.cs.zax, np.array([xg, yg, zg]))
-            cyl = Cyllinder(via.radius*self.unit, (via.z2-via.z1)*self.unit, cs, via.segments)
+            cyl = Cylinder(via.radius*self.unit, (via.z2-via.z1)*self.unit, cs, via.segments)
             cyl.material = COPPER
             vias.append(cyl)
         if merge:
@@ -1321,7 +1361,7 @@ class PCB:
         Returns:
             list[Polygon] | GeoSurface: The output stripline polygons possibly merged if merge = True.
         """
-        polys = []
+        polys: list[GeoSurface] = []
         allx = []
         ally = []
 
@@ -1353,19 +1393,19 @@ class PCB:
             poly = self._gen_poly(pcbpoly.xys, pcbpoly.z)
             poly.material = pcbpoly.material
             polys.append(poly)
+            xs, ys = zip(*pcbpoly.xys)
+            allx.extend(xs)
+            ally.extend(ys)
+            
 
         self.xs = allx
         self.ys = ally
 
         self.traces = polys
+        
         if merge:
-            tags = []
-            for p in polys:
-                tags.extend(p.tags)
-                if p.material != COPPER:
-                    logger.warning(f'Merging a polygon with material {p.material} into a single polygon that will be COPPER.')
-            polys = GeoSurface(tags)
-            polys.material = COPPER
+            polys = unite(*polys)
+            
         return polys
                 
 ############################################################

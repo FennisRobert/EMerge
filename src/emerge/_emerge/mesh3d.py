@@ -170,13 +170,13 @@ class Mesh3D(Mesh):
         '''Return the number of nodes'''
         return self.nodes.shape[1]
 
-    def get_edge(self, i1: int, i2: int) -> int:
+    def get_edge(self, i1: int, i2: int, skip: bool = False) -> int:
         '''Return the edge index given the two node indices'''
         if i1==i2:
             raise ValueError("Edge cannot be formed by the same node.")
         search = (min(int(i1),int(i2)), max(int(i1),int(i2)))
         result =  self.inv_edges.get(search, -10)
-        if result == -10:
+        if result == -10 and not skip:
             raise ValueError(f'There is no edge with indices {i1}, {i2}')
         return result
     
@@ -454,13 +454,17 @@ class Mesh3D(Mesh):
         edge_tags = np.array(edge_tags).flatten()
         ent = np.array(edge_node_tags).reshape(-1,2).T
         nET = ent.shape[1]
-        self.edge_t2i = {int(edge_tags[i]): self.get_edge(self.n_t2i[ent[0,i]], self.n_t2i[ent[1,i]]) for i in range(nET)}
+        self.edge_t2i = {int(edge_tags[i]): self.get_edge(self.n_t2i[ent[0,i]], self.n_t2i[ent[1,i]], skip=True) for i in range(nET)}
+        self.edge_t2i = {key: value for key,value in self.edge_t2i.items() if value!=-10}
         self.edge_i2t = {i: t for t, i in self.edge_t2i.items()}
         
         edge_dimtags = gmsh.model.get_entities(1)
         for _d, t in edge_dimtags:
             _, edge_tags, node_tags = gmsh.model.mesh.get_elements(1, t)
-            self.etag_to_edge[t] = [int(self.edge_t2i[tag]) for tag in edge_tags[0]]
+            if not edge_tags:
+                self.etag_to_edge[t] = []
+                continue
+            self.etag_to_edge[t] = [int(self.edge_t2i.get(tag,None)) for tag in edge_tags[0] if tag in self.edge_t2i]
         
         
         ## Tag bindings

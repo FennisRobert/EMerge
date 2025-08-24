@@ -101,7 +101,7 @@ class Axis:
         """
         return self.pair(other)
     
-    def construct_cs(self) -> CoordinateSystem:
+    def construct_cs(self, origin: tuple[float, float, float] = (0.,0.,0.)) -> CoordinateSystem:
         """Constructs a coordinate system where this vector is the Z-axis
         and the X and Y axis are normal to this axis but with an arbitrary rotation.
 
@@ -114,7 +114,7 @@ class Axis:
             ax = Axis(np.array([0, 1, 0]))
         ax1 = self.cross(ax)
         ax2 = self.cross(ax1).neg
-        return CoordinateSystem(ax2, ax1, self, np.zeros(3))
+        return CoordinateSystem(ax2, ax1, self, np.array(origin))
 
 XAX: Axis = Axis(np.array([1, 0, 0]))
 YAX: Axis = Axis(np.array([0, 1, 0]))
@@ -318,7 +318,8 @@ class CoordinateSystem:
     
     def rotate(self, axis: tuple | list | np.ndarray | Axis, 
                angle: float, 
-               degrees: bool = True) -> CoordinateSystem:
+               degrees: bool = True,
+               origin: bool | np.ndarray = False) -> CoordinateSystem:
         """Return a new CoordinateSystem rotated about the given axis (through the global origin)
         by `angle`. If `degrees` is True, `angle` is interpreted in degrees.
 
@@ -326,6 +327,7 @@ class CoordinateSystem:
             axis (tuple | list | np.ndarray | Axis): The rotation axis
             angle (float): The rotation angle (in degrees if degrees = True)
             degrees (bool, optional): Whether to use degrees. Defaults to True.
+            origin (bool, np.array, optional): Whether to rotate the origin as well. Defaults to False.
 
         Returns:
             CoordinateSystem: The new rotated coordinate system
@@ -354,14 +356,21 @@ class CoordinateSystem:
         new_x = R @ self.xax.vector
         new_y = R @ self.yax.vector
         new_z = R @ self.zax.vector
-        #new_o = R @ self.origin
+        
+        if origin is not False:
+            if isinstance(origin, bool):
+                new_o = R @ self.origin
+            else:
+                new_o = (R @ (self.origin-np.array(origin))) + np.array(origin)
+        else:
+            new_o = self.origin.copy()
 
         return CoordinateSystem(
             xax=new_x,
             yax=new_y,
             zax=new_z,
-            origin=self.origin,
-            _is_global=self._is_global
+            origin=new_o,
+            _is_global=False
         )
     
     def swapxy(self) -> None:

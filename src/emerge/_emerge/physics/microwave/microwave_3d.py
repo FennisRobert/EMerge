@@ -24,6 +24,7 @@ from ...elements.nedelec2 import Nedelec2
 from ...solver import DEFAULT_ROUTINE, SolveRoutine
 from ...system import called_from_main_function
 from ...selection import FaceSelection
+from ...mth.optimized import compute_distances
 from .microwave_bc import MWBoundaryConditionSet, PEC, ModalPort, LumpedPort, PortBC
 from .microwave_data import MWData
 from .assembly.assembler import Assembler
@@ -60,7 +61,7 @@ def run_job_multi(job: SimJob) -> SimJob:
     return job
 
 
-def _dimstring(data: list[float]) -> str:
+def _dimstring(data: list[float] | np.ndarray) -> str:
     """A String formatter for dimensions in millimeters
 
     Args:
@@ -99,6 +100,21 @@ def shortest_path(xyz1: np.ndarray, xyz2: np.ndarray, Npts: int) -> np.ndarray:
 
     return path
 
+def _pick_central(vertices: np.ndarray) -> np.ndarray:
+    """Computes the coordinate in the vertex set that has the shortest square distance to all other points.
+    
+
+    Args:
+        vertices (np.ndarray): The set of coordinates [3,:]
+
+    Returns:
+        np.ndarray: The most central point
+    """
+    Ds = compute_distances(vertices[0,:], vertices[1,:], vertices[2,:])
+    sumDs = np.sum(Ds**2, axis=1)
+    id_central = np.argwhere(sumDs==np.min(sumDs)).flatten()[0]
+    return vertices[:, id_central].squeeze()
+    
 class Microwave3D:
     """The Electrodynamics time harmonic physics class.
 
@@ -302,8 +318,8 @@ class Microwave3D:
         dotprod = xs*field_axis[0] + ys*field_axis[1] + zs*field_axis[2]
 
         start_id = points[np.argwhere(dotprod == np.min(dotprod))]
-
-        start = np.squeeze(np.mean(self.mesh.nodes[:,start_id],axis=1))
+        
+        start = _pick_central(self.mesh.nodes[:,start_id.flatten()])
         logger.info(f'Starting node = {_dimstring(start)}')
         end = start + port.Vdirection.np*port.height
 
@@ -493,6 +509,7 @@ class Microwave3D:
             if TEM:
                 target_kz = ermean*urmean*1.1*k0
             else:
+                
                 target_kz = ermean*urmean*0.7*k0
 
     
@@ -514,7 +531,8 @@ class Microwave3D:
             Emode[solve_ids] = np.squeeze(eigenmode)
             Emode = Emode * np.exp(-1j*np.angle(np.max(Emode)))
 
-            beta = min(k0*np.sqrt(ermax*urmax), np.emath.sqrt(-eigen_values[i]))
+            beta_base = np.emath.sqrt(-eigen_values[i])
+            beta = min(k0*np.sqrt(ermax*urmax), beta_base)
 
             residuals = -1
 
@@ -559,14 +577,14 @@ class Microwave3D:
         logger.info(f'Elapsed time = {(T2-T0):.2f} seconds.')
         return None
     
-    def frequency_domain(self, 
-                         parallel: bool = False,
-                         njobs: int = 2, 
-                         harddisc_threshold: int | None = None,
-                         harddisc_path: str = 'EMergeSparse',
-                         frequency_groups: int = -1,
-                         multi_processing: bool = False,
-                         automatic_modal_analysis: bool = True) -> MWData:
+    def run_sweep(self, 
+                parallel: bool = False,
+                njobs: int = 2, 
+                harddisc_threshold: int | None = None,
+                harddisc_path: str = 'EMergeSparse',
+                frequency_groups: int = -1,
+                multi_processing: bool = False,
+                automatic_modal_analysis: bool = True) -> MWData:
         """Executes a frequency domain study
 
         The study is distributed over "njobs" workers.
@@ -828,7 +846,7 @@ class Microwave3D:
 
         for i in range(nmodes_found):
             
-            Emode = np.zeros((self.basis.n_field,), dtype=np.complex128)
+
             eig_k0 = np.sqrt(eigen_values[i])
             if eig_k0 < k0_limit:
                 logger.debug(f'Ignoring mode due to low k0: {eig_k0} < {k0_limit}')
@@ -838,11 +856,11 @@ class Microwave3D:
             logger.debug(f'Found k0={eig_k0:.2f}, f0={eig_freq/1e9:.2f} GHz')
             Emode = eigen_modes[:,i]
 
-            scalardata = self.data.scalar.new(freq=eig_freq, **self._params)
+            scalardata = self.data.scalar.new(**self._params)
             scalardata.k0 = eig_k0
             scalardata.freq = eig_freq
 
-            fielddata = self.data.field.new(freq=eig_freq, **self._params)
+            fielddata = self.data.field.new(**self._params)
             fielddata.freq = eig_freq
             fielddata._der = np.squeeze(er[0,0,:])
             fielddata._dur = np.squeeze(ur[0,0,:])
@@ -999,179 +1017,13 @@ class Microwave3D:
             mode_p = sparam_mode_power(self.mesh.nodes, tri_vertices, bc, k0, const, 5)
             return field_p, mode_p
 
-    # def frequency_domain_single(self, automatic_modal_analysis: bool = False) -> MWData:
-    #     """Execute a frequency domain study without distributed frequency sweep.
 
-    #     Args:
-    #         automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to False.
+    ############################################################
+    #                     DEPRICATED FUNCTIONS                #
+    ############################################################
 
-    #     Raises:
-    #         SimulationError: _description_
-
-    #     Returns:
-    #         MWSimData: The Simulation data.
-    #     """
-    #     T0 = time.time()
-    #     mesh = self.mesh
-    #     if self.bc._initialized is False:
-    #         raise SimulationError('Cannot run a modal analysis because no boundary conditions have been assigned.')
-        
-    #     self._initialize_field()
-    #     self._initialize_bc_data()
-        
-    #     er = self.mesh.retreive(lambda mat,x,y,z: mat.fer3d_mat(x,y,z), self.mesher.volumes)
-    #     ur = self.mesh.retreive(lambda mat,x,y,z: mat.fur3d_mat(x,y,z), self.mesher.volumes)
-    #     cond = self.mesh.retreive(lambda mat,x,y,z: mat.cond, self.mesher.volumes)[0,0,:]
-
-    #     ertri = np.zeros((3,3,self.mesh.n_tris), dtype=np.complex128)
-    #     urtri = np.zeros((3,3,self.mesh.n_tris), dtype=np.complex128)
-    #     condtri = np.zeros((self.mesh.n_tris,), dtype=np.complex128)
-
-    #     for itri in range(self.mesh.n_tris):
-    #         itet = self.mesh.tri_to_tet[0,itri]
-    #         ertri[:,:,itri] = er[:,:,itet]
-    #         urtri[:,:,itri] = ur[:,:,itet]
-    #         condtri[itri] = cond[itet]
-        
-    #     #### Port settings
-
-    #     all_ports = self.bc.oftype(PortBC)
-    #     port_numbers = [port.port_number for port in all_ports]
-
-    #     ##### FOR PORT SWEEP SET ALL ACTIVE TO FALSE. THIS SHOULD BE FIXED LATER
-    #     ### COMPUTE WHICH TETS ARE CONNECTED TO PORT INDICES
-
-    #     all_port_tets = []
-    #     for port in all_ports:
-    #         port.active=False
-            
-    #     all_port_tets = mesh.get_face_tets(*[port.tags for port in all_ports])
-        
-
-    #     logger.debug(f'Starting the simulation of {len(self.frequencies)} frequency points.')
-
-    #     # ITERATE OVER FREQUENCIES
-    #     for freq in self.frequencies:
-    #         logger.info(f'Simulation frequency = {freq/1e9:.3f} GHz') 
-            
-    #         # Assembling matrix problem
-    #         if automatic_modal_analysis:
-    #             self._compute_modes(freq)
-            
-    #         job = self.assembler.assemble_freq_matrix(self.basis, er, ur, cond, self.bc.boundary_conditions, freq, cache_matrices=self.cache_matrices)
-
-    #         logger.debug(f'Routine: {self.solveroutine}')
-
-    #         for A, b, ids, reuse in job.iter_Ab():
-    #             solution, report = self.solveroutine.solve(A, b, ids, reuse)
-    #             job.submit_solution(solution, report)
-
-    #         self.data.setreport(job.reports, freq=freq, **self._params)
-
-    #         k0 = 2*np.pi*freq/299792458
-
-    #         scalardata = self.data.scalar.new(freq=freq, **self._params)
-    #         scalardata.init_sp(port_numbers)
-    #         scalardata.freq = freq
-    #         scalardata.k0 = k0
-
-    #         fielddata = self.data.field.new(freq=freq, **self._params)
-    #         fielddata.freq = freq
-    #         fielddata.er = np.squeeze(er[0,0,:])
-    #         fielddata.ur = np.squeeze(ur[0,0,:])
-
-    #         # Recording port information
-    #         for i, port in enumerate(all_ports):
-    #             fielddata.add_port_properties(port.port_number,
-    #                                      mode_number=port.mode_number,
-    #                                      k0 = k0,
-    #                                      beta = port.get_beta(k0),
-    #                                      Z0 = port.portZ0(k0),
-    #                                      Pout= port.power)
-            
-    #         for active_port in all_ports:
-                
-    #             active_port.active = True
-    #             solution = job._fields[active_port.port_number]
-
-    #             fielddata._fields[active_port.port_number] = solution # TODO: THIS IS VERY FRAIL
-    #             fielddata.basis = self.basis
-
-    #             # Compute the S-parameters
-    #             # Define the field interpolation function
-    #             fieldf = self.basis.interpolate_Ef(solution, tetids=all_port_tets)
-
-    #             # Active port power
-    #             logger.debug('Active ports:')
-    #             tris = mesh.get_triangles(active_port.tags)
-    #             tri_vertices = mesh.tris[:,tris]
-    #             pfield, pmode = self._compute_s_data(active_port, fieldf, tri_vertices, k0, ertri[:,:,tris], urtri[:,:,tris])
-    #             logger.debug(f'Field Amplitude = {np.abs(pfield):.3f}, Excitation = {np.abs(pmode):.2f}')
-    #             Pout = pmode
-                
-    #             #Passive ports
-    #             logger.debug('Passive ports:')
-    #             for bc in all_ports:
-    #                 tris = mesh.get_triangles(bc.tags)
-    #                 tri_vertices = mesh.tris[:,tris]
-    #                 pfield, pmode = self._compute_s_data(bc, fieldf, tri_vertices, k0, ertri[:,:,tris], urtri[:,:,tris])
-    #                 logger.debug(f'Field amplitude = {np.abs(pfield):.3f}, Excitation= {np.abs(pmode):.2f}')
-    #                 scalardata.write_S(bc.port_number, active_port.port_number, pfield/Pout)
-
-    #             active_port.active=False
-            
-    #         fielddata.set_field_vector()
-
-    #     logger.info('Simulation Complete!')
-    #     T2 = time.time()    
-    #     logger.info(f'Elapsed time = {(T2-T0):.2f} seconds.')
-    #     return self.data
-## DEPRICATED
-
-
-
-    # 
-    # def eigenmode(self, mesh: Mesh3D, solver = None, num_sols: int = 6):
-    #     if solver is None:
-    #         logger.info('Defaulting to BiCGStab.')
-    #         solver = sparse.linalg.eigs
-
-    #     if self.order == 1:
-    #         logger.info('Detected 1st order elements.')
-    #         from ...elements.nedelec1.assembly import assemble_eig_matrix
-    #         ft = FieldType.VEC_LIN
-
-    #     elif self.order == 2:
-    #         logger.info('Detected 2nd order elements.')
-    #         from ...elements.nedelec2.assembly import assemble_eig_matrix_E
-    #         ft = FieldType.VEC_QUAD
-        
-    #     er = self.mesh.retreive(mesh.centers, lambda mat,x,y,z: mat.fer3d(x,y,z))
-    #     ur = self.mesh.retreive(mesh.centers, lambda mat,x,y,z: mat.fur3d(x,y,z))
-        
-    #     dataset = Dataset3D(mesh, self.frequencies, 0, ft)
-    #     dataset.er = er
-    #     dataset.ur = ur
-    #     logger.info('Solving eigenmodes.')
-        
-    #     f_target = self.frequencies[0]
-    #     sigma = (2 * np.pi * f_target / 299792458)**2
-
-    #     A, B, solvenodes = assemble_eig_matrix(mesh, er, ur, self.boundary_conditions)
-        
-    #     A = A[np.ix_(solvenodes, solvenodes)]
-    #     B = B[np.ix_(solvenodes, solvenodes)]
-    #     #A = sparse.csc_matrix(A)
-    #     #B = sparse.csc_matrix(B)
-        
-    #     w, v = sparse.linalg.eigs(A, k=num_sols, M=B, sigma=sigma, which='LM')
-        
-    #     logger.info(f'Eigenvalues: {np.sqrt(w)*299792458/(2*np.pi) * 1e-9} GHz')
-
-    #     Esol = np.zeros((num_sols, mesh.nfield), dtype=np.complex128)
-
-    #     Esol[:, solvenodes] = v.T
-        
-    #     dataset.set_efield(Esol)
-
-    #     self.basis = dataset
+    def frequency_domain(self, *args, **kwargs):
+        """DEPRICATED VERSION: Use run_sweep() instead.
+        """
+        logger.warning('This function is depricated. Please use run_sweep() instead')
+        return self.run_sweep(*args, **kwargs)

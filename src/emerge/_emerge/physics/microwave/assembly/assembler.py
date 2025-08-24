@@ -132,7 +132,7 @@ class Assembler:
         Returns:
             tuple[np.ndarray, np.ndarray, np.ndarray, NedelecLegrange2]: The E, B, solve ids and Mixed order field object.
         """
-        from .generalized_eigen import generelized_eigenvalue_matrix
+        from .generalized_eigen_hb import generelized_eigenvalue_matrix
         logger.debug('Assembling Boundary Mode Matrices')
 
         bcs = bc_set.boundary_conditions
@@ -167,8 +167,6 @@ class Assembler:
                 pec_ids.extend(list(nedlegfield.tri_to_field[:,it]))
 
         # Process all PEC Boundary Conditions
-        pec_edges = []
-        pec_vertices = []
         for pec in pecs:
             logger.trace(f'.implementing {pec}')
             face_tags = pec.tags
@@ -180,16 +178,6 @@ class Assembler:
                     continue
                 eids = nedlegfield.edge_to_field[:, i2]
                 pec_ids.extend(list(eids))
-                pec_edges.append(eids[0])
-                pec_vertices.append(eids[3]-nedlegfield.n_xy)
-                pec_vertices.append(eids[4]-nedlegfield.n_xy)
-            
-            for ii in tri_ids:
-                i2 = nedlegfield.mesh.from_source_tri(ii)
-                if i2 is None:
-                    continue
-                tids = nedlegfield.tri_to_field[:, i2]
-                pec_ids.extend(list(tids))
 
         # Process all port boundary Conditions
         pec_ids_set: set[int] = set(pec_ids)
@@ -312,16 +300,11 @@ class Assembler:
                     gamma = bc.get_gamma(K0)
                     logger.trace(f'..robin bc γ={gamma:.3f}')
 
-                    def Ufunc(x,y): 
-                        return bc.get_Uinc(x,y,K0)
+                    def Ufunc(x,y,z): 
+                        return bc.get_Uinc(x,y,z,K0)
                     
-                    ibasis = bc.get_inv_basis()
-                    if ibasis is None:
-                        basis = plane_basis_from_points(mesh.nodes[:,nodes]) + 1e-16
-                        ibasis = np.linalg.pinv(basis)
-                        logger.trace(f'..Using computed basis: {ibasis.flatten()}')
                     if bc._include_force:
-                        Bempty, b_p = assemble_robin_bc_excited(field, Bempty, tri_ids, Ufunc, gamma, ibasis, bc.cs.origin, gauss_points) # type: ignore
+                        Bempty, b_p = assemble_robin_bc_excited(field, Bempty, tri_ids, Ufunc, gamma, gauss_points) # type: ignore
                         port_vectors[bc.port_number] += b_p # type: ignore
                         logger.trace(f'..included force vector term with norm {np.linalg.norm(b_p):.3f}')
                     else:

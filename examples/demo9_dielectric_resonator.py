@@ -32,7 +32,8 @@ mat_resonator = em.lib.Material(er=34, color="#ededed")
 Nmodes = 5
 
 # --- Create simulation ---------------------------------------------------
-model = em.Simulation3D('DielectricResonatorFilter', loglevel='INFO')
+model = em.Simulation('DielectricResonatorFilter')
+model.check_version("0.6.7") # Checks version compatibility.
 
 # --- Build geometry ------------------------------------------------------
 # Metal enclosure box (PEC by default)
@@ -41,14 +42,14 @@ box = em.geo.Box(
     position=(-W/2, -W/2, 0)
 )
 # Support cylinder centered on enclosure floor
-support = em.geo.Cyllinder(
+support = em.geo.Cylinder(
     radius=Dsup/2,
     height=Lsup,
     cs=em.GCS,
     Nsections=20
 ).set_material(mat_support).prio_up()
 # DDR cylinder placed atop support
-resonator = em.geo.Cyllinder(
+resonator = em.geo.Cylinder(
     radius=Dres/2,
     height=Lres,
     cs=em.GCS.displace(0, 0, Lsup),

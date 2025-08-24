@@ -18,6 +18,7 @@
 
 import numpy as np
 from numba import njit, f8, c16, i8, types, prange
+from ....mth.optimized import cross, matinv_r
 from ....elements import Nedelec2
 from typing import Callable
 from loguru import logger
@@ -86,6 +87,28 @@ def generate_points(vertices_local, tris, DPTs, surf_triangle_indices):
     yflat = yall.flatten()
     return xflat, yflat
 
+@njit(types.Tuple((f8[:],f8[:], f8[:]))(f8[:,:], i8[:,:], f8[:,:], i8[:]), cache=True, nogil=True)
+def generate_points_3d(vertices, tris, DPTs, surf_triangle_indices):
+    NS = surf_triangle_indices.shape[0]
+    xall = np.zeros((DPTs.shape[1], NS))
+    yall = np.zeros((DPTs.shape[1], NS)) 
+    zall = np.zeros((DPTs.shape[1], NS))
+    for i in range(NS):
+        itri = surf_triangle_indices[i]
+        vertex_ids = tris[:, itri]
+        
+        x1, x2, x3 = vertices[0, vertex_ids]
+        y1, y2, y3 = vertices[1, vertex_ids]
+        z1, z2, z3 = vertices[2, vertex_ids]
+        
+        xall[:,i] = x1*DPTs[1,:] + x2*DPTs[2,:] + x3*DPTs[3,:]
+        yall[:,i] = y1*DPTs[1,:] + y2*DPTs[2,:] + y3*DPTs[3,:]
+        zall[:,i] = z1*DPTs[1,:] + z2*DPTs[2,:] + z3*DPTs[3,:]
+    xflat = xall.flatten()
+    yflat = yall.flatten()
+    zflat = zall.flatten()
+    return xflat, yflat, zflat
+
 @njit(f8[:,:](f8[:], f8[:], f8[:]), cache=True, nogil=True, fastmath=True)
 def compute_distances(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndarray:
     N = xs.shape[0]
@@ -96,8 +119,12 @@ def compute_distances(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndar
             Ds[j,i] = Ds[i,j]  
     return Ds
 
+@njit(cache=True, nogil=True)
+def normalize(a: np.ndarray):
+    return a/((a[0]**2 + a[1]**2 + a[2]**2)**0.5)
+    
 @njit(types.Tuple((c16[:,:],c16[:]))(f8[:,:], c16, c16[:,:], f8[:,:]), cache=True, nogil=True, parallel=False)
-def ned2_tri_stiff_force(lcs_vertices, gamma, lcs_Uinc, DPTs):
+def ned2_tri_stiff_force(glob_vertices, gamma, glob_Uinc, DPTs):
     ''' Nedelec-2 Triangle Stiffness matrix and forcing vector (For Boundary Condition of the Third Kind)
 
     '''
@@ -105,9 +132,25 @@ def ned2_tri_stiff_force(lcs_vertices, gamma, lcs_Uinc, DPTs):
     Bmat = np.zeros((8,8), dtype=np.complex128)
     bvec = np.zeros((8,), dtype=np.complex128)
 
+    orig = glob_vertices[:,0]
+    v2 = glob_vertices[:,1]
+    v3 = glob_vertices[:,2]
+    
+    e1 = v2-orig
+    e2 = v3-orig
+    zhat = normalize(cross(e1, e2))
+    xhat = normalize(e1)
+    yhat = normalize(cross(zhat, xhat))
+    basis = np.zeros((3,3), dtype=np.float64)
+    basis[0,:] = xhat
+    basis[1,:] = yhat
+    basis[2,:] = zhat
+    lcs_vertices = optim_matmul(basis, glob_vertices - orig[:,np.newaxis])
+    lcs_Uinc = optim_matmul(basis, glob_Uinc)
+    
     xs = lcs_vertices[0,:]
     ys = lcs_vertices[1,:]
-
+    
     x1, x2, x3 = xs
     y1, y2, y3 = ys
 
@@ -249,7 +292,7 @@ def ned2_tri_stiff_force(lcs_vertices, gamma, lcs_Uinc, DPTs):
     return Bmat, bvec
 
 @njit(types.Tuple((c16[:], c16[:]))(f8[:,:], i8[:,:], c16[:], c16[:], i8[:], c16, c16[:,:,:], f8[:,:], i8[:,:]), cache=True, nogil=True, parallel=False)
-def compute_bc_entries_excited(vertices_local, tris, Bmat, Bvec, surf_triangle_indices, gamma, Ulocal_all, DPTs, tri_to_field):
+def compute_bc_entries_excited(vertices_global, tris, Bmat, Bvec, surf_triangle_indices, gamma, Uglobal_all, DPTs, tri_to_field):
     N = 64
     Niter = surf_triangle_indices.shape[0]
     for i in prange(Niter): # type: ignore
@@ -257,9 +300,9 @@ def compute_bc_entries_excited(vertices_local, tris, Bmat, Bvec, surf_triangle_i
 
         vertex_ids = tris[:, itri]
 
-        Ulocal = Ulocal_all[:,:, i]
+        Ulocal = Uglobal_all[:,:, i]
 
-        Bsub, bvec = ned2_tri_stiff_force(vertices_local[:,vertex_ids], gamma, Ulocal, DPTs)
+        Bsub, bvec = ned2_tri_stiff_force(vertices_global[:,vertex_ids], gamma, Ulocal, DPTs)
         
         indices = tri_to_field[:, itri]
         
@@ -402,30 +445,28 @@ def compute_bc_entries(vertices, tris, Bmat, all_edge_lengths, surf_triangle_ind
 
 def assemble_robin_bc_excited(field: Nedelec2,
                               Bmat: np.ndarray,
-                surf_triangle_indices: np.ndarray,
-                Ufunc: Callable,
-                gamma: complex,
-                local_basis: np.ndarray,
-                origin: np.ndarray,
-                DPTs: np.ndarray):
+                              surf_triangle_indices: np.ndarray,
+                              Ufunc: Callable,
+                              gamma: complex,
+                              DPTs: np.ndarray):
     
     Bvec = np.zeros((field.n_field,), dtype=np.complex128)
 
-    vertices_local = optim_matmul(local_basis, field.mesh.nodes - origin[:,np.newaxis])
+    vertices = field.mesh.nodes
 
-    xflat, yflat = generate_points(vertices_local, field.mesh.tris, DPTs, surf_triangle_indices)
+    xflat, yflat, zflat = generate_points_3d(vertices, field.mesh.tris, DPTs, surf_triangle_indices)
 
-    Ulocal = Ufunc(xflat, yflat)
+    U_global = Ufunc(xflat, yflat, zflat)
 
-    Ulocal_all = Ulocal.reshape((3, DPTs.shape[1], surf_triangle_indices.shape[0]))
+    U_global_all = U_global.reshape((3, DPTs.shape[1], surf_triangle_indices.shape[0]))
 
-    Bmat, Bvec = compute_bc_entries_excited(vertices_local, field.mesh.tris, Bmat, Bvec, surf_triangle_indices, gamma, Ulocal_all, DPTs, field.tri_to_field)
+    Bmat, Bvec = compute_bc_entries_excited(vertices, field.mesh.tris, Bmat, Bvec, surf_triangle_indices, gamma, U_global_all, DPTs, field.tri_to_field)
     return Bmat, Bvec
 
 def assemble_robin_bc(field: Nedelec2,
                       Bmat: np.ndarray,
-                    surf_triangle_indices: np.ndarray,
-                    gamma: np.ndarray):
+                      surf_triangle_indices: np.ndarray,
+                      gamma: np.ndarray):
     vertices = field.mesh.nodes
     all_edge_lengths = field.mesh.edge_lengths[field.mesh.tri_to_edge]
     Bmat = compute_bc_entries(vertices, field.mesh.tris, Bmat, all_edge_lengths, surf_triangle_indices, gamma)

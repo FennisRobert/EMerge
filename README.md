@@ -38,7 +38,7 @@ import emerge as em
 def main():
     # setup simulation
 
-    model.mw.frequency_domain(True, ..., multi_processing=True)
+    model.mw.run_sweep(True, ..., multi_processing=True)
 
 if __name__ == "__main__":
     main()

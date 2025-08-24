@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.5.5"
+current_version = "0.6.7"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
@@ -28,3 +28,45 @@ filename = "pyproject.toml"
 
 [[tool.bumpversion.files]]
 filename = "src/emerge/__init__.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo1_stepped_imp_filter.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo2_combline_filter.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo3_coupled_line_filter.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo4_patch_antenna.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo5_revolve.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo6_striplines_with_vias.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo7_periodic_cells.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo8_waveguide_bpf_synthesis.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo9_dielectric_resonator.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo10_sgh.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo11_lumped_element_filter.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo12_mode_alignment.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo13_helix_antenna.py"
+
+[[tool.bumpversion.files]]
+filename = "examples/demo14_boundary_selection.py"

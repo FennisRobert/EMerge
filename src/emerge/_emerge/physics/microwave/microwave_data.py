@@ -249,14 +249,77 @@ class MWData:
         self.sim.new(**vars)['report'] = report
     
 @dataclass
-class FarfieldData:
+class FarFieldData:
     E: np.ndarray
     H: np.ndarray
     theta: np.ndarray
     phi: np.ndarray
+    ang: np.ndarray | None = None
 
+    @property
+    def Ex(self) -> np.ndarray:
+        return self.E[0,:]
+    
+    @property
+    def Ey(self) -> np.ndarray:
+        return self.E[1,:]
+    
+    @property
+    def Ez(self) -> np.ndarray:
+        return self.E[2,:]
+    
+    @property
+    def Hx(self) -> np.ndarray:
+        return self.H[0,:]
+    
+    @property
+    def Hy(self) -> np.ndarray:
+        return self.H[1,:]
+    
+    @property
+    def Hz(self) -> np.ndarray:
+        return self.H[2,:]
+    
+    @property
+    def Etheta(self) -> np.ndarray:
+        thx = -np.cos(self.theta)*np.cos(self.phi)
+        thy = -np.cos(self.theta)*np.sin(self.phi)
+        thz = np.sin(self.theta)
+        return thx*self.E[0,:] + thy*self.E[1,:] + thz*self.E[2,:]
+    
+    @property
+    def Ephi(self) -> np.ndarray:
+        phx = -np.sin(self.phi)
+        phy = np.cos(self.phi)
+        phz = np.zeros_like(self.theta)
+        return phx*self.E[0,:] + phy*self.E[1,:] + phz*self.E[2,:]
+    
+    @property
+    def Erhcp(self) -> np.ndarray:
+        return (self.Etheta - 1j*self.Ephi)/np.sqrt(2)
+    
+    @property
+    def Elhcp(self) -> np.ndarray:
+        return (self.Etheta + 1j*self.Ephi)/np.sqrt(2)
+    
+    @property
+    def AR(self) -> np.ndarray:
+        R = np.abs(self.Erhcp)
+        L = np.abs(self.Elhcp)
+        return (R+L)/(R-L)
+    
+    @property
+    def normE(self) -> np.ndarray:
+        return np.sqrt(np.abs(self.E[0,:])**2 + np.abs(self.E[1,:])**2 + np.abs(self.E[2,:])**2)
+    
+    @property
+    def normH(self) -> np.ndarray:
+        return np.sqrt(np.abs(self.H[0,:])**2 + np.abs(self.H[1,:])**2 + np.abs(self.H[2,:])**2)
+    
+    
     def surfplot(self, 
-             polarization: Literal['Ex','Ey','Ez','Etheta','Ephi','normE'], 
+             polarization: Literal['Ex','Ey','Ez','Etheta','Ephi','normE','Erhcp','Elhcp','AR'],
+             quantity: Literal['abs','real','imag','angle'] = 'abs',
              isotropic: bool = True, dB: bool = False, dBfloor: float = -30, rmax: float | None = None,
              offset: tuple[float, float, float] = (0,0,0)) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Returns the parameters to be used as positional arguments for the display.add_surf() function.
@@ -273,27 +336,16 @@ class FarfieldData:
         Returns:
             tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The X, Y, Z, F values
         """
-        if polarization == "Ex":
-            F = self.E[0,:]
-        elif polarization == "Ey":
-            F = self.E[1,:]
-        elif polarization == "Ez":
-            F = self.E[2,:]
-        elif polarization == "normE":
-            F = np.sqrt(np.abs(self.E[0,:])**2 + np.abs(self.E[1,:])**2 + np.abs(self.E[2,:])**2)
-        elif polarization == "Etheta":
-            thx = -np.cos(self.theta)*np.cos(self.phi)
-            thy = -np.cos(self.theta)*np.sin(self.phi)
-            thz = np.sin(self.theta)
-            F = np.abs(thx*self.E[0,:] + thy*self.E[1,:] + thz*self.E[2,:])
-        elif polarization == "Ephi":
-            phx = -np.sin(self.phi)
-            phy = np.cos(self.phi)
-            phz = np.zeros_like(self.theta)
-            F = np.abs(phx*self.E[0,:] + phy*self.E[1,:] + phz*self.E[2,:])
-        else:
-            logger.warning('Defaulting to normE')
-            F = np.sqrt(np.abs(self.E[0,:])**2 + np.abs(self.E[1,:])**2 + np.abs(self.E[2,:])**2)
+        fmap = {
+            'abs': np.abs,
+            'real': np.real,
+            'imag': np.imag,
+            'angle': np.angle,
+        }
+        mapping = fmap.get(quantity.lower(),np.abs)
+        
+        F = mapping(self.__dict__.get(polarization, self.normE))
+        
         if isotropic:
             F = F/np.sqrt(Z0/(2*np.pi))
         if dB:
@@ -679,6 +731,19 @@ class MWField:
                      x: float | None = None,
                      y: float | None = None,
                      z: float | None = None) -> EHField:
+        """Create a cartesian cut plane (XY, YZ or XZ) and compute the E and H-fields there
+
+        Only one coordiante and thus cutplane may be defined. If multiple are defined only the last (x->y->z) is used.
+        
+        Args:
+            ds (float): The discretization step size
+            x (float | None, optional): The X-coordinate in case of a YZ-plane. Defaults to None.
+            y (float | None, optional): The Y-coordinate in case of an XZ-plane. Defaults to None.
+            z (float | None, optional): The Z-coordinate in case of an XY-plane. Defaults to None.
+
+        Returns:
+            EHField: The resultant EHField object
+        """
         xb, yb, zb = self.basis.bounds
         xs = np.linspace(xb[0], xb[1], int((xb[1]-xb[0])/ds))
         ys = np.linspace(yb[0], yb[1], int((yb[1]-yb[0])/ds))
@@ -693,6 +758,55 @@ class MWField:
             X,Y = np.meshgrid(xs, ys)
             Z = z*np.ones_like(Y)
         return self.interpolate(X,Y,Z)
+    def cutplane_normal(self,
+             point=(0,0,0),
+             normal=(0,0,1),
+             npoints: int = 300) -> EHField:
+        """
+        Take a 2D slice of the field along an arbitrary plane.
+        Args:
+            point: (x0,y0,z0), a point on the plane
+            normal: (nx,ny,nz), plane normal vector
+            npoints: number of grid points per axis
+        """
+
+        n = np.array(normal, dtype=float)
+        n /= np.linalg.norm(n)
+        point = np.array(point) 
+
+        tmp = np.array([1,0,0]) if abs(n[0]) < 0.9 else np.array([0,1,0])
+        u = np.cross(n, tmp)
+        u /= np.linalg.norm(u)
+        v = np.cross(n, u)
+        
+        xb, yb, zb = self.basis.bounds
+        nx, ny, nz = 5, 5, 5
+        Xg = np.linspace(xb[0], xb[1], nx)
+        Yg = np.linspace(yb[0], yb[1], ny)
+        Zg = np.linspace(zb[0], zb[1], nz)
+        Xg, Yg, Zg = np.meshgrid(Xg, Yg, Zg, indexing='ij')
+        geometry = np.vstack([Xg.ravel(), Yg.ravel(), Zg.ravel()]).T  # Nx3
+        
+        rel_pts = geometry - point
+        S = rel_pts @ u
+        T = rel_pts @ v 
+        
+        margin = 0.01
+        s_min, s_max = S.min(), S.max()
+        t_min, t_max = T.min(), T.max()
+        s_bounds = (s_min - margin*(s_max-s_min), s_max + margin*(s_max-s_min))
+        t_bounds = (t_min - margin*(t_max-t_min), t_max + margin*(t_max-t_min))
+
+        S_grid = np.linspace(s_bounds[0], s_bounds[1], npoints)
+        T_grid = np.linspace(t_bounds[0], t_bounds[1], npoints)
+        S_mesh, T_mesh = np.meshgrid(S_grid, T_grid)
+
+        X = point[0] + S_mesh*u[0] + T_mesh*v[0]
+        Y = point[1] + S_mesh*u[1] + T_mesh*v[1]
+        Z = point[2] + S_mesh*u[2] + T_mesh*v[2]
+
+        return self.interpolate(X, Y, Z)
+    
     
     def grid(self, ds: float) -> EHField:
         """Interpolate a uniform grid sampled at ds
@@ -764,7 +878,7 @@ class MWField:
                          ang_range: tuple[float, float] = (-180, 180),
                          Npoints: int = 201,
                          origin: tuple[float, float, float] | None = None,
-                         syms: list[Literal['Ex','Ey','Ez', 'Hx','Hy','Hz']] | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                         syms: list[Literal['Ex','Ey','Ez', 'Hx','Hy','Hz']] | None = None) -> FarFieldData:#tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute the farfield electric and magnetic field defined by a circle.
 
         Args:
@@ -784,14 +898,14 @@ class MWField:
         theta, phi = arc_on_plane(refdir, plane_normal_parsed, ang_range, Npoints)
         E,H = self.farfield(theta, phi, faces, origin, syms = syms)
         angs = np.linspace(*ang_range, Npoints)*np.pi/180
-        return angs, E ,H
+        return FarFieldData(E, H, theta, phi, ang=angs)
 
     def farfield_3d(self, 
                     faces: FaceSelection | GeoSurface,
                     thetas: np.ndarray | None = None,
                     phis: np.ndarray | None = None,
                     origin: tuple[float, float, float] | None = None,
-                    syms: list[Literal['Ex','Ey','Ez', 'Hx','Hy','Hz']] | None = None) -> FarfieldData:
+                    syms: list[Literal['Ex','Ey','Ez', 'Hx','Hy','Hz']] | None = None) -> FarFieldData:
         """Compute the farfield in a 3D angular grid
 
         If thetas and phis are not provided, they default to a sample space of 2 degrees.
@@ -816,7 +930,7 @@ class MWField:
         E = E.reshape((3, ) + T.shape)
         H = H.reshape((3, ) + T.shape)
         
-        return FarfieldData(E, H, T, P)
+        return FarFieldData(E, H, T, P)
 
     def farfield(self, theta: np.ndarray,
                  phi: np.ndarray,
@@ -872,7 +986,7 @@ class MWField:
         
         return Eff, Hff
 
-    def optycal(self, faces: FaceSelection | GeoSurface | None = None) -> tuple:
+    def optycal_surface(self, faces: FaceSelection | GeoSurface | None = None) -> tuple:
         """Export this models exterior to an Optical acceptable dataset
 
         Args:
@@ -896,7 +1010,24 @@ class MWField:
         H = field.H
         k0 = self.k0
         return vertices, triangles, E, H, origin, k0
-        
+    
+    def optycal_antenna(self, faces: FaceSelection | GeoSurface | None = None,
+                        origin: tuple[float, float, float] | None = None,
+                        syms: list[Literal['Ex','Ey','Ez', 'Hx','Hy','Hz']] | None = None) -> dict:
+        """Export this models exterior to an Optical acceptable dataset
+
+        Args:
+            faces (FaceSelection | GeoSurface): The faces to export. Defaults to None
+
+        Returns:
+            tuple: _description_
+        """
+        freq = self.freq
+        def function(theta: np.ndarray, phi: np.ndarray, k0: float):
+            E, H = self.farfield(theta, phi, faces, origin, syms)
+            return E[0,:], E[1,:], E[2,:], H[0,:], H[1,:], H[2,:]
+    
+        return dict(freq=freq, ff_function=function)
 
 class MWScalar:
     """The MWDataSet class stores solution data of FEM Time Harmonic simulations.
@@ -975,6 +1106,42 @@ class MWScalarNdim:
     def S(self, i1: int, i2: int) -> np.ndarray:
         return self.Sp[...,self._portmap[i1], self._portmap[i2]]
     
+    @property
+    def Smat(self) -> np.ndarray:
+        """Returns the full S-matrix
+
+        Returns:
+            np.ndarray: The S-matrix with shape (nF, nP, nP)
+        """
+        Nports = len(self._portmap)
+        nfreq = self.freq.shape[0]
+
+        Smat = np.zeros((nfreq,Nports,Nports), dtype=np.complex128)
+        
+        for i in self._portnumbers:
+            for j in self._portnumbers:
+                Smat[:,i-1,j-1] = self.S(i,j)
+
+        return Smat
+    
+    def emmodel(self, f_sample: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Returns the required date for a Heavi S-parameter component
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: Heavi data
+        """
+        
+        if f_sample is not None:
+            f = f_sample
+            S = self.model_Smat(f_sample)
+        else:
+            f = self.freq
+            S = self.Smat
+        
+        Z0s = self.Z0
+        S = renormalise_s(S, Z0s, 50.0)
+        return f, S
+
     def model_S(self, i: int, j: int, 
             freq: np.ndarray, 
             Npoles: int | Literal['auto'] = 'auto', 
@@ -1010,7 +1177,7 @@ class MWScalarNdim:
         Returns:
             np.ndarray: The (Nf,Np,Np) S-parameter matrix
         """
-        Nports = len(self.datasets[0].excitation)
+        Nports = len(self._portmap)
         nfreq = frequencies.shape[0]
 
         Smat = np.zeros((nfreq,Nports,Nports), dtype=np.complex128)

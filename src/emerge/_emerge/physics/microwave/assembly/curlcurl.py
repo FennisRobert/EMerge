@@ -18,7 +18,6 @@
 import numpy as np
 from ....elements import Nedelec2
 from scipy.sparse import csr_matrix, coo_matrix
-from numba_progress import ProgressBar, ProgressBarType
 from ....mth.optimized import local_mapping, matinv, dot_c, cross_c, compute_distances
 from numba import c16, types, f8, i8, njit, prange
 
@@ -167,8 +166,7 @@ def tet_mass_stiffness_matrices(field: Nedelec2,
     nE = edges.shape[1]
     nTri = tris.shape[1]
 
-    with ProgressBar(total=nT, ncols=100, dynamic_ncols=False) as pgb:
-        dataE, dataB, rows, cols = _matrix_builder(nodes, tets, tris, edges, field.mesh.edge_lengths, tet_to_field, tet_to_edge, ur, er, pgb)
+    dataE, dataB, rows, cols = _matrix_builder(nodes, tets, tris, edges, field.mesh.edge_lengths, tet_to_field, tet_to_edge, ur, er)
         
     E = coo_matrix((dataE, (rows, cols)), shape=(nE*2 + nTri*2, nE*2 + nTri*2)).tocsr()
     B = coo_matrix((dataB, (rows, cols)), shape=(nE*2 + nTri*2, nE*2 + nTri*2)).tocsr()
@@ -426,9 +424,8 @@ def ned2_tet_stiff_mass(tet_vertices, edge_lengths, local_edge_map, local_tri_ma
                                                       i8[:,:], 
                                                       i8[:,:], 
                                                       c16[:,:,:], 
-                                                      c16[:,:,:], 
-                                                      ProgressBarType), cache=True, nogil=True, parallel=True)
-def _matrix_builder(nodes, tets, tris, edges, all_edge_lengths, tet_to_field, tet_to_edge, ur, er, pgb: ProgressBar):
+                                                      c16[:,:,:]), cache=True, nogil=True, parallel=True)
+def _matrix_builder(nodes, tets, tris, edges, all_edge_lengths, tet_to_field, tet_to_edge, ur, er):
     nT = tets.shape[1]
     nedges = edges.shape[1]
 
@@ -442,8 +439,6 @@ def _matrix_builder(nodes, tets, tris, edges, all_edge_lengths, tet_to_field, te
     
     for itet in prange(nT): # ty: ignore
         p = itet*400
-        if np.mod(itet,10)==0:
-            pgb.update(10)
         urt = ur[:,:,itet]
         ert = er[:,:,itet]
 

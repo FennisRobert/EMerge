@@ -45,5 +45,3 @@ wheelhouse/
 
 .vscode/
 pytest.ini
-
-.idea/

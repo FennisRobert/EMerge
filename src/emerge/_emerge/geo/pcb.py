@@ -934,13 +934,15 @@ class StripPath:
         return self.path[element_nr]
 
 class PCBLayer:
-    
-    def __init__(self, 
+    _DEFNAME: str = 'PCBLayer'
+    def __init__(self,
                  thickness: float,
-                 material: Material):
+                 material: Material,
+                 name: str | None = None
+                 ):
         self.th: float = thickness
         self.mat: Material = material
-        
+        self.name: str = _NAME_MANAGER(name, self._DEFNAME)
 ############################################################
 #                     PCB DESIGN CLASS                     #
 ############################################################

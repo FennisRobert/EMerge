@@ -405,6 +405,10 @@ class Mesh3D(Mesh, Saveable):
         # Hence the use of tri_node_tags[0] in the next line. If domains are missing.
         # Make sure to combine all the entries in the tri-node-tags list
         
+        if not tet_node_tags:
+            DEBUG_COLLECTOR.add_report('Only 3D volumes can be meshed. Parts or entire simulations that are two dimensional will cause this problem.')
+            raise ValueError('Not a 3D volume')
+
         tet_node_tags = [self.n_t2i[int(t)] for t in tet_node_tags[0]]
         tet_tags = np.squeeze(np.array(tet_tags))
 
@@ -527,7 +531,11 @@ class Mesh3D(Mesh, Saveable):
         _sorted_tri_nodes = np.sort(tri_nodes, axis=1)
 
         for k, tag in enumerate(tri_tags):
-            tri_id = self.inv_tris[tuple(_sorted_tri_nodes[k,:].tolist())]
+            key = tuple(_sorted_tri_nodes[k,:].tolist())
+            if key not in self.inv_tris:
+                DEBUG_COLLECTOR.add_report(f'Mesh3D: The program is crashed due to a non existing triangle {key}. This occurs often if surfaces stick out of the 3D domain.\n')
+                raise ValueError(f'There is no triangle with indices {key}')
+            tri_id = self.inv_tris[key]
             self.tri_i2t[tri_id] = int(tag)
 
         self.tri_t2i = {t: i for i, t in self.tri_i2t.items()}

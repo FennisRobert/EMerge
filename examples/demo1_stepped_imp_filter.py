@@ -24,7 +24,7 @@ Hair = 60
 ## Material definition
 
 # We can define the material using the Material class. Just supply the dielectric properties and you are done!
-pcbmat = em.Material(er=er, color="#217627", opacity=0.2)
+pcbmat = em.Material(er=er, color="#217627", opacity=0.6)
 
 # We start by creating our simulation object.
 
@@ -35,14 +35,14 @@ model.check_version("3.0.0")  # Checks version compatibility.
 # supply it with a thickness, the desired air-box height, the units at which we supply
 # the dimensions and the PCB material.
 
-layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3)
+layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3, trace_material=em.lib.COPPER)
 
 # We will route our PCB using the "method chaining" syntax. First we call the .new() method
 # to start a new trace. This will returna StripPath object on which we may call methods that
 # sequentially constructs our stripline trace. In this case, it is sipmly a sequence of straight
 # sections.
 
-layouter.new(0, 0, W0, (1, 0), z=layouter.z(1)).store("p1").straight(L0, W0).straight(
+layouter.new(0, 0, W0, (1, 0), trace_layer=1).store("p1").straight(L0, W0).straight(
     L1, W1
 ).straight(L2, W2).straight(L3, W3).straight(L2, W2).straight(L1, W1).straight(
     L0, W0
@@ -51,14 +51,13 @@ layouter.new(0, 0, W0, (1, 0), z=layouter.z(1)).store("p1").straight(L0, W0).str
 # Next we generate a wave port surface to use for our simulation. A wave port can be automatically
 # generated for a given stripoline section. To easily reference it we use the .ref() method to
 # recall the sections we created earlier.
-p1 = layouter.modal_port(layouter.load("p1"), height=0)
-p2 = layouter.modal_port(layouter.load("p2"), height=0)
+p1 = layouter.modal_port(layouter.load("p1"), 1, height=0)
+p2 = layouter.modal_port(layouter.load("p2"), 2, height=0)
 
 # Finally we compile the stirpline into a polygon. The compile_paths function will return
 # GeoSurface objects that form the polygon. Additionally, we may turn on the Merge feature
 # which will then return a single GeoSurface type object that we can use later.
 polies = layouter.compile_paths(True)
-
 # We can manually define blocks for the dielectric or air or let the PCBLayouter do it for us.
 # First we must determine the bounds of our PCB. This function by default will make a PCB
 # just large enough to contain all the coordinates in it (in the XY plane). By adding extra
@@ -92,11 +91,6 @@ model.mesher.set_face_size(p2, 1 * mm)
 
 model.generate_mesh()
 model.view()
-
-
-# We can now define the modal ports for the in and outputs and set the conductor to PEC.
-port1 = model.mw.bc.ModalPort(p1, 1, modetype="TEM")
-port2 = model.mw.bc.ModalPort(p2, 2, modetype="TEM")
 
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
 sol = model.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8)
@@ -140,6 +134,6 @@ model.display.animate().add_field(
     field.cutplane(0.5 * mm, z=-0.75 * th * mil).scalar("Ez", "complex"),
     symmetrize=True,
 )
-model.display.add_portmode(port1, k0=field.k0)
-model.display.add_portmode(port2, k0=field.k0)
+model.display.add_portmode(model.mw.bc.get_port(1), k0=field.k0)
+model.display.add_portmode(model.mw.bc.get_port(2), k0=field.k0)
 model.display.show()

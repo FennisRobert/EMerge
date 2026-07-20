@@ -21,6 +21,7 @@ from __future__ import annotations
 import gmsh  # type: ignore
 from emsutil import Material
 from emsutil.lib import AIR
+from .attributes import PhysicalAttributeSet, PhysicalAttribute, PhysicalAttributeDescriptor
 from .selection import (
     FaceSelection,
     DomainSelection,
@@ -35,6 +36,8 @@ from .cs import Anchor
 from .file import Saveable
 from typing import TypeVar
 from .mdi import MetaDataInstructions
+from ._global import _GlobalHandler, _BaseManager
+
 FaceNames = Literal["back", "front", "left", "right", "top", "bottom"]
 
 ############################################################
@@ -42,7 +45,7 @@ FaceNames = Literal["back", "front", "left", "right", "top", "bottom"]
 ############################################################
 
 
-class _KEY_GENERATOR:
+class _KeyGenerator(_BaseManager):
     def __init__(self):
         self.start = -1
 
@@ -54,7 +57,7 @@ class _KEY_GENERATOR:
         return self.start
 
 
-class _GeometryManager:
+class _GeometryManager(_BaseManager):
     """The Geometry manager is a singleton class that keeps track of all geometries
 
     The GeometryManager exists to make sure that EMerge geometry state is in sync with
@@ -139,8 +142,9 @@ class _GeometryManager:
         self.geometry_list[modelname] = dict()
         self.active = modelname
 
-    def reset(self, modelname: str) -> None:
-        self.sign_in(modelname)
+    def reset(self) -> None:
+        self.geometry_list: dict[str, dict[str, GeoObject]] = dict()
+        self.active: str = ""
 
     def clear(self) -> None:
         self.geometry_list = dict()
@@ -295,8 +299,6 @@ class _FacePointer(Saveable):
         ) < 1e-6
 
 
-_GENERATOR = _KEY_GENERATOR()
-_GEOMANAGER = _GeometryManager()
 
 
 class AnchorSet(Saveable):
@@ -567,9 +569,7 @@ class GeoObject(Saveable):
 
     dim: int = -1
     _default_name: str = "GeoObject"
-    skip_fields = [
-        "_mdi",
-    ]
+    properties: PhysicalAttributeSet = PhysicalAttributeDescriptor()
 
     def __init__(
         self,
@@ -581,7 +581,6 @@ class GeoObject(Saveable):
             tags = []
         self.old_tags: list[int] = []
         self.tags: list[int] = tags
-        self.material: Material = AIR
         self.mesh_multiplier: float = 1.0
         self.max_meshsize: float = 1e9
 
@@ -591,8 +590,8 @@ class GeoObject(Saveable):
         self.anch: AnchorSet = AnchorSet()
         self._tools: dict[int, dict[str, _FacePointer]] = dict()
         self._hidden: bool = False
-        self._key = _GENERATOR.new()
-        self._mdi: MetaDataInstructions = MetaDataInstructions()
+        self._key = _GlobalHandler.active().generator.new()
+        
         self._base_priority: int = 10.0
         self._sub_priority: int = 0
         self._self_destruct: bool = False
@@ -604,9 +603,17 @@ class GeoObject(Saveable):
 
         self.give_name(name)
         if _submit_geometry:
-            _GEOMANAGER.submit_geometry(self)
+            _GlobalHandler.active().geomanager.submit_geometry(self)
         self._fill_face_pointers()
 
+        if self.dim==3:
+            self.properties += AIR
+        
+
+    @property
+    def material(self) -> Material:
+        return self.properties.get(Material)
+    
     @property
     def _priority(self) -> float:
         """The Priority of the geometry material
@@ -635,26 +642,6 @@ class GeoObject(Saveable):
                 self._face_pointers[f"Face{ctr}"] = fp
                 ctr += 1
 
-    def _store(self, name: str, data: Any) -> None:
-        """Store a property as auxilliary data under a given name
-
-        Args:
-            name (str): Name field
-            data (Any): Data to store
-        """
-        self._mdi.store(name, data)
-
-    def _load(self, name: str) -> Any | None:
-        """Load data with a given name. If it doesn't exist, it returns None
-
-        Args:
-            name (str): The property to retreive
-
-        Returns:
-            Any | None: The property
-        """
-        return self._mdi.get(name)
-
     def _get_boundary(self) -> list[tuple[float, float]]:
         if not self._cached:
             return gmsh.model.get_boundary(self.dimtags, True, False)
@@ -676,14 +663,16 @@ class GeoObject(Saveable):
         """
         if name is None:
             name = self._default_name
-        self.name: str = _GEOMANAGER.get_name(name)
-        _GEOMANAGER.set_name(self)
+        self.name: str = _GlobalHandler.active().geomanager.get_name(name)
+        _GlobalHandler.active().geomanager.set_name(self)
         return self
 
     @property
     def color_str(self) -> str:
         """The string getter for the object color"""
-        return self.material.color
+        if mat := self.material:
+            return mat.color
+        return "#999999"
 
     @property
     def color_rgb(self) -> tuple[float, float, float]:
@@ -692,7 +681,9 @@ class GeoObject(Saveable):
         Returns:
             tuple[float, float, float]: The color
         """
-        return self.material.color_rgb
+        if mat := self.material:
+            return mat.color_rgb
+        return (1.0, 1.0, 1.0)
 
     @property
     def opacity(self) -> float:
@@ -701,12 +692,16 @@ class GeoObject(Saveable):
         Returns:
             float: The opacity
         """
-        return self.material.opacity
+        if mat := self.material:
+            return mat.opacity
+        return 0.0
 
     @property
     def _metal(self) -> bool:
         """If the material should be rendered as metal"""
-        return self.material._metal
+        if mat := self.material:
+            return mat._metal
+        return False
 
     @property
     def selection(self) -> Selection:
@@ -753,7 +748,7 @@ class GeoObject(Saveable):
         else:
             out = GeoObject(tags)
 
-        out.material = objects[0].material
+        out.properties += objects[0].properties.copy(deep=True)
         out.prio_set(objects[0]._priority)
         out.give_name(f"MergedGeometries{[obj.name for obj in objects]}")
         return out
@@ -803,10 +798,9 @@ class GeoObject(Saveable):
         """Copies this object and returns a new object (also in GMSH)"""
         new_dimtags = gmsh.model.occ.copy(self.dimtags)
         new_obj = GeoObject.from_dimtags(new_dimtags)
-        new_obj.material = self.material
         new_obj.mesh_multiplier = self.mesh_multiplier
         new_obj.max_meshsize = self.max_meshsize
-
+        new_obj.properties = self.properties.copy(deep=True)
         new_obj._unset_constraints = self._unset_constraints
         new_obj._embeddings = [emb.make_copy() for emb in self._embeddings]
         new_obj._face_pointers = {
@@ -818,7 +812,6 @@ class GeoObject(Saveable):
         }
         new_obj.anch = self.anch.copy()
 
-        new_obj._mdi = self._mdi.copy()
         new_obj._base_priority = self._base_priority
         new_obj._exists = self._exists
         new_obj._self_destruct = self._self_destruct
@@ -917,8 +910,11 @@ class GeoObject(Saveable):
         Returns:
             GeoObject: This same object
         """
-        self.material = material
-        self._prio_half_up()
+        if isinstance(material, Material):
+            self.properties += material
+            self._prio_half_up()
+        else:
+            logger.warning(f'Trying to assing material {material} which is not of type Material. Skipping the assignment.')
         return self
 
     def prio_set(self: T, level: int) -> T:
@@ -977,12 +973,12 @@ class GeoObject(Saveable):
 
     def background(self: T) -> T:
         """Set the material selection priority to be on the background."""
-        self._base_priority = _GEOMANAGER.lowest_priority() - 10
+        self._base_priority = _GlobalHandler.active().geomanager.lowest_priority() - 10
         return self
 
     def foreground(self: T) -> T:
         """Set the material selection priority to be on top."""
-        self._base_priority = _GEOMANAGER.highest_priority() + 10
+        self._base_priority = _GlobalHandler.active().geomanager.highest_priority() + 10
         return self
 
     def boundary(

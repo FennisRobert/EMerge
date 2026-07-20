@@ -19,7 +19,7 @@
 from ...mesher import Mesher
 from ...mesh3d import Mesh3D
 from ...elements.leg2 import Legrange2
-from ...solver import DEFAULT_ROUTINE, SolveRoutine, MatrixType, SolveReport
+from ...solver import SolveRoutine, MatrixType, SolveReport, AutomaticRoutine
 from ...settings import Settings
 from ...simstate import SimState
 
@@ -52,7 +52,7 @@ def run_job_multi(job: SimJob) -> SimJob:
         SimJob: The solved SimJob
     """
     nr = int(mp.current_process().name.split("-")[1])
-    routine = DEFAULT_ROUTINE._configure_routine("MP", proc_nr=nr)
+    routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
     solution, report = routine.solve(A, bmat, ids, id=job.id)
     report.add(**aux)
@@ -90,7 +90,7 @@ class HeatConduction3D(GenericPhysics3D):
             None
         )  # The boundary condition set class.
         self.basis: Legrange2 | None = None
-        self.solveroutine: SolveRoutine = DEFAULT_ROUTINE
+        self.solveroutine: SolveRoutine = AutomaticRoutine()
         self.cache_matrices: bool = True
 
         ## States
@@ -132,7 +132,7 @@ class HeatConduction3D(GenericPhysics3D):
 
     def _initialize_bc_data(self):
         """Initializes auxilliary required boundary condition information before running simulations."""
-        logger.debug("Initializing boundary conditions")
+        logger.debug("(Heat conduction) Initializing boundary condition data")
         # Removes non-assigned boundary conditions.
         # This happens for example if the initial boundary PEC gets overwritten.
         self.bc.cleanup()

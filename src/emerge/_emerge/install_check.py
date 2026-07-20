@@ -20,7 +20,7 @@
 import os
 import sys
 from typing import Tuple, Optional
-from .logsettings import DEBUG_COLLECTOR
+from ._global import _GlobalHandler
 
 def _is_microsoft_store_python() -> Tuple[bool, Optional[str]]:
     """
@@ -73,5 +73,5 @@ def run_installation_checks():
     
     is_store, why = _is_microsoft_store_python()
     if is_store:
-        DEBUG_COLLECTOR.add_report('A Microsoft Store Python installation is detected. This may cause errors when caching Numba code. \n' +
+        _GlobalHandler.active().debugcollector.add_report('A Microsoft Store Python installation is detected. This may cause errors when caching Numba code. \n' +
                                 'If you run into issues, consider using Conda or UV to install Python on Windows.')

@@ -17,7 +17,7 @@ model = em.Simulation("StriplineWithVias")
 model.check_version("3.0.0")  # Checks version compatibility.
 
 # As usual we start by creating our layouter
-pcb = em.geo.PCBNew(
+pcb = em.geo.PCB(
     th, mm, em.GCS, layers=3, material=em.lib.DIEL_RO4350B, trace_material=em.lib.PEC
 )
 
@@ -29,11 +29,19 @@ pcb = em.geo.PCBNew(
 # docstring of the method. The vias can be created later.
 w0 = pcb.calc.z0(50, 1, 0) * 0.9
 w1 = pcb.calc.z0(50, 2, 0)
-pcb.new(0, 0, w0, (1, 0), -th / 2)["p1"].straight(10).turn(90).straight(10).turn(
-    -90, corner_type="champher"
-).straight(5).via(0, 0.2, True, width=w1).straight(8).via(
-    -th / 2, 0.2, width=w0
-).straight(5).turn(-90).straight(10).turn(90).straight(10)["p2"]
+pcb.new(0, 0, w0, (1, 0), 1)["p1"].straight(10)\
+    .turn(90)\
+    .straight(10)\
+    .turn(-90, corner_type="champher")\
+    .straight(5)\
+    .via(2, 0.2, True, width=w1)\
+    .straight(8)\
+    .via(1, 0.2, width=w0)\
+    .straight(5)\
+    .turn(-90)\
+    .straight(10)\
+    .turn(90)\
+    .straight(10)["p2"]
 
 # Notice the champher corner type. This champher minimizes reflections when going around the corner.
 
@@ -47,8 +55,8 @@ vias = pcb.generate_vias(True)
 # Here I use lumped ports instead of wave ports. I use the references made earlier to generate the port.
 # By default, all lumped port sheets will be shorted to z=-thickness. You can change this as an optional
 # argument.
-lp1 = pcb.lumped_port(pcb["p1"])
-lp2 = pcb.lumped_port(pcb["p2"])
+lp1 = pcb.lumped_port(pcb["p1"], 1)
+lp2 = pcb.lumped_port(pcb["p2"], 2)
 
 # Because lumped ports don't stop at the edge of our domain, we make sure to add some margins everywhere.
 pcb.determine_bounds(5, 5, 5, 5)

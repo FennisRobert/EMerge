@@ -44,9 +44,11 @@ pcb = em.geo.PCBNew(th, mm, material=em.lib.DIEL_RO4003C)
 w0 = pcb.calc.z0(50)
 
 # We start a new simple microstripline at xy=(0,0) and go Lfeed forward.
-pcb.new(0, 0, w0, (0, 1)).store("p1").straight(Lfeed).store("stop").straight(
-    Lprestub
-).store("stub")
+pcb.new(0, 0, w0, (0, 1)).store("p1")\
+    .straight(Lfeed)\
+    .store("stop")\
+    .straight(Lprestub)\
+    .store("stub")
 
 # We load the StripLine element from the PCB where we stopped and use the coordinates to add a radial stub.
 stub = pcb.load("stub")
@@ -55,9 +57,7 @@ pcb.radial_stub(stub.xy, Lstub, angstub, (0, 1), w0=w0)
 # Then we use a botom layer stripline to create the slotline trace. We start a bit left of the stop point where
 # and then proceed to the right.
 stop = pcb.load("stop")
-pcb.new(stop.x - Lleft, stop.y, wslot, (1, 0), pcb.z(0)).store("circ").straight(
-    Lslot + Lleft
-).store("p2")
+pcb.new(stop.x - Lleft, stop.y, wslot, (1, 0), trace_layer=0).store("circ").straight(Lslot + Lleft).store("p2")
 
 # We load the XY coordinates of that last point
 xydisc = pcb.load("circ").xy
@@ -85,10 +85,8 @@ ground = pcb.plane(pcb.z(0))
 em.geo.subtract(ground, em.geo.unite(slot, disc))
 
 # We add two modal port surfaces at the nodes p1 and p2
-mp1 = pcb.modal_port(pcb.load("p1"), 5.0)
-mp2 = pcb.modal_port(
-    pcb.load("p2"), (5.0, 5.0), width_multiplier=15
-)  # Wthe slot port width is 15 times the slot width.
+mp1 = pcb.modal_port(pcb.load("p1"), 1, 5.0)
+mp2 = pcb.modal_port(pcb.load("p2"), 2, height=(5.0, 5.0), width_multiplier=15)  # Wthe slot port width is 15 times the slot width.
 
 # Finally we generate the PCB, top air and bottom air.
 diel = pcb.generate_pcb()
@@ -114,17 +112,8 @@ model.view(plot_mesh=True)
 #                    BOUNDARY CONDITIONS                   #
 ############################################################
 
-# Here we define our boundary conditions. Our first port is a (quasi-)TEM line.
-p1 = model.mw.bc.ModalPort(mp1, 1)
-# A pure slotline is also (quasi-)TEM but because its surrounded by a PEC boundary it
-# Behaves like a TE mode. We set this explicitly to ensure proper extrapolation of the out-of-plane
-# propagation constant
-p2 = model.mw.bc.ModalPort(mp2, 2)
-# We align the slotline mode along the positive Y-direction. This ensures that no polarity flips
-# occur for the slotline mode that will add a random 180 degree phase shift in between
-# refinement passes. The port phase is a degree of freedom that is not solved for during
-# The modal port analysis so  this way we prevent that degree of freedom from showing up in
-# S-parameter convergence study.
+p1 = model.mw.bc.get_port(1)
+p2 = model.mw.bc.get_port(2)
 
 p2.align_modes(em.YAX)
 
@@ -143,7 +132,7 @@ model.mw.bc.AbsorbingBoundary(em.select(air_top.top, air_bottom.bottom))
 # In this simulation setup, refinement does not converge due to the coarse starting point and the limited number of steps.
 # This limitation is mostly set to make sure that users do not require a PC with large amounts of RAM to run this simulation.
 # You may increase the number of steps at will to make the simulation converge.
-
+model.view(bc=True)
 model.adaptive_mesh_refinement(max_steps=8, frequency=5.5e9)
 
 # We can view the improvement in the refined mesh.

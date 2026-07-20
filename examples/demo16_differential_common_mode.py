@@ -33,10 +33,10 @@ diel = pcb.generate_pcb()    # substrate solid
 air = pcb.generate_air(5)    # surrounding air region
 
 # Create four lumped-port terminals at the stored endpoints
-lp1 = pcb.lumped_port(pcb.load('p1'))
-lp2 = pcb.lumped_port(pcb.load('p2'))
-lp3 = pcb.lumped_port(pcb.load('p3'))
-lp4 = pcb.lumped_port(pcb.load('p4'))
+lp1 = pcb.lumped_port(pcb.load('p1'), 1)
+lp2 = pcb.lumped_port(pcb.load('p2'), 2)
+lp3 = pcb.lumped_port(pcb.load('p3'), 3)
+lp4 = pcb.lumped_port(pcb.load('p4'), 4)
 
 model.commit_geometry()  # hand geometry to the solver
 model.mw.set_frequency_range(2e9, 4e9, 11)  # coarse sweep: 2–4 GHz, 5 points
@@ -48,11 +48,6 @@ model.generate_mesh()  # build volume mesh
 
 model.view()  # optional mesh preview
 
-# Attach lumped ports to solver boundary conditions, numbered 1..4
-model.mw.bc.LumpedPort(lp1, 1)
-model.mw.bc.LumpedPort(lp2, 2)
-model.mw.bc.LumpedPort(lp3, 3)
-model.mw.bc.LumpedPort(lp4, 4)
 
 data = model.mw.run_sweep(True, 4)  # frequency sweep, parallel workers=4
 

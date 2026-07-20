@@ -2313,10 +2313,3 @@ class AutomaticRoutine(SolveRoutine):
             return self._try_solver(EMSolver.SUPERLU)
 
         return self._try_solver(EMSolver.SUPERLU)
-
-
-############################################################
-#                    DEFAULT DEFINITION                   #
-############################################################
-
-DEFAULT_ROUTINE = AutomaticRoutine()

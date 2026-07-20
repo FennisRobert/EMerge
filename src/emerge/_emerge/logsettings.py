@@ -17,11 +17,11 @@
 
 # Last Cleanup: 2025-01-01
 from loguru import logger
+from ._global import _GlobalHandler, _BaseManager
 import sys
 from typing import Literal, Generator
 from pathlib import Path
 import os
-from collections import deque
 import platform
 import importlib
 import multiprocessing
@@ -56,11 +56,8 @@ def get_version(pkg_name):
         return "not installed"
 
 
-_LOG_BUFFER = deque()
-
-
 def _log_sink(message):
-    _LOG_BUFFER.append(message)
+    _GlobalHandler.active().logbuffer.append(message)
 
 
 ############################################################
@@ -99,7 +96,7 @@ LLTYPE = Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]
 ############################################################
 
 
-class LogController:
+class LogController(_BaseManager):
     def __init__(self):
         logger.remove()
         self.std_handlers: list[int] = []
@@ -107,6 +104,9 @@ class LogController:
         self.level: str = "INFO"
         self.file_level: str = "INFO"
 
+    def reset(self):
+        self.clear()
+        
     def clear(self):
         logger.remove()
         self.std_handlers: list[int] = []
@@ -128,9 +128,9 @@ class LogController:
         logger.add(_log_sink)
 
     def _flush_log_buffer(self):
-        for msg in list(_LOG_BUFFER):
+        for msg in list(_GlobalHandler.active().logbuffer):
             logger.opt(depth=6).log(msg.record["level"].name, msg.record["message"])
-        _LOG_BUFFER.clear()
+        _GlobalHandler.active().logbuffer.clear()
 
     def _sys_info(self) -> None:
         logger.trace(" (!) System Information:")
@@ -177,7 +177,7 @@ class LogController:
         os.environ["EMERGE_FILE_LOGLEVEL"] = loglevel
 
 
-class DebugCollector:
+class DebugCollector(_BaseManager):
     """The DebugController is used by EMerge to collect heuristic
     warnings for detections of things that might be causing problems but aren't
     guaranteed to cause them. These logs will be printed at the end of a simulation
@@ -189,6 +189,9 @@ class DebugCollector:
         self.reports: list[str] = []
 
     def clear(self):
+        self.reports = []
+    
+    def reset(self):
         self.reports = []
 
     @property
@@ -204,10 +207,3 @@ class DebugCollector:
             yield i + 1, message
 
 
-############################################################
-#                        SINGLETONS                       #
-############################################################
-
-
-LOG_CONTROLLER = LogController()
-DEBUG_COLLECTOR = DebugCollector()

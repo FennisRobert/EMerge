@@ -195,7 +195,7 @@ class BoundaryConditionSet(Saveable):
         """
         self.boundary_conditions = []
 
-    def no_overwrite(self) -> BoundaryConditionSet:
+    def no_overwrite(self: T) -> T:
         """Turns overwrite of for the next boundary condition assignment
 
         Returns:
@@ -233,7 +233,7 @@ class BoundaryConditionSet(Saveable):
                         logger.debug(f'Removed the {excluded} tags from object with dimension {bc.dim} BC {existing_bc}')
                 else:
                     bc.exclude_bc(existing_bc)
-        logger.trace(f'Adding {bc}')
+        logger.info(f'Adding {type(bc).__name__} to domain tags {bc.tags}(dim = {bc.dim})')
         self._overwrite = True
         self.boundary_conditions.append(bc)
 

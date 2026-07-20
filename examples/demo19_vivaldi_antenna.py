@@ -135,7 +135,7 @@ pcbl.radial_stub((rx, ry - 0.2), Lstub, stub_ang, (dx, dy), w0=w0)
 polies = pcbl.compile_paths(merge=True)
 
 # We also create a rectangular region for our lumped port.
-port = pcbl.lumped_port(pcbl.load("pin"))
+port = pcbl.lumped_port(pcbl.load("pin"), 1)
 
 # We manually define the X,Y bounds of the PCB because the vivaldi taper is not part of our PCB itself.
 pcbl.set_bounds(xmin=-25, xmax=70, ymin=-30, ymax=30)
@@ -161,7 +161,6 @@ abc = airbox.outside()
 
 # The lumped port is defined on the port rectangular region. All the dimensions are automatically stored inside
 # the port geometry object when you create it with the .lumped_port() function so you don't have to pass them!
-model.mw.bc.LumpedPort(port, 1, Z0=50)
 model.mw.bc.AbsorbingBoundary(abc)
 model.mesher.set_pec_face(polies)
 model.mesher.set_pec_face(ground)

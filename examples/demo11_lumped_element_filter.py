@@ -50,18 +50,32 @@ Cseries = 18 * pF  # second capacitor
 
 # --- Route trace with lumped elements via method chaining ----------------
 # Input matching section
-pcb.new(0, 0, w0, (1, 0)).store("p1").straight(3).lumped_element(
-    Cf(Cseries), pack
-).straight(l0).lumped_element(Lf(Lseries), pack).straight(l0).split((0, -1)).straight(
-    l0
-).lumped_element(Cf(Cshunt), pack).straight(l0 / 2, w0).via(
-    pcb.z(0), w0 / 6, False
-).merge().split((0, 1)).straight(l0).lumped_element(Lf(Lshunt), pack).straight(
-    l0 / 2, w0
-).via(pcb.z(0), w0 / 6, False).merge().straight(l0).lumped_element(
-    Cf(Cseries), pack
-).straight(l0).lumped_element(Lf(Lseries), pack).straight(l0).straight(3).store("p2")
-
+pcb.new(0, 0, w0, (1, 0)) \
+    .store("p1") \
+    .straight(3) \
+    .lumped_element(Cf(Cseries), pack) \
+    .straight(l0) \
+    .lumped_element(Lf(Lseries), pack) \
+    .straight(l0) \
+    .split((0, -1)) \
+    .straight(l0) \
+    .lumped_element(Cf(Cshunt), pack) \
+    .straight(l0 / 2, w0) \
+    .via(0, w0 / 6, False) \
+    .merge() \
+    .split((0, 1)) \
+    .straight(l0) \
+    .lumped_element(Lf(Lshunt), pack) \
+    .straight(l0 / 2, w0) \
+    .via(0, w0 / 6, False) \
+    .merge() \
+    .straight(l0) \
+    .lumped_element(Cf(Cseries), pack) \
+    .straight(l0) \
+    .lumped_element(Lf(Lseries), pack) \
+    .straight(l0) \
+    .straight(3) \
+    .store("p2")
 # Retrieve lumped element and via objects
 LEs = pcb.lumped_elements
 vias = pcb.generate_vias(merge=True)
@@ -70,8 +84,8 @@ traces = pcb.compile_paths(merge=True)
 pcb.determine_bounds(leftmargin=0, topmargin=1, rightmargin=0, bottommargin=1)
 
 # --- Define modal ports and generate environment ------------------------
-mp1 = pcb.modal_port(pcb.load("p1"), Hair)
-mp2 = pcb.modal_port(pcb.load("p2"), Hair)
+mp1 = pcb.modal_port(pcb.load("p1"), 1, Hair)
+mp2 = pcb.modal_port(pcb.load("p2"), 2, Hair)
 diel = pcb.generate_pcb()  # substrate dielectric block
 air = pcb.generate_air(Hair)  # surrounding air block
 
@@ -95,8 +109,6 @@ model.view()
 
 # --- Boundary conditions -----------------------------------------------
 # Define modal (TEM) ports at input and output
-p1 = model.mw.bc.ModalPort(mp1, 1, modetype="TEM")
-p2 = model.mw.bc.ModalPort(mp2, 2, modetype="TEM")
 # Add lumped element BCs for each element
 for le in LEs:
     model.mw.bc.LumpedElement(le)

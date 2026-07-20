@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import sys
+from ._global import _GlobalHandler
 from .geometry import GeoObject
 from .geo.modeler import Modeler
 from .physics.microwave.microwave_3d import Microwave3D
@@ -26,7 +27,6 @@ from .physics.heatconduction.heatconduction_3d import HeatConduction3D
 from .mesh3d import Mesh3D
 from .mesher import Mesher
 from .dataset import SimulationDataset
-from .logsettings import LOG_CONTROLLER, DEBUG_COLLECTOR
 from .plot.pyvista import PVDisplay
 from .periodic import PeriodicCell
 from .cacherun import get_build_section, get_run_section
@@ -172,8 +172,8 @@ class Simulation:
         if write_log:
             self.set_write_log()
 
-        LOG_CONTROLLER._flush_log_buffer()
-        LOG_CONTROLLER._sys_info()
+        _GlobalHandler.active().logcontroller._flush_log_buffer()
+        _GlobalHandler.active().logcontroller._sys_info()
 
         self.__post_init__()
 
@@ -299,9 +299,9 @@ class Simulation:
         return self
 
     def _print_summary(self):
-        if DEBUG_COLLECTOR.any_warnings:
+        if _GlobalHandler.active().debugcollector.any_warnings:
             logger.warning("EMerge simulation warnings:")
-        for i, report in DEBUG_COLLECTOR.all_reports():
+        for i, report in _GlobalHandler.active().debugcollector.all_reports():
             logger.warning(f"{i}: {report}")
 
     def _exit_gmsh(self):
@@ -353,7 +353,7 @@ class Simulation:
         import urllib.parse
 
         if channel.lower().strip() == "emerge":
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 "You are using the EMerge ping channel. All pings are public! Everybody can read them who is subscribed to the same channel. This is being broadcast. Please use private channels."
             )
         url = f"https://ntfy.sh/{channel}"
@@ -613,7 +613,7 @@ class Simulation:
             try:
                 joblib.dump(dataset, str(data_path))
             except PicklingError as e:
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     'EMerge cannot save python functions. Set the save system to msgpack instead using em.Simulation(..., store_system="msgpack")'
                 )
                 raise e
@@ -657,14 +657,14 @@ class Simulation:
             loglevel ('DEBUG','INFO','WARNING','ERROR'): The loglevel
         """
         logger.trace(f"Setting loglevel to {loglevel}")
-        LOG_CONTROLLER.set_std_loglevel(loglevel)
+        _GlobalHandler.active().logcontroller.set_std_loglevel(loglevel)
         if loglevel not in ("TRACE"):
             gmsh.option.setNumber("General.Terminal", 0)
 
     def set_write_log(self) -> None:
         """Adds a file output for the logger."""
         logger.trace(f"Writing log to path = {self.modelpath}")
-        LOG_CONTROLLER.set_write_file(self.modelpath)
+        _GlobalHandler.active().logcontroller.set_write_file(self.modelpath)
 
     def view(
         self,
@@ -825,6 +825,9 @@ class Simulation:
         self.state._geometry_committed = True
         self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
 
+        if self._mw_active:
+            self.mw._autogenerate_bcs()
+
     def all_geos(self) -> list[GeoObject]:
         """Returns all geometries in a list
 
@@ -948,7 +951,7 @@ class Simulation:
             Nelem = int(5 * bb_volume / (wl**3))
 
             if Nelem > 100_000 and DEFAULT_SETTINGS.size_check:
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     f"An estimated {Nelem} tetrahedra are required for the bounding box of the geometry. This may imply a simulation domain that is very large."
                     + "To disable this message. Set the .size_check parameter in model.settings to False."
                 )
@@ -971,6 +974,7 @@ class Simulation:
                 logger.debug(f"  Surface {tag} has no parent volume — orphan face!")
 
         logger.info("Calling GMSH mesher")
+        
         try:
             gmsh.logger.start()
             gmsh.model.mesh.generate(3)

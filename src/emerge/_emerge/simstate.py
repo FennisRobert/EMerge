@@ -16,18 +16,18 @@
 # <https://www.gnu.org/licenses/>.
 # Last Cleanup: 2025-01-01
 from __future__ import annotations
+from ._global import _GlobalHandler, _BaseManager
 from .mesh3d import Mesh3D
-from .geometry import GeoObject, GeoVolume, GeoSurface, _GeometryManager, _GEOMANAGER
+from .geometry import GeoObject, GeoVolume, GeoSurface, _GeometryManager
 from .dataset import SimulationDataset
 from loguru import logger
 from typing import Any
 import numpy as np
-from .selection import _CALC_INTERFACE
 import gmsh
 from pathlib import Path
 
 
-class _SimStateCollection:
+class _SimStateManager(_BaseManager):
     def __init__(self):
         self.states: list[SimState] = []
         self.active: SimState | None = None
@@ -42,6 +42,9 @@ class _SimStateCollection:
             self.states.remove(state)
         if self.active is state:
             self.active = None if not self.states else self.states[-1]
+    
+    def reset(self) -> None:
+        self.clear()
 
     def clear(self) -> None:
         self.active = None
@@ -49,9 +52,6 @@ class _SimStateCollection:
             state.reset_data()
         self.states.clear()
         self.states = []
-
-
-_GLOBAL_SIMSTATES = _SimStateCollection()
 
 
 class SimState:
@@ -62,13 +62,15 @@ class SimState:
         self.data: SimulationDataset = SimulationDataset()
         self.params: dict[str, float] = dict()
         self._stashed: SimulationDataset | None = None
-        self.manager: _GeometryManager = _GEOMANAGER
         self.has_been_modified: bool = False
 
         # --- STATES
         self._geometry_committed: bool = False
         self.sign_on()
 
+    @property
+    def manager(self) -> _GeometryManager:
+        return _GlobalHandler.active().geomanager
     def import_from(self, other: SimState) -> None:
         """Imports the dataset from another simulation
 
@@ -84,12 +86,10 @@ class SimState:
         self.has_been_modified = True
 
     def sign_on(self):
-        _GLOBAL_SIMSTATES.sign_on(self)
-        _CALC_INTERFACE._ifobj = self
+        _GlobalHandler.active().simstates.sign_on(self)
 
     def sign_off(self) -> None:
-        _GLOBAL_SIMSTATES.sign_off(self)
-        _CALC_INTERFACE._ifobj = None
+        _GlobalHandler.active().simstates.sign_off(self)
 
     @property
     def current_geo_state(self) -> list[GeoObject]:
@@ -133,7 +133,8 @@ class SimState:
         return geolist
 
     def reset_geostate(self) -> None:
-        _GEOMANAGER.reset(self.modelname)
+        self.manager.reset()
+        self.manager.sign_in(self.modelname)
         self.clear_mesh()
 
     def reset_data(self) -> None:
@@ -147,7 +148,6 @@ class SimState:
         self.data: SimulationDataset = SimulationDataset()
         self.params: dict[str, float] = dict()
         self._stashed: SimulationDataset | None = None
-        self.manager: _GeometryManager = _GEOMANAGER
         self.init()
 
     def init(self) -> None:
@@ -198,7 +198,7 @@ class SimState:
             geos (list[GeoObject]): _description_
         """
 
-        _GEOMANAGER.set_geometries(geos)
+        self.manager.set_geometries(geos)
 
     def clear_mesh(self) -> None:
         """resets the current mesh object to an empty one."""

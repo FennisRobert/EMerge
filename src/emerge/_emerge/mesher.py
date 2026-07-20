@@ -433,7 +433,7 @@ class Mesher:
                 size_mapping[dimtag] = size
 
         for (dim, tag), size in size_mapping.items():
-            size = min(size, obj.max_meshsize)
+            
             if dim == 2:
                 logger.debug(
                     f"Somehow setting mesh size:{1000 * size:.3f}mm on boundary: {tag}"

@@ -71,7 +71,7 @@ class Settings:
         self.safe_mode: bool = False
         # Executes extra diagnosis checks to ensure a proper matrix problem
 
-        self.qtem_limit: float = 0.05
+        self.qtem_limit: float = 0.1
 
 
 DEFAULT_SETTINGS = Settings()

@@ -1,4 +1,4 @@
-from ..logsettings import DEBUG_COLLECTOR
+from .._global import _GlobalHandler
 from emsutil import Material
 from ..geometry import GeoSurface, GeoVolume
 from collections import defaultdict
@@ -42,7 +42,7 @@ class GenericPhysics3D:
             if priolist.count(maxprio) > 1:
                 vols = [vol for vol in volumelist if vol._priority==maxprio]
                 logger.warning(f'Domain with tag {domaintag} has multiple geometries imposing a material to them: {vols}. Consider setting priorities to decide which volume is more important.')
-                DEBUG_COLLECTOR.add_report(f'Domain with tag {domaintag} has multiple geometries imposing a material to them: {vols}. Consider setting priorities to decide which volume is more important.')
+                _GlobalHandler.active().debugcollector.add_report(f'Domain with tag {domaintag} has multiple geometries imposing a material to them: {vols}. Consider setting priorities to decide which volume is more important.')
             
         xs = self.mesh.centers[0,:]
         ys = self.mesh.centers[1,:]

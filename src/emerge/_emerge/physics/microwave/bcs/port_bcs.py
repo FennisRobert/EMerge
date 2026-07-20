@@ -2,10 +2,10 @@ from ....selection import Selection, FaceSelection
 from ....cs import CoordinateSystem, Axis, _parse_axis
 from ....coord import Line
 from ....geometry import GeoSurface, GeoObject
-from ....const import Z0
-from ....logsettings import DEBUG_COLLECTOR
-from ....const import EPS0, MU0
+from ....const import Z0,EPS0, MU0
 from ....cs import GCS
+from ...._global import _GlobalHandler
+from ....attributes import LumpedPortAttribute
 
 from emsutil import Saveable
 from typing import Literal
@@ -176,7 +176,7 @@ class ModalPort(PortBC, Saveable):
         port_number: int,
         cs: CoordinateSystem | None = None,
         power: float = 1,
-        modetype: Literal["TE", "TM", "TEM"] | None = None,
+        modetype: Literal["TE", "TM", "TEM","any"] | None = None,
         number_of_modes: int = 1,
         mixed_materials: bool = False,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
@@ -217,7 +217,7 @@ class ModalPort(PortBC, Saveable):
             self.port_modes[i] = vec
 
         self._desired_number_of_modes: int = number_of_modes
-        self.forced_modetype: Literal["TE", "TM", "TEM"] | None = modetype
+        self.forced_modetype: Literal["TE", "TM", "TEM","any"] | None = modetype
         self.mixed_materials: bool = mixed_materials
         self.initialized: bool = False
         self._first_k0: float | None = None
@@ -323,7 +323,7 @@ class ModalPort(PortBC, Saveable):
     @property
     def nmodes(self) -> int:
         if self._last_k0 is None:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 "The modal analysis turned up with no solutions. This can be because:\n"
                 " - You assigned the wrong materials to geometries.\n"
                 + " - You simulate at a frequency that is too low.\n"
@@ -357,7 +357,7 @@ class ModalPort(PortBC, Saveable):
                     f"A variation in port mode propagation constants (k0={k0:.1f}) of {std_beta / mean_beta * 100:.2f}% is detected. Only multi mode ports with similar"
                     + f"propagation constants are suppored. Betas are {str_betas}"
                 )
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     "A variation in port mode propagation constants (k0={k0:.1f}) is detected. Only multi mode ports with similar"
                     + f"propagation constants are suppored. Betas are {str_betas}"
                 )
@@ -1437,9 +1437,11 @@ class LumpedPort(PortBC, Saveable):
                 raise ValueError(
                     f"The width, height and direction must be defined. Information cannot be extracted from {face}"
                 )
-            for lpd in face._mdi.iter('lumpedport'):
-                width, height, direction = lpd['width'], lpd['height'], lpd['vdir']
-        
+            if attr := face.properties.get(LumpedPortAttribute):
+                width = attr.width
+                height = attr.height
+                direction = attr.direction
+
         if width is None or height is None or direction is None:
             raise ValueError(
                 f"The width, height and direction could not be extracted from {face}"
@@ -1465,7 +1467,7 @@ class LumpedPort(PortBC, Saveable):
 
         # Sanity checks
         if self.width > 0.5 or self.height > 0.5:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"{self}: A lumped port width/height larger than 0.5m has been detected: width={self.width:.3f}m. Height={self.height:.3f}.m. Perhaps you forgot a unit like mm, um, or mil"
             )
 

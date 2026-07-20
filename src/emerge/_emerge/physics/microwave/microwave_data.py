@@ -552,14 +552,13 @@ class MWField(Saveable):
             )  # type: ignore
 
         elif len(self.background_fields) > 0:
-            avec = np.array([self.excitation[i] for i in self.port_modes])
-            avec = self._Texcite @ avec
             return sum(
                 [
-                    avec[i] * self._fields[mode]
-                    for i,mode in enumerate(self.background_fields)
+                    self.excitation[mode] * self._fields[mode]
+                    for mode in self.background_fields
                 ]
             )
+
 
     @property
     def relative(self) -> MWData:

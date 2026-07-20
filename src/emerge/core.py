@@ -54,12 +54,12 @@ os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 #                      IMPORT MODULES                     #
 ############################################################
 
-from ._emerge.logsettings import LOG_CONTROLLER
+from ._emerge.logsettings import _GlobalHandler.active().logcontroller
 from loguru import logger
 
-LOG_CONTROLLER.set_default()
+_GlobalHandler.active().logcontroller.set_default()
 logger.debug('Importing modules')
-LOG_CONTROLLER._set_log_buffer()
+_GlobalHandler.active().logcontroller._set_log_buffer()
 
 import gmsh
 from ._emerge.simmodel import Simulation, SimulationBeta

@@ -114,6 +114,20 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
                 tags.extend(bc.selection.tags)
         return FaceSelection(tags)
 
+    def get_port(self, port_number: int) -> PortBC | None:
+        """Return the port boundary condition object for the given port number.
+
+        Args:
+            port_number (int): The desired port number
+
+        Returns:
+            PortBC | None: _description_
+        """
+        for bc in self.oftype(PortBC):
+            if bc.port_number == port_number:
+                return bc
+        return None
+    
     def floquet_port(self, poly: GeoSurface, port_number: int) -> FloquetPort:
         if self._cell is None:
             raise ValueError("Periodic cel must be defined for this simulation.")

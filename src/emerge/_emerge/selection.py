@@ -19,6 +19,7 @@
 from __future__ import annotations
 import gmsh  # type: ignore
 import numpy as np
+from ._global import _BaseManager, _GlobalHandler
 from .cs import Axis, CoordinateSystem, _parse_vector, Plane
 from typing import Callable, TypeVar, Iterable, Any
 from emsutil import Saveable
@@ -69,48 +70,31 @@ VAL_TO_CHAR = {i: ch for i, ch in enumerate(ALPHABET)}
 ############################################################
 
 
-class _CalculationInterface:
-    """This class is used to give the Selection class a way to
-    request geometric data about its selection without importing
-    any of the mesh or geometry modules.
+def _glob_getCenterOfMass(dim: int, tag: int) -> tuple[float, float, float]:
+    return _GlobalHandler.active().simstates.active.getCenterOfMass(dim, tag)
 
-    This is needed to prevent circular imports
+def _glob_getPoints(dimtags: list[tuple[int, int]]) -> list[np.ndarray]:
+    return _GlobalHandler.active().simstates.active.getPoints(dimtags)
 
-    """
+def _glob_getBoundingBox(
+    dim: int, tag: int
+) -> tuple[float, float, float, float, float, float]:
+    return _GlobalHandler.active().simstates.active.getBoundingBox(dim, tag)
 
-    def __init__(self):
-        self._ifobj = None
+def _glob_getNormal(facetag: int) -> np.ndarray:
 
-    def clear(self) -> None:
-        self._ifobj = None
+    return _GlobalHandler.active().simstates.active.getNormal(facetag)
 
-    def getCenterOfMass(self, dim: int, tag: int) -> tuple[float, float, float]:
-        return self._ifobj.getCenterOfMass(dim, tag)
+def _glob_getCharPoint(facetag: int) -> np.ndarray:
 
-    def getPoints(self, dimtags: list[tuple[int, int]]) -> list[np.ndarray]:
-        return self._ifobj.getPoints(dimtags)
+    return _GlobalHandler.active().simstates.active.getCharPoint(facetag)
 
-    def getBoundingBox(
-        self, dim: int, tag: int
-    ) -> tuple[float, float, float, float, float, float]:
-        return self._ifobj.getBoundingBox(dim, tag)
+def _glob_getArea(tag: int) -> float:
+    return _GlobalHandler.active().simstates.active.getArea(tag)
 
-    def getNormal(self, facetag: int) -> np.ndarray:
+def _glob_is_post_fragment() -> bool:
+    return _GlobalHandler.active().simstates.active._geometry_committed
 
-        return self._ifobj.getNormal(facetag)
-
-    def getCharPoint(self, facetag: int) -> np.ndarray:
-
-        return self._ifobj.getCharPoint(facetag)
-
-    def getArea(self, tag: int) -> float:
-        return self._ifobj.getArea(tag)
-
-    def is_post_fragment(self) -> bool:
-        return self._ifobj._geometry_committed
-
-
-_CALC_INTERFACE = _CalculationInterface()
 
 
 ############################################################
@@ -284,7 +268,7 @@ class Selection(Saveable):
         # or after a boolean fragment occured (commit_geometry()). This way, the simulation
         # will crash if users assign port boundary conditions based on selections that are no longer valid.
 
-        self._valid_after_fragment: bool = _CALC_INTERFACE.is_post_fragment()
+        self._valid_after_fragment: bool = _glob_is_post_fragment()
 
     @staticmethod
     def from_dim_tags(dim: int, tags: list[int] | set[int]) -> Selection:
@@ -326,7 +310,7 @@ class Selection(Saveable):
         Returns:
             list[tuple[float, float, float],]: A list of coordinate tuples (x,y,z),...
         """
-        return [_CALC_INTERFACE.getCenterOfMass(self.dim, tag) for tag in self.tags]
+        return [_glob_getCenterOfMass(self.dim, tag) for tag in self.tags]
 
     @property
     def _metal(self) -> bool:
@@ -365,14 +349,14 @@ class Selection(Saveable):
             np.ndarray | list[np.ndarray]: _description_
         """
         if len(self.tags) == 1:
-            return _CALC_INTERFACE.getCenterOfMass(self.dim, self.tags[0])
+            return _glob_getCenterOfMass(self.dim, self.tags[0])
         else:
-            return [_CALC_INTERFACE.getCenterOfMass(self.dim, tag) for tag in self.tags]
+            return [_glob_getCenterOfMass(self.dim, tag) for tag in self.tags]
 
     @property
     def points(self) -> list[np.ndarray]:
         """A list of 3D coordinates of all nodes comprising the selection."""
-        return _CALC_INTERFACE.getPoints(self.dimtags)
+        return _glob_getPoints(self.dimtags)
 
     @property
     def bounding_box(
@@ -384,7 +368,7 @@ class Selection(Saveable):
             tuple[tuple[float, float, float],tuple[float, float, float]]: (xmin, ymin, zmin), (xmax, ymax, zmax)
         """
         if len(self.tags) == 1:
-            x1, y1, z1, x2, y2, z2 = _CALC_INTERFACE.getBoundingBox(
+            x1, y1, z1, x2, y2, z2 = _glob_getBoundingBox(
                 self.dim, self.tags[0]
             )
             return (x1, y1, z1), (x2, y2, z2)
@@ -392,7 +376,7 @@ class Selection(Saveable):
             minx = miny = minz = 1e10
             maxx = maxy = maxz = -1e10
             for tag in self.tags:
-                x0, y0, z0, x1, y1, z1 = _CALC_INTERFACE.getBoundingBox(self.dim, tag)
+                x0, y0, z0, x1, y1, z1 = _glob_getBoundingBox(self.dim, tag)
                 minx = min(minx, x0)
                 miny = min(miny, y0)
                 minz = min(minz, z0)
@@ -453,7 +437,7 @@ class Selection(Saveable):
         if axis is not None:
             norm = axis.np
             include2 = [
-                abs(_CALC_INTERFACE.getNormal(tag) @ norm) < 0.9 for tag in self.tags
+                abs(_glob_getNormal(tag) @ norm) < 0.9 for tag in self.tags
             ]
             include = [i1 for i1, i2 in zip(include, include2) if i1 and i2]
         self._tags = set([t for incl, t in zip(include, self._tags) if incl])
@@ -477,14 +461,14 @@ class Selection(Saveable):
             Selection: This Selection modified without the excluded points.
         """
         include1 = [
-            xyz_excl_function(*_CALC_INTERFACE.getCenterOfMass(*dt))
+            xyz_excl_function(*_glob_getCenterOfMass(*dt))
             for dt in self.dimtags
         ]
 
         if axis is not None:
             norm = axis.np
             include2 = [
-                (_CALC_INTERFACE.getNormal(tag) @ norm) > 0.99 for tag in self.tags
+                (_glob_getNormal(tag) @ norm) > 0.99 for tag in self.tags
             ]
             include1 = [i1 for i1, i2 in zip(include1, include2) if i1 and i2]
         self._tags = set([t for incl, t in zip(include1, self._tags) if incl])
@@ -583,14 +567,14 @@ class FaceSelection(Selection, Saveable):
     @property
     def normal(self) -> np.ndarray:
         """Returns a 3x3 coordinate matrix of the XY + out of plane basis matrix defining the face assuming it can be projected on a flat plane."""
-        ns = [_CALC_INTERFACE.getNormal(tag) for tag in self.tags]
+        ns = [_glob_getNormal(tag) for tag in self.tags]
 
         return ns[0]
 
     @property
     def area(self) -> float:
         """Returns the area of the selected surface"""
-        return sum([_CALC_INTERFACE.getArea(tag) for tag in self.tags])
+        return sum([_glob_getArea(tag) for tag in self.tags])
 
     def rect_basis(self) -> tuple[CoordinateSystem, tuple[float, float]]:
         """Returns a dictionary with keys: origin, axes, corners. The axes are the 3D basis vectors of the rectangle. The corners are the 4 corners of the rectangle.
@@ -702,7 +686,7 @@ SELECT_CLASS: dict[int, type[Selection]] = {
 ######## SELECTOR
 
 
-class Selector:
+class Selector(_BaseManager):
     """A class instance with convenient methods to generate selections using method chaining.
 
     Use the specific properties and functions in a "language" like way to make selections.
@@ -716,6 +700,9 @@ class Selector:
     def __init__(self):
         self._current_dim: int = -1
 
+    def reset(self):
+        self._current_dim: int = -1
+        
     def clear(self) -> None:
         self._current_dim = -1
 
@@ -884,5 +871,3 @@ class Selector:
             ]
         )
 
-
-SELECTOR_OBJ = Selector()

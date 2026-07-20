@@ -119,7 +119,7 @@ def _add_pml_layer(center: tuple[float, float, float],
     
     erfunc = CoordDependent(max_value=mater, matrix=ermat)
     urfunc = CoordDependent(max_value=matur, matrix=urmat)
-    pml_box.material = Material(er=erfunc, ur=urfunc,_neff=np.sqrt(mater*matur), color='#bbbbff', opacity=0.1)
+    pml_box.properties += Material(er=erfunc, ur=urfunc,_neff=np.sqrt(mater*matur), color='#bbbbff', opacity=0.1)
     pml_box.max_meshsize = thickness/N_mesh_layers
     pml_box._embeddings = planes
     
@@ -193,7 +193,7 @@ def pmlbox(width: float,
 
     position = (px, py, pz)
     main_box = Box(width, depth, height, position, alignment=Alignment.CENTER)
-    main_box.material = material
+    main_box.properties += material
 
     main_box._unset_constraints = True
     other_boxes = []

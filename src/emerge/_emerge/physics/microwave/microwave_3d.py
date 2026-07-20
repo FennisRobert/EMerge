@@ -16,21 +16,21 @@
 # <https://www.gnu.org/licenses/>.
 
 # Last Cleanup: 2026-03-04
+from ..._global import _GlobalHandler
 from ...mesher import Mesher
-from emsutil import Material
 from ...mesh3d import Mesh3D
 from ...coord import Line
 from ...geometry import GeoSurface, GeoVolume
 from ...elements.femdata import FEMBasis
 from ...elements.nedelec2 import Nedelec2
 from ...elements.dofsets import DoFSet, ElementSpace
-from ...solver import DEFAULT_ROUTINE, SolveRoutine
+from ...solver import SolveRoutine, AutomaticRoutine
 from ...system import _called_from_main_function
 from ...selection import FaceSelection
 from ...settings import Settings
 from ...simstate import SimState
-from ...logsettings import DEBUG_COLLECTOR
 from ...const import C0
+from ...attributes import PhysicalAttribute, FiniteThickness, SurfaceRoughness, MetalCoating, WavePortAttribute, LumpedElementAttribute, LumpedPortAttribute
 
 from .bcs.boundary_condition_set import MWBoundaryConditionSet
 from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
@@ -41,6 +41,7 @@ from .assembly.assembler import Assembler
 from .port_functions import compute_avg_power_flux, compute_port_power_flux
 from .simjob import SimJob
 
+from emsutil import Material
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from typing import Callable, Literal, Any
@@ -73,7 +74,7 @@ def run_job_multi(job: SimJob) -> SimJob:
         SimJob: The solved SimJob
     """
     nr = int(mp.current_process().name.split("-")[1])
-    routine = DEFAULT_ROUTINE._configure_routine("MP", proc_nr=nr)
+    routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
     solution, report = routine.solve(A, bmat, ids, matrix_type=job.mtype, id=job.id)
     report.add(**aux)
@@ -354,12 +355,12 @@ class Microwave3D:
         )  # The boundary condition set class.
         self.basis: Nedelec2 | None = None  # The Basis function class
 
-        self.solveroutine: SolveRoutine = DEFAULT_ROUTINE
+        self.solveroutine: SolveRoutine = AutomaticRoutine()
 
         self.cache_matrices: bool = True
 
         ## States
-        self._bc_initialized: bool = False
+        self._default_bcs_initialized: bool = False
         self._simstart: float = 0.0
         self._simend: float = 0.0
         self._container: dict[str, Any] = dict()
@@ -397,9 +398,11 @@ class Microwave3D:
             _reset_bc (bool, optional): If the boundary conditions should be reset. Defaults to True.
         """
         if _reset_bc:
+            logger.info('Clearning Microwave boundaryconditions.')
             self.bc = MWBoundaryConditionSet(None)
-            self._bc_initialized = False
+            self._default_bcs_initialized = False
         else:
+            logger.info('Reset boundary condition states.')
             for bc in self.bc.oftype(ModalPort):
                 bc.reset()
             
@@ -573,11 +576,12 @@ class Microwave3D:
 
         return freq_groups
 
-    def _initialize_bcs(self, surfaces: list[GeoSurface]) -> None:
+    def _autogenerate_bcs(self) -> None:
         """Initializes the boundary conditions to set PEC as all exterior boundaries."""
-        if self._bc_initialized:
+        if self._default_bcs_initialized:
             return
-        logger.debug("Initializing boundary conditions.")
+        
+        logger.info("Generating default boundary conditions.")
         
         # These tags are all faces that actually terminate the simulation domain.
         external_tags = self.mesher.domain_boundary_face_tags
@@ -586,9 +590,7 @@ class Microwave3D:
         external_tags = [tag for tag in external_tags if tag not in self.bc.assigned(2)]
 
         if len(external_tags) > 0:
-            logger.info(f"Adding PEC boundary condition with tags {external_tags}.")
             self.bc.no_overwrite().PEC(FaceSelection(external_tags))
-
         
         if self.mesher.periodic_cell is not None:
             self.mesher.periodic_cell.generate_bcs()
@@ -597,39 +599,62 @@ class Microwave3D:
 
         # Assign SurfaceImpedance to all conducting volume_boundaries
         material_map = defaultdict(set)
+        
         for geometry in self._state.all2d:
+
             # Thin Condutor from PCB Traces
-            if geometry.material.name == "PEC":
-                logger.info(f"Assigning PEC BC to {geometry}")
+            if geometry.properties.get_attr(Material, 'name')=='PEC':
                 self.bc.no_overwrite().PEC(geometry.selection)
                 continue
 
-            if (geometry.material.cond.value > self.assembler.settings.mw_3d_surfimplim):
-                logger.info(f"Assigning ThinConductor BC to {geometry}")
+            if geometry.properties.get_attr(Material, 'cond.value', default=0.0) > self.assembler.settings.mw_3d_surfimplim:
+                surface_roughness = geometry.properties.get_value(SurfaceRoughness, 0.0)
+                thickness = geometry.properties.get_value(FiniteThickness, 1.0)
+                
                 tags_ext = [tag for tag in geometry.tags if tag in external_tags]
+                tags_int = [tag for tag in geometry.tags if tag not in external_tags]
+
                 if len(tags_ext) > 0:
                     self.bc.no_overwrite().SurfaceImpedance(
-                        FaceSelection(tags_ext), geometry.material
+                        FaceSelection(tags_ext), geometry.material, thickness=thickness, surface_roughness=surface_roughness
                     )
-                tags_int = [tag for tag in geometry.tags if tag not in external_tags]
                 if len(tags_int) > 0:
                     self.bc.no_overwrite().ThinConductor(
-                        FaceSelection(tags_int), geometry.material
+                        FaceSelection(tags_int), geometry.material, thickness=thickness, surface_roughness=surface_roughness
                     )
+                for attr in geometry.properties:
+                    logger.info(f'   - {attr}')
+
+            if wpattr := geometry.properties.get(WavePortAttribute):
+                self.bc.ModalPort(geometry, wpattr.port_number, modetype=wpattr.mode_type)
+                for attr in geometry.properties:
+                    logger.info(f'   - {attr}')
+            
+            if wpattr := geometry.properties.get(LumpedPortAttribute):
+                self.bc.LumpedPort(geometry, wpattr.port_number, width=wpattr.width, height=wpattr.height, direction=wpattr.direction)
+                for attr in geometry.properties:
+                    logger.info(f'   - {attr}')
+        
         for geometry in self._state.all3d:
             material = geometry.material
             if material.cond.value > self.assembler.settings.mw_3d_surfimplim and material.name != 'PEC':
+                for attr in geometry.properties:
+                    logger.info(f'   - {attr}')
+                thickness = geometry.properties.get_value(FiniteThickness, 1.0)
+                surface_roughness = geometry.properties.get_value(SurfaceRoughness, 0.0)
+
+                self.bc.no_overwrite().SurfaceImpedance(geometry.boundary(), material=material)
                 material_map[material].update(set(geometry.boundary().tags))
 
         for material, assignment in material_map.items():
-            logger.info(f"Assigning SurfaceImpedance BC to {assignment}")
             self.bc.no_overwrite().SurfaceImpedance(FaceSelection(list(assignment)), material=material)
 
-        self._bc_initialized = True
+        self._default_bcs_initialized = True
+
     def _initialize_bc_data(self):
         """Initializes auxilliary required boundary condition information before running simulations."""
-        logger.debug("Initializing boundary conditions")
-        self._initialize_bcs(self._state.manager.get_surfaces())
+        logger.debug("(Microwave) Initializing boundary condition data")
+        self._autogenerate_bcs()
         # Removes non-assigned boundary conditions.
         # This happens for example if the initial boundary PEC gets overwritten.
         self.bc.cleanup()
@@ -665,7 +690,7 @@ class Microwave3D:
         exterior_tags = set(self.mesher.domain_boundary_face_tags)
         for lumped_port in self.bc.oftype(LumpedPort):
             if not set(lumped_port.selection.tags).isdisjoint(exterior_tags):
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     f"Lumped port {lumped_port} is assigned to face tags that are part of the exterior boundary. Lumped ports must be strictly inside the domain. Otherwise unexpected behavior may occur."
                 )
 
@@ -674,7 +699,7 @@ class Microwave3D:
             if isinstance(port, LumpedPort):
                 continue
             if not set(port.selection.tags).issubset(exterior_tags):
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     f"Port {port} is partially not on the exterior boundary of the simulation domain. This may cause unexpected behavior. Ports should be strictly part of the exterior boundary."
                 )
 
@@ -868,7 +893,7 @@ class Microwave3D:
                 logger.warning(
                     f"Domain with tag {domaintag} has multiple geometries imposing a material to them: {vols}. Consider setting priorities to decide which volume is more important."
                 )
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     f"Domain with tag {domaintag} has multiple geometries imposing a material to them: {vols}. Consider setting priorities to decide which volume is more important."
                 )
 
@@ -1153,7 +1178,7 @@ class Microwave3D:
             logger.debug(f".. Mode type = {mode_type}")
 
             # Figure out if TE, TM, or TEM mode
-            if port.forced_modetype is not None:
+            if port.forced_modetype is not None and port.forced_modetype.lower().strip() != 'any':
                 if port.forced_modetype != mode_type:
                     logger.debug(
                         f".. Ignoring port mode({mode_type}) because its not a {port.forced_modetype} mode."
@@ -1270,7 +1295,7 @@ class Microwave3D:
                 elif impedance_type == "VI":
                     mode.Z0 = np.abs(voltage) / np.abs(current)
 
-                logger.info(f"Port Z0 = {mode.Z0} Ω")
+                logger.info(f"Port Z0 = {mode.Z0} Ω ({impedance_type})")
 
         # Sort the port modes on propagation constant.
         port.sort_modes()
@@ -1340,15 +1365,15 @@ class Microwave3D:
 
         # Safety tests
         if len(self.frequencies) > 200:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"More than 200 frequency points are detected ({len(self.frequencies)}). This may cause slow simulations. Consider using Vector Fitting to subsample S-parameters."
             )
         if min(self.frequencies) < 1e6:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"A frequency smaller than 1MHz has been detected ({min(self.frequencies)} Hz). Perhaps you forgot to include usints like 1e6 for MHz etc."
             )
         if max(self.frequencies) > 1e12:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"A frequency greater than THz has been detected ({min(self.frequencies)} Hz). Perhaps you double counted frequency units like twice 1e6 for MHz etc."
             )
 
@@ -1356,16 +1381,11 @@ class Microwave3D:
         # Checks
         # --------------------------------------------------------------------
 
-        if self.bc._initialized_with_defaults is False:
-            raise SimulationError(
-                "Cannot run a modal analysis because no default boundary conditions have been assigned."
-            )
-
         self._check_meshed()
         self._initialize_field()
         self._initialize_bc_data()
         self._check_physics()
-
+        
         if self.basis is None:
             raise SimulationError(
                 "Cannot proceed, the simulation basis class is undefined."
@@ -1787,12 +1807,7 @@ class Microwave3D:
         # --------------------------------------------------------------------
         # Checks
         # --------------------------------------------------------------------
-
-        if self.bc._initialized_with_defaults is False:
-            raise SimulationError(
-                "Cannot run a modal analysis because no default boundary conditions have been assigned."
-            )
-
+        
         self._check_meshed()
         self._initialize_field()
         self._initialize_bc_data()
@@ -2407,7 +2422,7 @@ class Microwave3D:
             job.clear_solutions()
 
         if not_conserved and conserve_margin > 0.01:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"S-parameters with an amplitude greater than 1.0 detected. ({20 * np.log10(conserve_margin):.2f}dB error. This could be due to a ModalPort with the wrong mode type.\n"
                 + "Specify the type of mode (TE/TM/TEM) in the constructor using ModalPort(..., modetype='TE') for example."
             )
@@ -2435,7 +2450,7 @@ class Microwave3D:
             raise SimulationError(
                 "Cannot post-process. Simulation basis function is undefined."
             )
-        logger.info("Computing S-parameters")
+        logger.info("Post processing Scattered Field solutions")
 
         ertri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
         urtri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)

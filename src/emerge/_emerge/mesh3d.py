@@ -17,13 +17,13 @@
 
 # Last Cleanup: 2026-03-04
 from __future__ import annotations
+from ._global import _GlobalHandler
 import gmsh  # type: ignore
 import numpy as np
 from typing import Union, List, Tuple, Callable, Any
 from collections import defaultdict
 from loguru import logger
 from .bc import Periodic
-from .logsettings import DEBUG_COLLECTOR
 from emsutil import Saveable
 
 _MISSING_ID: int = -1234
@@ -242,7 +242,7 @@ class Mesh3D(Mesh, Saveable):
         i11, i21, i31 = tuple(sorted((int(i1), int(i2), int(i3))))
         output = self.inv_tris.get(tuple(sorted((int(i1), int(i2), int(i3)))), None)
         if output is None:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"Mesh3D: The program is crashed due to a non existing triangle {i11}, {i21}, {i31}. This occurs often if surfaces stick out of the 3D domain.\n"
                 + "Only 3D volumes can be meshed. Parts or entire simulations that are two dimensional will cause this problem."
             )
@@ -819,7 +819,7 @@ class Mesh3D(Mesh, Saveable):
                 self.tri_i2t[tri_id] = int(tag)
         except KeyError as e:
             logger.error(e)
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 "A missing key error usually indicates that there are flat geometries sticking out of the simulation domain.\nEMerge can only deal with volumetric data. Please check the geometry using .view(use_gmsh=True) before meshing to make sure no surfaces are sticking out of the domain."
             )
             raise e

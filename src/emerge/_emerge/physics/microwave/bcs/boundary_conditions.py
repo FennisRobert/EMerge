@@ -20,16 +20,17 @@ from __future__ import annotations
 import numpy as np
 from loguru import logger
 from typing import Callable, Literal, Generator
+from ...._global import _GlobalHandler
 from ....selection import Selection, FaceSelection
 from ....cs import CoordinateSystem, GCS
 from ....geometry import GeoSurface, GeoObject
 from ....bc import (
     BoundaryCondition,
 )
+from ....attributes import LumpedElementAttribute
 from emsutil import Material, AIR, Saveable
 from ....const import Z0, C0, EPS0, MU0
 from . import background_field as bf
-from ....logsettings import DEBUG_COLLECTOR
 
 ############################################################
 #                    BOUNDARY CONDITIONS                   #
@@ -394,9 +395,11 @@ class LumpedElement(RobinBC, Saveable):
                 raise ValueError(
                     f"The width, height and direction must be defined. Information cannot be extracted from {face}"
                 )
-            for lpd in face._mdi.iter('lumpedelement'):
-                width, height, impedance_function = lpd['width'], lpd['height'], lpd['func']
-
+            if leattr := face.properties.get(LumpedElementAttribute):
+                width = leattr.width
+                height = leattr.height
+                impedance_function = leattr.impedance_function
+            
         if width is None or height is None:
             raise ValueError(
                 f"The width, height and direction could not be extracted from {face}"
@@ -626,7 +629,7 @@ class ThinConductor(RobinBC, Saveable):
         self._sr_model: str = sr_model
         self._Zf: Callable | None = impedance_function
 
-        DEBUG_COLLECTOR.add_report(
+        _GlobalHandler.active().debugcollector.add_report(
             "The ThinConductor boundary condition uses a new DoF splitting algorithm which may not be perfect. If you run into any issues, please condtact info@emerge-software.com to resolve any issues! :)"
         )
 

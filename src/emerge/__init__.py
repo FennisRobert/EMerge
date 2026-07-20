@@ -52,13 +52,9 @@ os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 #                      IMPORT MODULES                     #
 ############################################################
 
-from ._emerge.logsettings import LOG_CONTROLLER
 from loguru import logger
-
-LOG_CONTROLLER.set_default()
 logger.info(f'EMerge v{__version__}')
 logger.debug('Importing modules')
-LOG_CONTROLLER._set_log_buffer()
 
 import gmsh
 from ._emerge.simmodel import Simulation, SimulationBeta
@@ -68,13 +64,12 @@ from ._emerge.cs import CoordinateSystem, CS, GCS, Plane, Axis, XAX, YAX, ZAX, X
 from ._emerge.coord import Line
 from ._emerge import geo
 from ._emerge.selection import Selection, FaceSelection, DomainSelection, EdgeSelection
-from ._emerge.geometry import select
+from ._emerge.geometry import select, _GeometryManager, _KeyGenerator
 from ._emerge.mth.common_functions import norm, coax_rout, coax_rin, dot, cross, lumped_element_material
 from ._emerge.periodic import RectCell, HexCell
 from ._emerge.mesher import Algorithm2D, Algorithm3D
 from ._emerge.howto import _HowtoClass
 from ._emerge.emerge_update import update_emerge
-from ._emerge.cleanup import cleanup
 from . import integrals as intf
 from .auxilliary.touchstone import TouchstoneData
 from emsutil import isola, rogers, const, lib
@@ -84,12 +79,34 @@ from emsutil import EMergeTheme
 from emsutil import themes
 from emsutil.lib import C0, MU0, EPS0, Z0
 from ._emerge.elements.dofsets import ElementSpace, DoFSet
+from ._emerge.attributes import PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
 
 howto = _HowtoClass()
 
 from ._emerge.install_check import run_installation_checks
 
 run_installation_checks()
+
+
+############################################################
+#                      GLOBAL HANDLER                     #
+############################################################
+
+from ._emerge._global import _GlobalHandler, cleanup
+from ._emerge.geo.pcb import _PCBManager
+from ._emerge.simstate import _SimStateManager
+from ._emerge.selection import Selector
+from ._emerge.logsettings import LogController, DebugCollector
+
+GLOBALHANDLER = _GlobalHandler()
+GLOBALHANDLER.geomanager = _GeometryManager()
+GLOBALHANDLER.generator = _KeyGenerator()
+GLOBALHANDLER.pcbmanager = _PCBManager()
+GLOBALHANDLER.simstates = _SimStateManager()
+GLOBALHANDLER.selector = Selector()
+GLOBALHANDLER.logcontroller = LogController()
+GLOBALHANDLER.debugcollector = DebugCollector()
+# Install global states
 
 ############################################################
 #                         CONSTANTS                        #

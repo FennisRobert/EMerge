@@ -16,18 +16,26 @@
 # <https://www.gnu.org/licenses/>.
 
 # Last Cleanup: 2025-03-12
-from typing import TypeVar, overload
+from typing import TypeVar, overload, Literal
 from ..geometry import GeoSurface, GeoVolume, GeoObject, GeoPoint, GeoEdge, GeoPolygon
 from ..cs import CoordinateSystem, GCS, Anchor
 import gmsh
 import numpy as np
+from emsutil import AIR
 
 T = TypeVar('T', GeoSurface, GeoVolume, GeoObject, GeoPoint, GeoEdge)
 
+def _tags(dimtags: list[tuple[int, int]]) -> list[int]:
+    return [t for d,t in dimtags]
 
-def add(main: T, tool: T, 
-             remove_object: bool = True,
-             remove_tool: bool = True) -> T:
+def _dimtags(dim: int, tags: list[int]) -> list[tuple[int, int]]:
+    return [(dim,tag) for tag in tags]
+
+
+def add(main: T, 
+        tool: T, 
+        remove_object: bool = True,
+        remove_tool: bool = True) -> T:
     ''' Adds two GMSH objects together, returning a new object that is the union of the two.
     
     Parameters
@@ -78,7 +86,7 @@ def remove(main: T, tool: T,
     GeoSurface | GeoVolume
         A new object that is the difference of the main and tool objects.
     '''
-    #gmsh.model.occ.synchronize()
+    gmsh.model.occ.synchronize()
     out_dim_tags, out_dim_tags_map = gmsh.model.occ.cut(main.dimtags, tool.dimtags, removeObject=remove_object, removeTool=remove_tool)
     
     gmsh.model.occ.synchronize()
@@ -371,7 +379,7 @@ def expand_surface(surface: GeoSurface, distance: float) -> GeoSurface:
     surf = GeoSurface(surfs)
     return surf
 
-def stick(object: GeoObject, p1: Anchor , p2: Anchor ) -> GeoObject:
+def stick(obj: GeoObject, p1: Anchor , p2: Anchor ) -> GeoObject:
     """Glues an objects face anchor to another face anchor point with the appropriate orientation.
 
     Args:
@@ -383,12 +391,12 @@ def stick(object: GeoObject, p1: Anchor , p2: Anchor ) -> GeoObject:
         GeoObject: The moved object
     """
     affine = p1.compute_affine(p2)
-    gmsh.model.occ.affine_transform(object.dimtags, affine.flatten()[:12])
+    gmsh.model.occ.affine_transform(obj.dimtags, affine.flatten()[:12])
     
-    for fp in object._all_transformable:
+    for fp in obj._all_transformable:
         fp.affine_transform(affine)
     
-    return object
+    return obj
 
 def bounding_box() -> tuple[float, float, float, float, float, float]:
     """Compute the bounding box of the current geometry state
@@ -415,3 +423,72 @@ def bounding_box() -> tuple[float, float, float, float, float, float]:
             zmaxs.append(zmax)
     
     return min(xmins), max(xmaxs), min(ymins), max(ymaxs), min(zmins), max(zmaxs)
+
+
+def connect_faces(face1: GeoSurface, face2: GeoSurface,
+                  make_solid: bool = True,
+                  make_ruled: bool = True,
+                  parametrization: Literal["ChordLength", "Centripetal", "IsoParametric"] = "IsoParametric") -> GeoVolume:
+    """Connect two surface objects together
+
+    The underlaying operation requires that the points on the circumpherence of both surfaces need to be the same.
+
+    Args:
+        face1 (GeoSurface): The first surface to connect
+        face2 (GeoSurface): The second surface to connect
+
+    Returns:
+        GeoVolume: _description_
+    """
+    wire1, _ = gmsh.model.occ.getCurveLoops(face1.tags[0])
+    wire2, _ = gmsh.model.occ.getCurveLoops(face2.tags[0])
+    dts = gmsh.model.occ.addThruSections([wire1[0], wire2[0]], make_solid, make_ruled, parametrization=parametrization)
+    tags = [t for d,t in dts]
+    return GeoVolume(tags)
+    
+
+def thick_wall(thickness: float, *volumes):
+    """Add thickness to volumes and return a solid expanded geometry without internal holes."""
+    gmsh.model.occ.synchronize()
+
+    dimtags = []
+    for vol in volumes:
+        dimtags.extend(vol.dimtags)
+
+    dimtags = gmsh.model.occ.copy(dimtags)
+
+    if len(dimtags) > 1:
+        union_dimtags, _ = gmsh.model.occ.fuse([dimtags[0]], dimtags[1:], removeObject=True, removeTool=True)
+    else:
+        union_dimtags = dimtags
+    print('Entities before:', gmsh.model.occ.getEntities(3))
+    print('2D Entities before:', gmsh.model.occ.getEntities(2))
+    new_solids = []
+    for dim, tag in union_dimtags:
+        print(f'Dim = {dim}, tag = {tag}')
+        # Hollow shell: outer offset surface + inner surface (the cavity)
+        thick_dimtags = gmsh.model.occ.addThickSolid(tag, [], offset=thickness)
+        gmsh.model.occ.synchronize()
+        print(f'Thick dimtags: {thick_dimtags}')
+        for d,t in thick_dimtags:
+            print(f'Mass in = {gmsh.model.occ.getMass(d,t)}')
+            surfloop, _ = gmsh.model.occ.getSurfaceLoops(t)
+            gmsh.model.occ.remove([(d,t),])
+            print(f'Surface loop = {surfloop}')
+            new_volume = gmsh.model.occ.addVolume(surfloop)
+            print(f'New Volume: {new_volume} with mass {gmsh.model.occ.getMass(3, new_volume)}')
+            new_solids.append((3,new_volume))
+    
+    gmsh.model.occ.synchronize()
+    
+    print('Entities after:', gmsh.model.occ.getEntities(3))
+    print('2D Entities before:', gmsh.model.occ.getEntities(2))
+    print(new_solids, union_dimtags)
+    outdts,_ = gmsh.model.occ.fuse(union_dimtags, new_solids)
+    print(outdts)
+    new_vol = GeoVolume.from_dimtags(outdts).set_material(AIR)
+    gmsh.model.occ.synchronize()
+    print('Entities final:', gmsh.model.occ.getEntities(3))
+    print('2D Entities final:', gmsh.model.occ.getEntities(2))
+    print(new_vol)
+    return new_vol

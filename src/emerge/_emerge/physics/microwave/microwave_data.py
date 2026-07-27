@@ -501,6 +501,9 @@ class MWField(Saveable):
 
         self._Texcite: np.ndarray = 1.0
 
+        self._bstags = None
+        self._bssurf = None
+
     def add_port_properties(
         self,
         port_number: int,
@@ -561,7 +564,7 @@ class MWField(Saveable):
 
 
     @property
-    def relative(self) -> MWData:
+    def relative(self) -> MWField:
         """ Returns the same MWField object but with the relative flag turned on
         so that all fields are the relative field instead of the total field.
         """
@@ -635,6 +638,15 @@ class MWField(Saveable):
         self.excitation = {key: 0.0 for key in self._fields.keys()}
         for imode, coeff in enumerate(excitations):
             self.excitation[self.port_modes[imode].smat_index] = coeff
+
+    def set_backgroundfield(self, bf) -> None:
+        """Activate a specific background field
+
+        Args:
+            index (int): _description_
+        """
+        self.excitation = {key: 0.0 for key in self._fields.keys()}
+        self.excitation[bf] = 1.0
 
     def combine_ports(self, p1: int, p2: int) -> MWField:
         """Combines ports p1 and p2 into a cifferential and common mode port respectively.
@@ -1184,7 +1196,7 @@ class MWField(Saveable):
         refdir = _parse_axis(ref_direction).np
         plane_normal_parsed = _parse_axis(plane_normal).np
         theta, phi = arc_on_plane(refdir, plane_normal_parsed, ang_range, Npoints)
-        E, H, Ptot = self.farfield(theta, phi, faces, origin, syms=syms)
+        E, H, Ptot = self._farfield(theta, phi, faces, origin, syms=syms)
         angs = np.linspace(*ang_range, Npoints) * np.pi / 180
         return EHFieldFF(
             _E=E, _H=H, theta=theta, phi=phi, Ptot=Ptot, ang=angs, freq=self.freq
@@ -1216,9 +1228,9 @@ class MWField(Saveable):
         if phis is None:
             phis = np.linspace(-np.pi, np.pi, 181)
 
-        T, P = np.meshgrid(thetas, phis)
+        T, P = np.meshgrid(thetas, phis, indexing='ij')
 
-        E, H, Ptot = self.farfield(
+        E, H, Ptot = self._farfield(
             T.flatten(), P.flatten(), faces, origin=origin, syms=syms
         )
         E = E.reshape((3,) + T.shape)
@@ -1266,6 +1278,22 @@ class MWField(Saveable):
         faces: FaceSelection | GeoSurface,
         origin: tuple[float, float, float] | None = None,
         syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+    ) -> EHFieldFF:
+        E, H, Ptot = self._farfield(
+            theta.flatten(), phi.flatten(), faces, origin=origin, syms=syms
+        )
+        E = E.reshape((3,) + theta.shape)
+        H = H.reshape((3,) + theta.shape)
+
+        return EHFieldFF(E, H, theta, phi, Ptot, freq=self.freq)
+        
+    def _farfield(
+        self,
+        theta: np.ndarray,
+        phi: np.ndarray,
+        faces: FaceSelection | GeoSurface,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Compute the farfield at the provided theta/phi coordinates
 
@@ -1284,11 +1312,16 @@ class MWField(Saveable):
 
         from .sc import stratton_chu
 
-        surface = self.basis.mesh.boundary_surface(
-            faces.tags, inward_normal=False, origin=origin
-        )
-        ehfield = self.interpolate(*surface.exyz)
+        if faces.tags == self._bstags and False:
+            surface = self._bssurf
+        else:
+            surface = self.basis.mesh.boundary_surface(
+                faces.tags, inward_normal=False, origin=origin
+            )
+            self._bstags = faces.tags
+            self._bssurf = surface
 
+        ehfield = self.interpolate(*surface.exyz)
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
 
         Ptot = np.sum(
@@ -1380,7 +1413,7 @@ class MWField(Saveable):
         freq = self.freq
 
         def function(theta: np.ndarray, phi: np.ndarray, k0: float):
-            E, H, _ = self.farfield(theta, phi, faces, origin, syms)
+            E, H, _ = self._farfield(theta, phi, faces, origin, syms)
             return E[0, :], E[1, :], E[2, :], H[0, :], H[1, :], H[2, :]
 
         return dict(freq=freq, ff_function=function)

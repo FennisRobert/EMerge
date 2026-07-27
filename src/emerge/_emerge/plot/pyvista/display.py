@@ -29,6 +29,7 @@ from ...selection import (
 )
 from .... import __version__
 from ...physics.microwave.bcs import PortBC, ModalPort
+from ...physics.microwave.bcs.background_field import BackgroundField
 from ...cs import Anchor
 from ...coord import Line
 from pathlib import Path
@@ -579,6 +580,43 @@ class PVDisplay(EMergeDisplay):
             show_scalar_bar=False,
         )
         self._data_sets.append(actor.mapper.dataset)
+
+    def add_backgroundfields(self, fields: list[BackgroundField], radius: float) -> None:
+        coords = []
+        ks = []
+        Es = []
+        Hs = []
+        for field in fields:
+            E, H, K = field.EHK(0,0,0)
+            R = K/np.linalg.norm(K)
+            p0 = -R*radius
+            coords.append(p0)
+            ks.append(R*radius/10)
+            Es.append(E/np.linalg.norm(E)*radius*0.1)
+            Hs.append(H/np.linalg.norm(H)*radius*0.1)
+
+        xs,ys,zs = zip(*coords)
+        kx,ky,kz = zip(*ks)
+        Ex,Ey,Ez = zip(*Es)
+        Hx,Hy,Hz = zip(*Hs)
+
+        xs = np.array(xs).real
+        ys = np.array(ys).real
+        zs = np.array(zs).real
+        kx = np.array(kx).real
+        ky = np.array(ky).real
+        kz = np.array(kz).real
+        Ex = np.array(Ex).real
+        Ey = np.array(Ey).real
+        Ez = np.array(Ez).real
+        Hx = np.array(Hx).real
+        Hy = np.array(Hy).real
+        Hz = np.array(Hz).real
+        
+        self.add_quiver(xs,ys,zs,kx,ky,kz, color='green')#, color='EMERGE-RED')
+        self.add_quiver(xs,ys,zs,Ex,Ey,Ez, color='red')#, color='EMERGE-BLUE')
+        self.add_quiver(xs,ys,zs,Hx,Hy,Hz, color='blue')#, color='EMERGE-GREEN')
+        
 
     def add_farfield3d(
         self,

@@ -201,6 +201,7 @@ class ScatteredField(RobinBC, Saveable):
         self,
         face: FaceSelection | GeoSurface,
         power_density: float = 1.0 / (2 * Z0),
+        definition: Literal['EA','SPH'] = 'SPH',
         cs: CoordinateSystem | None = None,
     ):
         """Creates a user defined port field
@@ -245,7 +246,7 @@ class ScatteredField(RobinBC, Saveable):
             0.0,
         ]
         self.E0: float = (power_density * 2 * Z0) ** 0.5
-        self.defintion: bf.DEFINITIONS = "EA"
+        self.defintion: bf.DEFINITIONS = definition
         self.bf: type[bf.BackgroundField] = bf.BackgroundField
 
     def get_basis(self) -> np.ndarray:
@@ -265,9 +266,9 @@ class ScatteredField(RobinBC, Saveable):
         return k0
 
     def _iter_fields(self, k0: float) -> Generator[bf.BackgroundField, None, None]:
-        from itertools import product
+        #from itertools import product
 
-        for theta, phi, psi in product(self.thetas, self.phis, self.polarizations):
+        for theta, phi, psi in zip(self.thetas, self.phis, self.polarizations):
             yield self.bf(k0, theta, phi, psi, self.cs.origin, self.E0, self.defintion)
 
     def set_backgroundfield_type(self, bftype: type[bf.BackgroundField]) -> None:

@@ -914,7 +914,7 @@ class GeoObject(Saveable):
             self.properties += material
             self._prio_half_up()
         else:
-            logger.warning(f'Trying to assing material {material} which is not of type Material. Skipping the assignment.')
+            logger.warning(f'Trying to assign material {material} to {self} which is not of type Material. Skipping the assignment.')
         return self
 
     def prio_set(self: T, level: int) -> T:

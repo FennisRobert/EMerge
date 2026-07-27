@@ -656,6 +656,66 @@ class OldBox(GeoVolume):
         tags = list(reduce(lambda a,b: a+b, tagslist))
         return FaceSelection(tags)
 
+class SectionedDisc(GeoSurface):
+    """Generates a planar disc composed of N distinct arc segments on a CoordinateSystem.
+
+    Unlike a default smooth disc (which consists of a single closed curve with 1 seam vertex),
+    a SectionedDisc explicitly breaks the perimeter into N topological curve segments.
+    This is ideal for lofting (addThruSections) to rectangles (Nsections=4) or N-sided polygons
+    without experiencing vertex-clumping or topological twisting.
+
+    Args:
+        radius (float): Radius of the disc in meters.
+        Nsections (int, optional): Number of boundary arc segments. Defaults to 4.
+        cs (CoordinateSystem, optional): Coordinate system defining origin and orientation. Defaults to GCS.
+        name (str | None, optional): Custom geometry object name. Defaults to None.
+    """
+    _default_name: str = 'SectionedDisc'
+
+    def __init__(self,
+                 radius: float,
+                 Nsections: int = 4,
+                 rotation_deg: float = 0.0,
+                 direction: float = 1.0,
+                 cs: CoordinateSystem = GCS,
+                 name: str | None = None):
+        
+        if Nsections < 2:
+            raise ValueError("Nsections must be at least 2 to form valid arc segments.")
+
+        self.radius = radius
+        self.Nsections = Nsections
+        self.cs = cs
+        # 1. Add center point
+        c_tag = gmsh.model.occ.addPoint(*cs.origin)
+
+        # 2. Compute boundary points around the perimeter in the CS XY-plane
+        angles = np.linspace(0, 2 * np.pi, Nsections, endpoint=False)
+        pt_tags = []
+
+        for angle in angles:
+            angle = direction*(angle + rotation_deg *np.pi/180)
+            pt_pos = cs.origin + radius * np.cos(angle) * cs.xax.np + radius * np.sin(angle) * cs.yax.np
+            pt_tags.append(gmsh.model.occ.addPoint(*pt_pos))
+
+        # 3. Create N circle arcs connecting perimeter points around the center
+        arc_tags = []
+        for i in range(Nsections):
+            p_start = pt_tags[i]
+            p_end = pt_tags[(i + 1) % Nsections]
+            arc_tags.append(gmsh.model.occ.addCircleArc(p_start, c_tag, p_end))
+
+        # 4. Form the wire (curve loop) and plane surface
+        self.wire_tag = gmsh.model.occ.addCurveLoop(arc_tags)
+        surf_tag = gmsh.model.occ.addPlaneSurface([self.wire_tag])
+
+        super().__init__([surf_tag], name=name)
+
+    @property
+    def wire(self) -> int:
+        """Returns the OpenCASCADE curve loop (wire) tag of the disc perimeter."""
+        return self.wire_tag
+
 
 class Cone(GeoVolume):
     """Constructis a cone that starts at position p0 and is aimed in the given direction.

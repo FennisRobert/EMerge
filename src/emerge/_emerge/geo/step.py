@@ -157,13 +157,13 @@ class STEPItems:
         if not stl_path.exists():
             raise FileNotFoundError(f"File with name {stl_path} does not exist.")
 
-        dimtags = gmsh.model.occ.import_shapes(filename, format="step")
+        dimtags = gmsh.model.occ.import_shapes(filename, format='step')
 
         self.points: list[GeoPoint] = []
         self.edges: list[GeoEdge] = []
         self.surfaces: list[GeoSurface] = []
         self.volumes: list[GeoVolume] = []
-
+    
         namegen = STEPNameGenerator(filename, string_parser)
 
         for dim, tag in dimtags:

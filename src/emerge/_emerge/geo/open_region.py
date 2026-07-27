@@ -22,6 +22,7 @@ from .shapes import Box, GeoVolume
 from .operations import bounding_box
 from emsutil import Material, AIR
 from numbers import Number
+import gmsh
 
 def open_region(xmargin: float | tuple[float, float],
                 ymargin: float | tuple[float, float],
@@ -38,7 +39,7 @@ def open_region(xmargin: float | tuple[float, float],
     Returns:
         Box: The airbox geoemtry object
     """
-    
+    gmsh.model.occ.synchronize()
     if isinstance(xmargin, Number):
         xmargin = (xmargin, xmargin)
     if isinstance(ymargin, Number):

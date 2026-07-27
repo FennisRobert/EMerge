@@ -576,6 +576,13 @@ class StripPath:
         self.layer: int = 0
         self.name: str = _GlobalHandler.active().pcbmanager(name, self._DEFNAME)
         self._consume: float = 0
+        self._via_defaults: dict[str, float | str] = dict(
+            radius=None,
+        )
+        self._turn_defaults: dict[str, float | str] = dict(
+            corner_type='square',
+            dsratio=0.7,
+        )
 
     @property
     def z(self) -> float:
@@ -741,8 +748,8 @@ class StripPath:
         self,
         angle: float,
         width: float | None = None,
-        corner_type: Literal["champher", "square","miter"] = "square",
-        dsratio: float = 0.7,
+        corner_type: Literal["champher", "square","miter"] | None = None,
+        dsratio: float | None = None,
     ) -> StripPath:
         """Adds a turn to the strip path.
 
@@ -759,6 +766,16 @@ class StripPath:
         Returns:
             StripPath: The current StripPath object
         """
+        if corner_type is None:
+            corner_type = self._turn_defaults['corner_type']
+        else:
+            self._turn_defaults['corner_type'] = corner_type
+        
+        if dsratio is None:
+            dsratio = self._turn_defaults['dsratio']
+        else:
+            self._turn_defaults['dsratio'] = dsratio
+
         x, y = self.end.x, self.end.y
         dx, dy = self.end.direction
         if abs(angle) <= 20:
@@ -781,8 +798,8 @@ class StripPath:
     def pturn(
         self,
         angle: float,
-        corner_type: Literal["champher", "square"] = "square",
-        dsratio: float = 0.7,
+        corner_type: Literal["champher", "square", "miter"] | None = None,
+        dsratio: float | None = None,
     ) -> StripPath:
         """Adds a turn to the strip path.
 
@@ -1098,7 +1115,7 @@ class StripPath:
     def via(
         self,
         new_layer: int,
-        radius: float,
+        radius: float | None = None,
         proceed: bool = True,
         direction: tuple[float, float] | None = None,
         width: float | None = None,
@@ -1130,7 +1147,11 @@ class StripPath:
         Returns:
             StripPath: The new StripPath object
         """
-
+        if radius is None:
+            radius = self._via_defaults['radius']
+        else:
+            self._via_defaults['radius'] = radius
+        
         if extra is None:
             extra = self.end.width / 2
 
@@ -1247,8 +1268,8 @@ class StripPath:
         arrival_dir: tuple[float, float] | None = None,
         arrival_margin: float | None = None,
         angle_step: float = 90,
-        corner_type: Literal['champher','square','miter'] = 'square',
-        dsratio: float = 0.7,
+        corner_type: Literal['champher','square','miter'] | None = None,
+        dsratio: float | None = None,
     ) -> StripPath:
         """Extend the path from current end point to dest (x, y).
         Optionally ensure arrival in arrival_dir after a straight segment of arrival_margin.
@@ -1264,6 +1285,18 @@ class StripPath:
         Returns:
             StripPath: _description_
         """
+        
+        # Default overwrite
+        if corner_type is None:
+            corner_type = self._turn_defaults['corner_type']
+        else:
+            self._turn_defaults['corner_type'] = corner_type
+        
+        if dsratio is None:
+            dsratio = self._turn_defaults['dsratio']
+        else:
+            self._turn_defaults['dsratio'] = dsratio
+
         dest = _parse_vector(dest)[:2]
         # Validate angle_step
         if 360 % angle_step != 0 or angle_step > 90 or angle_step <= 0:

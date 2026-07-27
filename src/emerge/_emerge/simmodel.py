@@ -904,6 +904,36 @@ class Simulation:
         self.mesh._quick_mesh = True
         logger.trace(" (3) Mesh routine complete")
 
+    def _cleanup_entities(self):
+        gmsh.model.occ.synchronize()
+
+        # 1. Get all 3D volumes
+        volumes = gmsh.model.getEntities(dim=3)
+
+        # 2. Extract every surface, curve, and point that forms the boundary of these 3D volumes
+        valid_boundary_entities = set()
+        if volumes:
+            valid_boundary_entities = set(
+                gmsh.model.getBoundary(volumes, combined=False, oriented=False, recursive=True)
+            )
+
+        # 3. Gather all 0D, 1D, and 2D entities currently in the model
+        entities_0to2 = (
+            gmsh.model.getEntities(dim=0) + 
+            gmsh.model.getEntities(dim=1) + 
+            gmsh.model.getEntities(dim=2)
+        )
+
+        # 4. Filter for entities that aren't in the 3D boundary tree
+        orphans = [ent for ent in entities_0to2 if ent not in valid_boundary_entities]
+
+        # 5. Purge the orphans from OCC
+        if orphans:
+            print(f'Removing: {orphans}')
+            gmsh.model.occ.remove(orphans, recursive=True)
+            gmsh.model.occ.synchronize()
+
+        return orphans
     def generate_mesh(self, regenerate: bool = False) -> None:
         """Generate the mesh.
         This can only be done after commit_geometry(...) is called and if frequencies are defined.
@@ -967,12 +997,8 @@ class Simulation:
             ) ** 0.5
             self.mesher._configure_mesh_size(lambda x: diagmax / 10, 1.0)
 
-        gmsh.model.occ.synchronize()
-        for dim, tag in gmsh.model.getEntities(2):
-            up = gmsh.model.getAdjacencies(2, tag)[0]  # parent volumes
-            if len(up) == 0:
-                logger.debug(f"  Surface {tag} has no parent volume — orphan face!")
-
+        # Remove orphaned surfaces
+        self._cleanup_entities()
         logger.info("Calling GMSH mesher")
         
         try:

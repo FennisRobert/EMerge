@@ -648,7 +648,7 @@ class XYPolygon:
         p2, l2, w2 = other._make_wire(other._cs)
         o1 = np.array(self._cs.in_global_cs(*self.center, 0)).flatten()
         o2 = np.array(other._cs.in_global_cs(*other.center, 0)).flatten()
-        dts = gmsh.model.occ.addThruSections([w1, w2], True, parametrization="IsoParametric")
+        dts = gmsh.model.occ.addThruSections([w1, w2], True, True, parametrization="IsoParametric")
         vol = GeoVolume([t for d,t in dts if d==3], name=name)
         
         vol._add_face_pointer('front',o1, self._cs.zax.np)

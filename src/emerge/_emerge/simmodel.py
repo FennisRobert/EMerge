@@ -791,7 +791,8 @@ class Simulation:
         logger.trace(f"Setting {cell} as periodic cell object")
         self.mw.bc._cell = cell
         self._cell = cell
-
+        self.mesher.periodic_cell = cell
+        
     def set_resolution(self, resolution: float) -> Simulation:
         """Sets the discretization resolution in the various physics interfaces.
 

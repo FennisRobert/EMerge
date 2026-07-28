@@ -593,7 +593,7 @@ class Microwave3D:
         if self.mesher.periodic_cell is not None:
             self.mesher.periodic_cell.generate_bcs()
             for bc in self.mesher.periodic_cell.bcs:
-                self.bc.no_overwrite().assign(bc)
+                self.bc.assign(bc)
 
         # Assign SurfaceImpedance to all conducting volume_boundaries
         material_map = defaultdict(set)
@@ -626,6 +626,7 @@ class Microwave3D:
             self.bc.no_overwrite().SurfaceImpedance(FaceSelection(list(assignment)), material=material)
 
         self._bc_initialized = True
+
     def _initialize_bc_data(self):
         """Initializes auxilliary required boundary condition information before running simulations."""
         logger.debug("Initializing boundary conditions")
@@ -660,7 +661,6 @@ class Microwave3D:
         """
         self.bc._is_excited()
         self.bc._check_ports()
-
         # Check if lumped ports are inside the domain
         exterior_tags = set(self.mesher.domain_boundary_face_tags)
         for lumped_port in self.bc.oftype(LumpedPort):

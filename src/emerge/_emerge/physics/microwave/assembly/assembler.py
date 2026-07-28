@@ -714,6 +714,7 @@ class Assembler:
                 field.edge_to_field,
                 linked_tris,
                 linked_edges,
+                field.dofcodes2d,
                 field.n_field,
                 phi,
             )

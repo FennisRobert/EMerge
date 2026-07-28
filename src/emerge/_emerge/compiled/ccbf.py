@@ -39,32 +39,31 @@ MASK_INDEX = 0b00111111
 
 @njit(types.Tuple((i8[:], i8[:]))(i8[:]), cache=True)
 def parse_dofcode(dofcodes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Returns three arrays that contain information regarding the type of basis function and edge indices.
-
-    Args:
-        dofcodes (np.ndarray): The list of all DoF codes sorted
-
-    Returns:
-        tuple[int, int, np.ndarray, np.ndarray]: The type array (0=edge, 1=face), index array(0-6 etc.), 
-    """
     typearray = np.empty_like(dofcodes, dtype=np.int64)
     indexarray = np.empty_like(dofcodes, dtype=np.int64)
-    i = 0
-    ne = np.zeros((2**6,), dtype=np.int64)
-    nf = np.zeros((2**6,), dtype=np.int64)
-    for code in dofcodes:
-        idofcode = code & 0b00111111
-        if code & 0b11000000==64:
+    
+    ne = np.zeros((64,), dtype=np.int64)
+    nf = np.zeros((64,), dtype=np.int64)
+    
+    for i in range(dofcodes.shape[0]):
+        code = dofcodes[i]
+        idofcode = code & MASK_INDEX
+        doftype = code & MASK_TYPE
+        
+        if doftype == EDGE_TYPE:
             typearray[i] = 0
             indexarray[i] = ne[idofcode]
             ne[idofcode] += 1
-        else:
+        elif doftype == FACE_TYPE:
             typearray[i] = 1
             indexarray[i] = nf[idofcode]
             nf[idofcode] += 1
-        i += 1
-    return typearray, indexarray
-        
+        else:
+            # Handle NODE_TYPE (0) or VOLU_TYPE (192) if needed
+            typearray[i] = -1
+            indexarray[i] = -1
+
+    return typearray, indexarray  
 
 @njit(cache=True)
 def get_type_index(number: int):

@@ -360,8 +360,11 @@ class Microwave3D:
 
         self.cache_matrices: bool = True
 
+        self.mat_assy: MaterialAssignment | None = None
+        
         ## States
         self._default_bcs_initialized: bool = False
+        self._bc_data_initialized = False
         self._simstart: float = 0.0
         self._simend: float = 0.0
         self._container: dict[str, Any] = dict()
@@ -402,11 +405,14 @@ class Microwave3D:
             logger.info('Clearning Microwave boundaryconditions.')
             self.bc = MWBoundaryConditionSet(None)
             self._default_bcs_initialized = False
+            self._bc_data_initialized = False
         else:
             logger.info('Reset boundary condition states.')
             for bc in self.bc.oftype(ModalPort):
                 bc.reset()
-            
+        
+        self.mat_assy = None
+        
         self.basis: FEMBasis = None
         self.solveroutine.reset()
         self.assembler.cached_matrices = None
@@ -582,7 +588,7 @@ class Microwave3D:
         if self._default_bcs_initialized:
             return
         
-        logger.info("Generating default boundary conditions.")
+        logger.info("  Generating default boundary conditions.")
         
         # These tags are all faces that actually terminate the simulation domain.
         external_tags = self.mesher.domain_boundary_face_tags
@@ -654,24 +660,28 @@ class Microwave3D:
 
     def _initialize_bc_data(self):
         """Initializes auxilliary required boundary condition information before running simulations."""
-        logger.debug("(Microwave) Initializing boundary condition data")
-        self._autogenerate_bcs()
-        # Removes non-assigned boundary conditions.
-        # This happens for example if the initial boundary PEC gets overwritten.
-        self.bc.cleanup()
+        if not self._bc_data_initialized:
+            logger.debug("(Microwave) Initializing boundary condition data")
+            
+            self._autogenerate_bcs()
+            # Removes non-assigned boundary conditions.
+            # This happens for example if the initial boundary PEC gets overwritten.
+            self.bc.cleanup()
 
-        for port in self.bc.oftype(LumpedPort):
-            self._define_lumped_port_integration_points(port)
+            for port in self.bc.oftype(LumpedPort):
+                self._define_lumped_port_integration_points(port)
 
-        self.bc._selections_post_boolean_fragment()
+            self.bc._selections_post_boolean_fragment()
 
-        # Process thin conductor DOF split
-        thin_conductor_bcs = self.bc.oftype(ThinConductor)
-        if len(thin_conductor_bcs) > 0:
-            logger.debug("Processing thin conductors")
-            self.basis.partition_dof([x.tags for x in thin_conductor_bcs])
-            self.basis._partitioned = True
-
+            # Process thin conductor DOF split
+            thin_conductor_bcs = self.bc.oftype(ThinConductor)
+            if len(thin_conductor_bcs) > 0:
+                logger.debug("Processing thin conductors")
+                self.basis.partition_dof([x.tags for x in thin_conductor_bcs])
+                self.basis._partitioned = True
+            
+            self._bc_data_initialized = True
+        
     def _check_meshed(self) -> None:
         """Checks if a mesh is generated"""
         if not self.mesh.defined:
@@ -862,17 +872,18 @@ class Microwave3D:
 
             bc._check_mode_betas()
 
-    def _get_material_assignment(self) -> MaterialAssignment:
+    def _generate_material_assignment(self):
         """Retrieve the material properties of the geometry"""
 
         # In order to make EMerge projects saveable, the Materials are told which
         # geometries they have been assigned to. These material lists are stored in the final solution
         # The reason is that per simulation and frequency, the material propery value may be different.
+        if self.mat_assy is not None:
+            logger.debug('   Using cached material assignment.')
+            return
+        self.mat_assy = MaterialAssignment(self._state.current_geo_state)
+        self.mat_assy.set_tet_assignment(self.mesh._get_tet_to_tag(), self.mesh.centers)
 
-        ma = MaterialAssignment(self._state.current_geo_state)
-        ma.set_tet_assignment(self.mesh._get_tet_to_tag())
-        
-        return ma
     ############################################################
     #                   MAIN SIMULATION FUNCTIONS              #
     ############################################################
@@ -939,11 +950,11 @@ class Microwave3D:
         # Materials is now a list of materials and in the materials themselves
         # They know what values are assigned to which index. This is not uniform
         # because coordinate dependent material properties/materials are possible.
-        materials = self._get_material_assignment(self.mesher.volumes)
-
+        
         # Er, Tand, ur, and conductivity parameters are always 3 by 3 full
         # material property tensors per tetrahedron.
         # They are assumed constant within each tetrahedron.
+        self._generate_material_assignment()
 
         ertet = np.zeros((3, 3, self.mesh.n_tets), dtype=np.complex128)
         tandtet = np.zeros((3, 3, self.mesh.n_tets), dtype=np.complex128)
@@ -953,11 +964,14 @@ class Microwave3D:
         # Evaluating the relavant function er, tand etc on these functions automatically
         # only assigned these material values to those arrays where they are valid.
         # The materials know (high coupling, I know) which tet-indices they are assigned to.
-        for mat in materials:
-            ertet = mat.er(freq, ertet)
-            tandtet = mat.tand(freq, tandtet)
-            urtet = mat.ur(freq, urtet)
-            condtet = mat.cond(freq, condtet)
+        # Take the material properties from the materials list.
+
+        for mat, centers, ids in self.mat_assy.iter_materials():
+            ertet = mat.er(freq, ertet, centers, ids)
+            urtet = mat.ur(freq, urtet, centers, ids)
+            tandtet = mat.tand(freq, tandtet, centers, ids)
+            condtet = mat.cond(freq, condtet, centers, ids)
+
 
         # Compute the complex dielectric constant with the loss tangent.
         ertet = ertet * (1 - 1j * tandtet)
@@ -1253,7 +1267,7 @@ class Microwave3D:
         # Sort the port modes on propagation constant.
         port.sort_modes()
 
-        logger.info(f"Total of {port.nmodes} found")
+        logger.info(f"Port {port.port_number}: Modal analysis defined {port.nmodes} port modes.")
 
         T2 = time.time()
         logger.info(f"Elapsed time = {(T2 - T0):.2f} seconds.")
@@ -1294,7 +1308,6 @@ class Microwave3D:
         Returns:
             MWSimData: The dataset.
         """
-
         # --------------------------------------------------------------------
         # States
         # --------------------------------------------------------------------
@@ -1331,13 +1344,22 @@ class Microwave3D:
             )
 
         # --------------------------------------------------------------------
+        # Initialization
+        # --------------------------------------------------------------------
+
+        logger.info(
+            f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
+        )
+        self._initialize_field()
+        self._initialize_bc_data()
+
+        # --------------------------------------------------------------------
         # Checks
         # --------------------------------------------------------------------
 
         self._check_meshed()
-        self._initialize_field()
-        self._initialize_bc_data()
         self._check_physics()
+        
         
         if self.basis is None:
             raise SimulationError(
@@ -1347,16 +1369,12 @@ class Microwave3D:
         if self._settings.check_ram:
             _check_ram(self.mesh.n_tets, n_workers, parallel)
 
-        logger.info(
-            f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
-        )
-
         # --------------------------------------------------------------------
         # Material Assignments
         # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
-        mat_assy = self._get_material_assignment()
+        self._generate_material_assignment()
 
         # --------------------------------------------------------------------
         # Port BC prepratation
@@ -1441,7 +1459,7 @@ class Microwave3D:
                     # Assemble the FEM problem
                     job, mats = self.assembler.assemble_freq_matrix(
                         self.basis,
-                        mat_assy,
+                        self.mat_assy,
                         self.bc.boundary_conditions,
                         freq,
                         cache_matrices=self.cache_matrices,
@@ -1481,7 +1499,7 @@ class Microwave3D:
                         # Assemble the problem Ax=b
                         job, mats = self.assembler.assemble_freq_matrix(
                             self.basis,
-                            materials,
+                            self.mat_assy,
                             self.bc.boundary_conditions,
                             freq,
                             cache_matrices=self.cache_matrices,
@@ -1529,7 +1547,7 @@ class Microwave3D:
                         # Assemble the problem Ax=b
                         job, mats = self.assembler.assemble_freq_matrix(
                             self.basis,
-                            materials,
+                            self.mat_assy,
                             self.bc.boundary_conditions,
                             freq,
                             cache_matrices=self.cache_matrices,
@@ -1758,14 +1776,21 @@ class Microwave3D:
         job_counter: int = 1
 
         # --------------------------------------------------------------------
-        # Checks
+        # Initialization
         # --------------------------------------------------------------------
-        
-        self._check_meshed()
+
+        logger.info(
+            f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
+        )
         self._initialize_field()
         self._initialize_bc_data()
-        self._check_physics()
 
+        # --------------------------------------------------------------------
+        # Checks
+        # --------------------------------------------------------------------
+
+        self._check_meshed()
+        self._check_physics()
         if self.basis is None:
             raise SimulationError(
                 "Cannot proceed, the simulation basis class is undefined."
@@ -1774,16 +1799,12 @@ class Microwave3D:
         if self._settings.check_ram:
             _check_ram(self.mesh.n_tets, n_workers, parallel)
 
-        logger.info(
-            f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
-        )
-
         # --------------------------------------------------------------------
         # Material Assignments
         # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         # --------------------------------------------------------------------
         # Initializing solve functions
@@ -1849,7 +1870,7 @@ class Microwave3D:
                         self._compute_modes(freq)
                     job, mats = self.assembler.assemble_scattering_matrix(
                         self.basis,
-                        materials,
+                        self.mat_assy,
                         self.bc.boundary_conditions,
                         freq,
                         cache_matrices=self.cache_matrices,
@@ -1884,7 +1905,7 @@ class Microwave3D:
                             self._compute_modes(freq)
                         job, mats = self.assembler.assemble_scattering_matrix(
                             self.basis,
-                            materials,
+                            self.mat_assy,
                             self.bc.boundary_conditions,
                             freq,
                             cache_matrices=self.cache_matrices,
@@ -1927,7 +1948,7 @@ class Microwave3D:
 
                         job, mats = self.assembler.assemble_scattering_matrix(
                             self.basis,
-                            materials,
+                            self.mat_assy,
                             self.bc.boundary_conditions,
                             freq,
                             cache_matrices=self.cache_matrices,
@@ -2010,9 +2031,21 @@ class Microwave3D:
                 "Cannot run a modal analysis because no default boundary conditions have been assigned."
             )
 
-        self._check_meshed()
+        # --------------------------------------------------------------------
+        # Initialization
+        # --------------------------------------------------------------------
+        
+        logger.info(
+            f"Starting AMR Solve (#tets = {self.mesh.n_tets:,})"
+        )
         self._initialize_field()
         self._initialize_bc_data()
+
+        # --------------------------------------------------------------------
+        # Checks
+        # --------------------------------------------------------------------
+
+        self._check_meshed()
         self._check_physics()
 
         if self.basis is None:
@@ -2023,7 +2056,8 @@ class Microwave3D:
         if self._settings.check_ram:
             _check_ram(self.mesh.n_tets, 1, False)
 
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
+        
         logger.debug("Initializing single frequency settings.")
 
         #### Port settings
@@ -2054,7 +2088,7 @@ class Microwave3D:
 
         job, mats = self.assembler.assemble_freq_matrix(
             self.basis,
-            materials,
+            self.mat_assy,
             self.bc.boundary_conditions,
             frequency,
             cache_matrices=self.cache_matrices,
@@ -2106,26 +2140,39 @@ class Microwave3D:
         self._simstart = time.time()
         
 
-        self._check_meshed()
+        # --------------------------------------------------------------------
+        # Initialization
+        # --------------------------------------------------------------------
+        
+        logger.info(
+            f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
+        )
         self._initialize_field()
         self._initialize_bc_data()
+
+        # --------------------------------------------------------------------
+        # Checks
+        # --------------------------------------------------------------------
+
+        self._check_meshed()
 
         if self.basis is None:
             raise SimulationError(
                 "Cannot proceed. The simulation basis class is undefined."
             )
 
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
-        ### Does this move
-        logger.debug("Initializing frequency domain sweep.")
-
+        # --------------------------------------------------------------------
+        # Matrix Assembly
+        # --------------------------------------------------------------------
+        
         logger.info(
             f"Pre-assembling matrices of {len(self.frequencies)} frequency points."
         )
 
         job, matset = self.assembler.assemble_eig_matrix(
-            self.basis, materials, self.bc.boundary_conditions, search_frequency
+            self.basis, self.mat_assy, self.bc.boundary_conditions, search_frequency
         )
 
         er, ur, cond = matset

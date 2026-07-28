@@ -473,7 +473,7 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "2.8.1"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "emsutil" },
@@ -516,6 +516,7 @@ umfpack = [
 [package.dev-dependencies]
 dev = [
     { name = "emerge-aasds" },
+    { name = "emsutil" },
     { name = "pytest" },
     { name = "scikit-umfpack" },
     { name = "twine" },
@@ -525,7 +526,7 @@ dev = [
 requires-dist = [
     { name = "cupy-cuda12x", marker = "extra == 'cudss'" },
     { name = "cupy-cuda12x", marker = "extra == 'cudss12'" },
-    { name = "emsutil", specifier = ">=0.8.3,<0.9.0" },
+    { name = "emsutil", directory = "../emsutil" },
     { name = "ezdxf", marker = "extra == 'dxf'" },
     { name = "gmsh", specifier = ">=4.13.0,<4.15" },
     { name = "joblib", specifier = ">=1.5.1" },
@@ -551,6 +552,7 @@ provides-extras = ["umfpack", "cudss", "cudss12", "dxf", "gerber"]
 [package.metadata.requires-dev]
 dev = [
     { name = "emerge-aasds", git = "https://github.com/FennisRobert/emerge-aasds" },
+    { name = "emsutil", directory = "../emsutil" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "scikit-umfpack", specifier = ">=0.4.2" },
     { name = "twine", specifier = ">=6.2.0" },
@@ -568,8 +570,8 @@ dependencies = [
 
 [[package]]
 name = "emsutil"
-version = "0.8.3"
-source = { registry = "https://pypi.org/simple" }
+version = "1.0.0"
+source = { directory = "../emsutil" }
 dependencies = [
     { name = "loguru" },
     { name = "matplotlib" },
@@ -580,10 +582,20 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/57/acff33e205ac9644e2dcb6371d8410752887f142397091aab93b7d8d881c/emsutil-0.8.3.tar.gz", hash = "sha256:48f0f1033eb761748ba51718948170090b4c19c9e55556a5881b10b6afecee1b", size = 7839613, upload-time = "2026-06-30T10:57:57.115Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/7d/243faa0758d262888b029743cb07145c21e236581ef411ed4ba81a4d04a4/emsutil-0.8.3-py3-none-any.whl", hash = "sha256:cfaafb9650f8f49a0c4d0351eb7a92577d72015e5e0ad230005ba7e4d0e6a4af", size = 7748255, upload-time = "2026-06-30T10:57:55.276Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "matplotlib", specifier = ">=3.8.0" },
+    { name = "msgpack", specifier = ">=1.1.2" },
+    { name = "msgpack-numpy", specifier = ">=0.4.8" },
+    { name = "numpy", specifier = ">=1.24,<2.3" },
+    { name = "pyvista", specifier = ">=0.46.4" },
+    { name = "scipy", specifier = ">=1.14.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "twine", specifier = ">=6.2.0" }]
 
 [[package]]
 name = "exceptiongroup"

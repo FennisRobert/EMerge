@@ -24,18 +24,18 @@ Hair = 60
 ## Material definition
 
 # We can define the material using the Material class. Just supply the dielectric properties and you are done!
-pcbmat = em.Material(er=er, color="#217627", opacity=0.6)
+pcbmat = em.Material(er=er, color="#217627", opacity=0.6, name='PCB Material')
 
 # We start by creating our simulation object.
 
-model = em.Simulation("SteppedImpedanceFilter")
+model = em.Simulation("SteppedImpedanceFilter", loglevel='DEBUG')
 model.check_version("3.0.0")  # Checks version compatibility.
 
 # To accomodate PCB routing we make use of the PCBLayouter class. To use it we need to
 # supply it with a thickness, the desired air-box height, the units at which we supply
 # the dimensions and the PCB material.
 
-layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3, trace_material=em.lib.COPPER)
+layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3, trace_material=em.lib.PEC)
 
 # We will route our PCB using the "method chaining" syntax. First we call the .new() method
 # to start a new trace. This will returna StripPath object on which we may call methods that
@@ -90,7 +90,7 @@ model.mesher.set_face_size(p2, 1 * mm)
 # Finally we generate our mesh and view it
 
 model.generate_mesh()
-model.view()
+model.view(bc=True)
 
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
 sol = model.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8)
@@ -127,7 +127,7 @@ smith(S11, labels="S11", f=f)
 
 plot_sp(f, [S11, S21], labels=["S11", "S21"], dblim=[-40, 6], logx=True)
 
-field = sol.field.find(freq=5.5e9)
+field = sol.field.find(freq=0.2e9)
 model.display.add_object(pcb, opacity=0.1)
 model.display.add_object(polies, opacity=0.5)
 model.display.animate().add_field(

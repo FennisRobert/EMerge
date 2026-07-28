@@ -60,7 +60,7 @@ model.view(plot_mesh=True)
 
 # To be able to model the radar cross-section we will use the ScatteredField boundary condition
 # Currently only an azimuth-elevation style angle definition system is imple
-scat = model.mw.bc.ScatteredField(air.boundary())
+scat = model.mw.bc.ScatteredField(air.boundary(), definition='EA')
 
 # +Y Polarization
 scat.set_excitations(polarizations=90)

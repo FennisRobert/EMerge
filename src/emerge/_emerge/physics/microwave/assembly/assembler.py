@@ -36,11 +36,10 @@ from ....elements.dofsets import DoFSet
 from ....mth.csc_cast import CSCMapping
 from emsutil import Material
 from ....settings import Settings
-from scipy.sparse import csc_matrix, coo_matrix
+from scipy.sparse import csc_matrix
 from loguru import logger
 from ..simjob import SimJob
 from ....const import EPS0, C0
-import math
 import time
 _PBC_DSMAX = 1e-15
 
@@ -48,6 +47,23 @@ _PBC_DSMAX = 1e-15
 #                         FUNCTIONS                        #
 ############################################################
 
+
+def _format_freq(freq: float) -> str:
+    units = ["Hz", "kHz", "MHz", "GHz", "THz"]
+
+    # Handle zero to avoid math domain errors with log
+    if freq == 0:
+        return "0.00 Hz"
+
+    # Calculate index using log base 1000: floor(log10(abs(freq)) / 3)
+    # This determines how many "groups of three zeros" are in the number
+    i = int(np.floor(np.log10(abs(freq)) / 3))
+
+    # Clamp index between 0 (Hz) and the last available unit (THz)
+    i = max(0, min(i, len(units) - 1))
+
+    scaled_freq = freq / (1000.0**i)
+    return f"{scaled_freq:.2f} {units[i]}"
 
 def do_assemble_wpbc(bc: BoundaryCondition) -> bool:
     if isinstance(bc, WavePortIH):
@@ -341,9 +357,11 @@ class Assembler:
         ermesh = er[:, :, tri_ids]
         urmesh = ur[:, :, tri_ids]
         sigmesh = sig[tri_ids]
-        ermesh[0, 0, :] = ermesh[0, 0, :] - 1j * sigmesh / (k0 * C0 * EPS0)
-        ermesh[1, 1, :] = ermesh[0, 0, :] - 1j * sigmesh / (k0 * C0 * EPS0)
-        ermesh[2, 2, :] = ermesh[0, 0, :] - 1j * sigmesh / (k0 * C0 * EPS0)
+        
+        loss = -1j * sigmesh / (k0 * C0 * EPS0)
+        ermesh[0, 0, :] = ermesh[0, 0, :] + loss
+        ermesh[1, 1, :] = ermesh[1, 1, :] + loss
+        ermesh[2, 2, :] = ermesh[2, 2, :] + loss
 
         logger.trace(f".assembling matrices for {nedlegfield} at k0={k0:.2f}")
         E, B = generelized_eigenvalue_matrix(
@@ -411,7 +429,7 @@ class Assembler:
         Returns:
             SimJob: The resultant SimJob object
         """
-
+        logger.debug(f'Assembling frequency = {_format_freq(frequency)}')
         # We import these Numba compiled function here because they may not always be needed so compilation is postponed until they
         # are actually used.
         from .curlcurl import tet_mass_stiffness_matrices
@@ -439,11 +457,11 @@ class Assembler:
         ur = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
 
         # Take the material properties from the materials list.
-        for mat in materials:
-            er = mat.er(frequency, er)
-            ur = mat.ur(frequency, ur)
-            tand = mat.tand(frequency, tand)
-            cond = mat.cond(frequency, cond)
+        for mat, centers, ids in mat_assy.iter_materials():
+            er = mat.er(frequency, er, centers, ids)
+            ur = mat.ur(frequency, ur, centers, ids)
+            tand = mat.tand(frequency, tand, centers, ids)
+            cond = mat.cond(frequency, cond, centers, ids)
 
         # Define the complex dielectric constant:
         er = er * (1 - 1j * tand) - 1j * cond / (W0 * EPS0)
@@ -471,11 +489,11 @@ class Assembler:
             and self.cached_matrices is not None
         ):
             # IF CACHED AND AVAILABLE PULL E AND B FROM CACHE
-            logger.debug("Using cached matricies.")
+            logger.debug(" - Using cached matricies.")
             Evec, Bvec = self.cached_matrices
         else:
             # OTHERWISE, COMPUTE
-            logger.debug("Assembling matrices")
+            logger.debug(" - Calling matrix assembler...")
             t0 = time.time()
             # Store the E and B values in COO matrix format and the compressed-column object cscmap.
             Evec, Bvec, cscmap = tet_mass_stiffness_matrices(
@@ -508,7 +526,7 @@ class Assembler:
         #                      PEC BOUNDARY CONDITIONS             #
         ############################################################
 
-        logger.debug("Implementing PEC Boundary Conditions.")
+        logger.debug(" - Implementing PEC Boundary Conditions.")
 
         # pec_ids is a list of degree of freedom indices that are 0 because
         # the E-field there is 0. For pec_ids these are references to the
@@ -533,12 +551,12 @@ class Assembler:
                 pec_tris.append(tri)
         if ipec > 0:
             logger.trace(
-                f"Extended PEC with {ipec} tets with a conductivity > {self.settings.mw_3d_peclim}."
+                f" - Extended PEC with {ipec} tets with a conductivity > {self.settings.mw_3d_peclim}."
             )
 
         # Apply PEC boundary conditions
         for pec in pec_bcs:
-            logger.trace(f"Implementing: {pec}")
+            logger.trace(f" - Implementing: {pec}")
             if len(pec.tags) == 0:
                 continue
             face_tags = pec.tags
@@ -565,7 +583,7 @@ class Assembler:
         # Robin boundary conditions are all ports, absorbing boundary dconditions and surface impedance etc.
 
         if len(robin_bcs) > 0:
-            logger.debug("Implementing Robin Boundary Conditions.")
+            logger.debug(" - Assembling Robin Boundary Conditions.")
 
             # The contributions will be added to the mass+stiffness matrix A.
             # We assemble in B.
@@ -577,7 +595,7 @@ class Assembler:
                 B_matrix_robin_2 = B_matrix_robin.copy().astype(np.complex128)
 
             for bc in robin_bcs:
-                logger.trace(f".Implementing {bc}")
+                logger.trace(f"   - Implementing {bc}")
 
                 # Get all Robin BC face triangle and edge
                 tri_ids = mesh.get_triangles(bc.tags)
@@ -590,7 +608,7 @@ class Assembler:
                 # Compute the γ parameter which is a generic scaling factor
                 # used in the Robin boundary condition matrix etries.
                 gamma = bc.get_gamma(K0)
-                logger.trace(f"..robin bc γ={gamma:.3f}")
+                logger.trace(f"    - robin bc γ={gamma:.3f}")
 
                 if bc._assemble_matrix:
                     # The assembler adds the contributions to the Bemptry matrix
@@ -614,7 +632,7 @@ class Assembler:
                         b_p = assemble_robin_bc_bvec(field, tri_ids, Ufunc)  # type: ignore
                         port_vectors[number] += b_p  # type: ignore
                         logger.trace(
-                            f"..included force vector term with norm {np.linalg.norm(b_p):.3f}"
+                            f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}"
                         )
 
                 ## Second order absorbing boundary correction
@@ -623,7 +641,7 @@ class Assembler:
                 if bc._isabc:
                     if bc.order == 2:
                         c2 = bc.get_abccorr(K0)
-                        logger.debug("Implementing second order ABC correction.")
+                        logger.debug("    - Implementing second order ABC correction.")
                         mat = abc_order_2_matrix(field, tri_ids, c2)
                         B_matrix_robin += mat
 
@@ -631,7 +649,7 @@ class Assembler:
             K += field.generate_csc(B_matrix_robin)
 
             if B_matrix_robin_2 is not None:
-                logger.debug("Assembling opposite side matrix entries.")
+                logger.debug("    - Assembling opposite side matrix entries.")
                 rows, cols = field.empty_tri_rowcol(other_side=True)
                 K += field.generate_csc(B_matrix_robin_2, (rows, cols))
 
@@ -673,7 +691,7 @@ class Assembler:
 
         # Periodic boun
         if len(periodic_bcs) > 0:
-            logger.debug("Implementing Periodic Boundary Conditions.")
+            logger.debug("  - Implementing Periodic Boundary Conditions.")
 
         Pmats = []
         remove: set[int] = set()
@@ -683,7 +701,7 @@ class Assembler:
         # And reduces the number of degrees of freedom by linking the linked DOF on the two periodic boundaries
         # by a self term 1.0 and exp(jθ) of the linked boundary term.
         for pbc in periodic_bcs:
-            logger.trace(f".Implementing {pbc}")
+            logger.trace(f"    - Implementing {pbc}")
             has_periodic = True
             # Get the linked indices.
             tri_ids_1 = mesh.get_triangles(pbc.face1.tags)
@@ -691,7 +709,7 @@ class Assembler:
             tri_ids_2 = mesh.get_triangles(pbc.face2.tags)
             edge_ids_2 = mesh.get_edges(pbc.face2.tags)
             dv = np.array(pbc.dv)
-            logger.trace(f"..displacement vector {dv}")
+            logger.trace(f"    - displacement vector {dv}")
             # Pair these coordinates by computing which triangles ought to be linked to which other triangles.
             linked_tris = pair_coordinates(
                 mesh.tri_centers, tri_ids_1, tri_ids_2, dv, _PBC_DSMAX
@@ -701,7 +719,7 @@ class Assembler:
             )
             dv = np.array(pbc.dv)
             phi = pbc.phi(K0)
-            logger.trace(f"..ϕ={phi} rad/m")
+            logger.trace(f"    - ϕ={phi} rad/m")
             # Generate the matrix Pmat
             Pmat, rows = gen_periodic_matrix(
                 tri_ids_1,
@@ -720,7 +738,7 @@ class Assembler:
         # boundary, we simply multiply the matrices P1 @ P2 @ P3 etc.
 
         if Pmats:
-            logger.trace(f".periodic bc removes {len(remove)} boundary DoF")
+            logger.trace(f"  - periodic bc removes {len(remove)} boundary DoF")
             Pmat = Pmats[0]
             for P2 in Pmats[1:]:
                 Pmat = Pmat @ P2
@@ -750,9 +768,9 @@ class Assembler:
             for key, b in port_vectors.items():
                 port_vectors[key] = Pd @ b
 
-        logger.debug(f"Number of tets: {mesh.n_tets:,}")
-        logger.debug(f"Number of DoF: {K.shape[0]:,}")
-        logger.debug(f"Number of non-zero: {K.nnz:,}")
+        logger.debug(f"  - Number of tets: {mesh.n_tets:,}")
+        logger.debug(f"  - Number of DoF: {K.shape[0]:,}")
+        logger.debug(f"  - Number of non-zero: {K.nnz:,}")
 
         K.eliminate_zeros()
 
@@ -772,7 +790,7 @@ class Assembler:
     def assemble_scattering_matrix(
         self,
         field: Nedelec2,
-        materials: list[Material],
+        mat_assy: MaterialAssignment,
         bcs: list[BoundaryCondition],
         frequency: float,
         cache_matrices: bool = False,
@@ -794,7 +812,6 @@ class Assembler:
 
         from .curlcurl import tet_mass_stiffness_matrices
         from .robinbc import assemble_robin_bc, assemble_robin_bc_bvec_scat
-        from ....mth.optimized import gaus_quad_tri
         from ....mth.pairing import pair_coordinates
         from .periodicbc import gen_periodic_matrix
         from .robin_abc_order2 import abc_order_2_matrix
@@ -807,21 +824,19 @@ class Assembler:
         is_frequency_dependent = False
         mesh = field.mesh
 
-        for mat in materials:
-            if mat.frequency_dependent:
-                is_frequency_dependent = True
-                break
+        is_frequency_dependent = mat_assy.frequency_dependent()
 
         er = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         tand = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         cond = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         ur = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
 
-        for mat in materials:
-            er = mat.er(frequency, er)
-            ur = mat.ur(frequency, ur)
-            tand = mat.tand(frequency, tand)
-            cond = mat.cond(frequency, cond)
+        # Take the material properties from the materials list.
+        for mat, centers, ids in mat_assy.iter_materials():
+            er = mat.er(frequency, er, centers, ids)
+            ur = mat.ur(frequency, ur, centers, ids)
+            tand = mat.tand(frequency, tand, centers, ids)
+            cond = mat.cond(frequency, cond, centers, ids)
 
         er = er * (1 - 1j * tand) - 1j * cond / (W0 * EPS0)
 
@@ -1077,7 +1092,7 @@ class Assembler:
     def assemble_eig_matrix(
         self,
         field: Nedelec2,
-        materials: list[Material],
+        mat_assy: MaterialAssignment,
         bcs: list[BoundaryCondition],
         frequency: float,
     ) -> SimJob:
@@ -1118,11 +1133,12 @@ class Assembler:
         ur = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
 
         # Store material properties in the associated indices
-        for mat in materials:
-            er = mat.er(frequency, er)
-            ur = mat.ur(frequency, ur)
-            tand = mat.tand(frequency, tand)
-            cond = mat.cond(frequency, cond)
+        # Take the material properties from the materials list.
+        for mat, centers, ids in mat_assy.iter_materials():
+            er = mat.er(frequency, er, centers, ids)
+            ur = mat.ur(frequency, ur, centers, ids)
+            tand = mat.tand(frequency, tand, centers, ids)
+            cond = mat.cond(frequency, cond, centers, ids)
 
         # Compute the complex dielectric constant
         er = er * (1 - 1j * tand) - 1j * cond / (w0 * EPS0)

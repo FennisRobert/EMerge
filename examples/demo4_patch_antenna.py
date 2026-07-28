@@ -1,3 +1,5 @@
+from emerge_config import config
+config.set_acc_threads(1)
 import emerge as em
 import numpy as np
 from emerge.plot import plot_sp, smith, plot_ff_polar, plot_ff
@@ -34,8 +36,9 @@ f1 = 1.545e9  # start frequency
 f2 = 1.605e9  # stop frequency
 
 # --- Create simulation object -------------------------------------------
-model = em.Simulation("PatchAntenna")
+model = em.Simulation("PatchAntenna", loglevel='DEBUG')
 model.check_version("3.0.0")  # Checks version compatibility.
+
 # --- Define geometry primitives -----------------------------------------
 # Substrate block centered at origin in XY, thickness in Z (negative down)
 dielectric = em.geo.Box(wsub, hsub, th, position=(-wsub / 2, -hsub / 2, -th))
@@ -85,7 +88,7 @@ model.commit_geometry()
 
 # --- Mesh refinement settings --------------------------------------------
 # Finer boundary mesh on patch edges for accuracy
-model.mesher.set_boundary_size(rpatch, 3 * mm)
+model.mesher.set_boundary_size(rpatch, 1 * mm)
 # Refined mesh on port face for excitation accuracy
 model.mesher.set_face_size(port, 1 * mm)
 

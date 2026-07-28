@@ -343,6 +343,17 @@ class Mesh3D(Mesh, Saveable):
         tettags = tettags[tettags != _MISSING_ID]
         return np.sort(tettags)
 
+    def _get_tet_to_tag(self) -> np.ndarray:
+        """Returns an array that counts which domain tag is assigned to each tetrahedron
+
+        Returns:
+            np.ndarray: _description_
+        """
+        tags = np.zeros((self.n_tets,), dtype=np.int64)
+        for tag, tets in self.vtag_to_tet.items():
+            tags[tets] = tag
+        return tags
+    
     def _get_dimtags(
         self, nodes: list[int] | None = None, edges: list[int] | None = None
     ) -> list[tuple[int, int]]:

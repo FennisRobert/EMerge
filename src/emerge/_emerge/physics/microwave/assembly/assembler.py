@@ -28,6 +28,7 @@ from ..bcs import (
     SurfaceImpedance,
     WavePortIH,
 )
+from ...material_assignment import MaterialAssignment
 from ....periodic import Periodic
 from ....elements.nedelec2 import Nedelec2
 from ....elements.nedleg2 import NedelecLegrange2
@@ -391,7 +392,7 @@ class Assembler:
     def assemble_freq_matrix(
         self,
         field: Nedelec2,
-        materials: list[Material],
+        mat_assy: MaterialAssignment,
         bcs: list[BoundaryCondition],
         frequency: float,
         cache_matrices: bool = False,
@@ -427,14 +428,9 @@ class Assembler:
         # If not, the matrix A which consists of to matrices A=E - k0^2 K can be cached and reused and simply scaled for each frequency
         # Conductors have frequency dependent material properties but so may any other user defined frequency dependent material paroperty.
 
-        is_frequency_dependent = False
+        is_frequency_dependent = mat_assy.frequency_dependent()
 
         mesh = field.mesh
-
-        for mat in materials:
-            if mat.frequency_dependent:
-                is_frequency_dependent = True
-                break
 
         # Prepare the 3x3 material property tensors.
         er = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)

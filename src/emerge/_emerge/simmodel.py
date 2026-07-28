@@ -699,6 +699,11 @@ class Simulation:
             off_screen: (bool, optional): Only shows off screen (useful for combinations with Screenshot). Defaults to False
         """
 
+        # Use GMSH if there are only 3D geometries
+        if len(self.state.all3d) == 0:
+            use_gmsh = True
+        
+        
         def default_if_none(value, default):
             if value is None:
                 return default
@@ -929,11 +934,12 @@ class Simulation:
 
         # 5. Purge the orphans from OCC
         if orphans:
-            print(f'Removing: {orphans}')
+            logger.info(f' Removing orphans: {orphans}')
             gmsh.model.occ.remove(orphans, recursive=True)
             gmsh.model.occ.synchronize()
 
         return orphans
+
     def generate_mesh(self, regenerate: bool = False) -> None:
         """Generate the mesh.
         This can only be done after commit_geometry(...) is called and if frequencies are defined.
@@ -944,6 +950,10 @@ class Simulation:
         Raises:
             ValueError: ValueError if no frequencies are defined.
         """
+        
+        # Check if there is at least one 3D geometry
+        if len(self.state.all3d) == 0:
+            raise SimulationError("EMerge can only generate meshes of 3D geometries. You need at least one 3D geometry to start the mesh procedure.")
         logger.info("Starting mesh generation phase.")
 
         if self.mesh.defined and self.mesh._quick_mesh:

@@ -32,6 +32,7 @@ from ...simstate import SimState
 from ...const import C0
 from ...attributes import PhysicalAttribute, FiniteThickness, SurfaceRoughness, MetalCoating, WavePortAttribute, LumpedElementAttribute, LumpedPortAttribute
 from ..material_assignment import MaterialAssignment
+from ..physics_generic import GenericPhysics3D
 
 from .bcs.boundary_condition_set import MWBoundaryConditionSet
 from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
@@ -323,7 +324,7 @@ The Microwave class is quite verbose and contains a lot of large business logic.
 """
 
 
-class Microwave3D:
+class Microwave3D(GenericPhysics3D):
     """The Electrodynamics time harmonic physics class.
 
     This class contains all physics dependent features to perform EM simuation in the time-harmonic
@@ -602,7 +603,7 @@ class Microwave3D:
         if self.mesher.periodic_cell is not None:
             self.mesher.periodic_cell.generate_bcs()
             for bc in self.mesher.periodic_cell.bcs:
-                self.bc.no_overwrite().assign(bc)
+                self.bc.assign(bc)
 
         # Assign SurfaceImpedance to all conducting volume_boundaries
         material_map = defaultdict(set)
@@ -872,18 +873,6 @@ class Microwave3D:
 
             bc._check_mode_betas()
 
-    def _generate_material_assignment(self):
-        """Retrieve the material properties of the geometry"""
-
-        # In order to make EMerge projects saveable, the Materials are told which
-        # geometries they have been assigned to. These material lists are stored in the final solution
-        # The reason is that per simulation and frequency, the material propery value may be different.
-        if self.mat_assy is not None:
-            logger.debug('   Using cached material assignment.')
-            return
-        self.mat_assy = MaterialAssignment(self._state.current_geo_state)
-        self.mat_assy.set_tet_assignment(self.mesh._get_tet_to_tag(), self.mesh.centers)
-
     ############################################################
     #                   MAIN SIMULATION FUNCTIONS              #
     ############################################################
@@ -997,8 +986,10 @@ class Microwave3D:
         # Compute mean values for each material property.
         # These values are used to coarsely estimate what the
         # out of plane propagation constant may be.
-        ermean = np.mean(er[er > 0].flatten()[itri_port])
-        urmean = np.mean(ur[ur > 0].flatten()[itri_port])
+        erp = er[:,:,itri_port]
+        urp = er[:,:,itri_port]
+        ermean = np.mean(erp[erp > 0].flatten())
+        urmean = np.mean(urp[urp > 0].flatten())
         ermax = np.max(er[:, :, itri_port].flatten())
         urmax = np.max(ur[:, :, itri_port].flatten())
         ermin = np.min(er[:, :, itri_port].flatten())
@@ -1142,6 +1133,7 @@ class Microwave3D:
                 mode_type = "TM"
             else:
                 mode_type = "TEM"
+                
             logger.debug(f".. Mode type = {mode_type}")
 
             # Figure out if TE, TM, or TEM mode
@@ -2419,6 +2411,7 @@ class Microwave3D:
                         1.0, np.abs(scalardata.Sp[i, j])
                     )
 
+            fielddata._Sp = scalardata.Sp
             job.clear_solutions()
 
         if not_conserved and conserve_margin > 0.01:

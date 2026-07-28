@@ -186,10 +186,10 @@ def construct_local_vertices(glob_vertices):
 ############################################################
 # fmt: off
 DPTS = np.array([
-    [0.10995174365532200, 0.10995174365532200, 0.10995174365532200, 0.22338158967801100, 0.22338158967801100, 0.22338158967801100],  # weights
-    [0.81684757298045896, 0.09157621350977101, 0.09157621350977101, 0.10810301816807000, 0.44594849091596500, 0.44594849091596500],  # L1
-    [0.09157621350977101, 0.81684757298045896, 0.09157621350977101, 0.44594849091596500, 0.10810301816807000, 0.44594849091596500],  # L2
-    [0.09157621350977004, 0.09157621350977008, 0.81684757298045807, 0.44594849091596500, 0.44594849091596500, 0.10810301816807000],  # L3
+    [-0.56250000000000000, 0.52083333333333337, 0.52083333333333337, 0.52083333333333337],  # weights
+    [0.33333333333333331, 0.59999999999999998, 0.20000000000000001, 0.20000000000000001],  # L1
+    [0.33333333333333331, 0.20000000000000001, 0.59999999999999998, 0.20000000000000001],  # L2
+    [0.33333333333333343, 0.20000000000000001, 0.20000000000000007, 0.60000000000000009],  # L3
 ], dtype=np.float64)
 # fmt: on
 
@@ -274,7 +274,6 @@ def ned2_tri_force(glob_vertices, glob_Uinc, dofcodes):
         _eval_f_2d(coeff, coords, i1, j1, k1, dofcodes[idof], fdof)
         
         bvec[idof] = -A * np.sum(WEIGHTS * (fdof[0, :] * Ux + fdof[1, :] * Uy))
-    #print(bvec)
     return bvec
 
 
@@ -328,9 +327,9 @@ def ned2_tri_stiff(glob_vertices, gamma, dofcodes):
     aas, bbs, ccs, A = tri_coefficients(txs, tys)
     A = np.abs(A)
     coeff = np.empty((3, 3), dtype=np.float64)
-    coeff[0, :] = aas  # / (2 * A)
-    coeff[1, :] = bbs  # / (2 * A)
-    coeff[2, :] = ccs  # / (2 * A)
+    coeff[0, :] = aas
+    coeff[1, :] = bbs
+    coeff[2, :] = ccs
 
     WEIGHTS = DPTS[0, :]
     DPTS1 = DPTS[1, :]
@@ -353,6 +352,7 @@ def ned2_tri_stiff(glob_vertices, gamma, dofcodes):
     for idof1 in range(ndof):
         i_type1 = typearry[idof1]
         i_index1 = indexarry[idof1]
+
         if i_type1==0:
             i1 = ivec[i_index1]
             j1 = jvec[i_index1]
@@ -367,6 +367,7 @@ def ned2_tri_stiff(glob_vertices, gamma, dofcodes):
         for idof2 in range(ndof):
             i_type2 = typearry[idof2]
             i_index2 = indexarry[idof2]
+
             if i_type2==0:
                 i2 = ivec[i_index2]
                 j2 = jvec[i_index2]

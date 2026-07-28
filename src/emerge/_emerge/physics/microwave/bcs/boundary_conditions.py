@@ -154,6 +154,7 @@ class AbsorbingBoundary(RobinBC, Saveable):
         super().__init__(face)
         if origin is None:
             origin = (0.0, 0.0, 0.0)
+        
         self.order: int = order
         self.origin: tuple = origin
         self.cs: CoordinateSystem = GCS
@@ -180,7 +181,8 @@ class AbsorbingBoundary(RobinBC, Saveable):
             complex: The γ-constant
         """
         f = k0 * C0 / (2 * np.pi)
-        if self.order == 1:
+        
+        if self.order == 1: 
             return 1j * k0 * self.material.neff(f)
 
         return 1j * k0 * self.o2coeffs[self.abctype][0] * self.material.neff(f)
@@ -287,7 +289,7 @@ class ScatteredField(RobinBC, Saveable):
             self.bf = bftype
         else:
             raise TypeError(
-                f"A custom backgroundfield must be provided as uninitialized class, not a class instance."
+                "A custom backgroundfield must be provided as uninitialized class, not a class instance."
             )
 
     @property

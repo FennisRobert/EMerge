@@ -497,8 +497,9 @@ class MWField(Saveable):
         self.er: np.ndarray = None
         self.ur: np.ndarray = None
         self.sig: np.ndarray = None
-        self._rel: bool = False
 
+        self._rel: bool = False
+        self._Sp: np.ndarray | None = None
         self._Texcite: np.ndarray = 1.0
 
         self._bstags = None
@@ -1238,12 +1239,21 @@ class MWField(Saveable):
 
         return EHFieldFF(E, H, T, P, Ptot, freq=self.freq)
 
-    def embed_external_component(self, touchstone_file: str, port_indices: list[int], Smat: np.ndarray) -> MWScalarNdim:
-        # 1. Load the external component
+    def embed_external_component(self, touchstone_file: str, port_indices: list[int]) -> None:
+        """Embed an external component based on S-parameter data in this model by connecting
+        a given set of port numbers using an N-port S-parameter file.
+
+        Args:
+            touchstone_file (str): The filename of the touchstone file to import
+            port_indices (list[int]): A list of port indices of the simualtion model to connect the touchstone file to.
+
+        Returns:
+            MWScalarNdim: _description_
+        """
         from ....read import TouchstoneData
 
         td = TouchstoneData(touchstone_file)
-        fem_s_matrix = Smat
+        fem_s_matrix = self._Sp
         S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
         port_indices = [ind-1 for ind in port_indices]
         all_ports = np.arange(fem_s_matrix.shape[1])
@@ -1270,7 +1280,7 @@ class MWField(Saveable):
             [I_n,      zero_nm],
             [coupling, zero_mn]
         ]).squeeze()
-    
+        
     def farfield(
         self,
         theta: np.ndarray,

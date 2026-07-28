@@ -36,7 +36,7 @@ import threading
 import time
 
 from ..physics_generic import SimulationError, GenericPhysics3D
-
+from ..material_assignment import MaterialAssignment
 ############################################################
 #                 MULTI PROCESSING FUNCTION                #
 ############################################################
@@ -94,6 +94,7 @@ class HeatConduction3D(GenericPhysics3D):
         self.cache_matrices: bool = True
 
         ## States
+        self.mat_assy: MaterialAssignment | None = None
         self._bc_initialized: bool = False
         self._simstart: float = 0.0
         self._simend: float = 0.0
@@ -208,7 +209,7 @@ class HeatConduction3D(GenericPhysics3D):
         # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         # --------------------------------------------------------------------
         # Initializing solve functions
@@ -236,7 +237,7 @@ class HeatConduction3D(GenericPhysics3D):
 
         # Assemble the FEM problem
         job, mats, T_current = self.assembler.assemble_hc_matrix(
-            self.basis, materials, self.bc.boundary_conditions, self.T_initial_K
+            self.basis, self.mat_assy, self.bc.boundary_conditions, self.T_initial_K
         )
         material_set = mats
 
@@ -459,7 +460,7 @@ class HeatConduction3D(GenericPhysics3D):
             )
 
         logger.debug("Resolving material assignments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
@@ -489,7 +490,7 @@ class HeatConduction3D(GenericPhysics3D):
 
             # Assemble with current temperature for radiation linearization
             job, mats, T_current = self.assembler.assemble_hc_matrix(
-                self.basis, materials, self.bc.boundary_conditions, T_current
+                self.basis, self.mat_assy, self.bc.boundary_conditions, T_current
             )
             material_set = mats
 

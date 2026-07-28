@@ -545,7 +545,7 @@ class ModalPort(PortBC, Saveable):
 
     def get_beta(self, k0: float) -> float:
         mode = self.get_modes(k0)[0]
-        if self.forced_modetype == "TEM":
+        if mode.modetype == "TEM":
             beta = mode.beta / mode.k0 * k0
         else:
             freq = k0 * 299792458 / (2 * np.pi)

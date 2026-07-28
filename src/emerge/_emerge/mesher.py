@@ -229,7 +229,6 @@ class Mesher:
         Args:
             objects (list[GeoObject]): The set of GeoObjects
         """
-        print(f'Framgent objects: {objects}')
         if not isinstance(objects, list):
             objects = [
                 objects,

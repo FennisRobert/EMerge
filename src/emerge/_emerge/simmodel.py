@@ -796,6 +796,7 @@ class Simulation:
         logger.trace(f"Setting {cell} as periodic cell object")
         self.mw.bc._cell = cell
         self._cell = cell
+        self.mesher.periodic_cell = cell
 
     def set_resolution(self, resolution: float) -> Simulation:
         """Sets the discretization resolution in the various physics interfaces.
@@ -809,7 +810,7 @@ class Simulation:
         """
         self.mw.set_resolution(resolution)
 
-    def commit_geometry(self, *geometries: GeoObject | list[GeoObject]) -> None:
+    def commit_geometry(self) -> None:
         """Finalizes and locks the current geometry state of the simulation.
 
         The geometries may be provided (legacy behavior) but are automatically managed in the background.

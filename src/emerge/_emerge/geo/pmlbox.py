@@ -22,6 +22,12 @@ from emsutil import Material, AIR, CoordDependent
 import numpy as np
 from functools import partial
 
+def _sgn(num: float) -> str:
+    if num > 0:
+        return '+'
+    elif num < 0:
+        return '-'
+    return ''
 
 def _add_pml_layer(center: tuple[float, float, float],
                    dims: tuple[float, float, float],
@@ -58,25 +64,28 @@ def _add_pml_layer(center: tuple[float, float, float],
 
     tW, tD, tH = W, D, H
 
+    _namesuffix = ''
     if dx != 0:
         tW = thickness
         pml_block_size[0] = thickness
         new_center[0] = new_center[0] + (W/2 + thickness/2) * dx
         def sxf(x, y, z):
             return 1 - 1j * (dx*(x-px-(dx*W/2)) / thickness) ** exponent * deltamax
+        _namesuffix += f'{_sgn(dx)}x'
     if dy != 0:
         tD = thickness
         pml_block_size[1] = thickness
         new_center[1] = new_center[1] + (D/2 + thickness/2) * dy
         def syf(x, y, z):
             return 1 - 1j * (dy*(y-py-(dy*D/2)) / thickness) ** exponent * deltamax
+        _namesuffix += f'{_sgn(dy)}y'
     if dz != 0:
         tH = thickness
         pml_block_size[2] = thickness
         new_center[2] = new_center[2] + (H/2 + thickness/2) * dz
         def szf(x, y, z):
             return 1 - 1j * (dz*(z-pz-(dz*H/2)) / thickness) ** exponent * deltamax
-    
+        _namesuffix += f'{_sgn(dz)}z'
     def ermat(x, y, z):
         ers = np.zeros((3,3,x.shape[0]), dtype=np.complex128)
         ers[0,0,:] = mater * syf(x,y,z)*szf(x,y,z)/sxf(x,y,z)
@@ -119,7 +128,8 @@ def _add_pml_layer(center: tuple[float, float, float],
     
     erfunc = CoordDependent(max_value=mater, matrix=ermat)
     urfunc = CoordDependent(max_value=matur, matrix=urmat)
-    pml_box.properties += Material(er=erfunc, ur=urfunc,_neff=np.sqrt(mater*matur), color='#bbbbff', opacity=0.1)
+
+    pml_box.properties += Material(er=erfunc, ur=urfunc,_neff=np.sqrt(mater*matur), color='#bbbbff', opacity=0.1, name=f'PML_mat[{_namesuffix}]')
     pml_box.max_meshsize = thickness/N_mesh_layers
     pml_box._embeddings = planes
     

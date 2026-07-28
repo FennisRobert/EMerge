@@ -30,6 +30,7 @@ from ..heatconduction_bc import (
     InitialTemperatureVolume,
     InitialTemperatureBoundary,
 )
+from ...material_assignment import MaterialAssignment
 from ....elements.leg2 import Legrange2
 from ....mth.csc_cast import CSCMapping
 from emsutil import Material
@@ -68,7 +69,7 @@ class Assembler:
     def assemble_hc_matrix(
         self,
         field: Legrange2,
-        materials: list[Material],
+        mat_assy: MaterialAssignment,
         bcs: list[BoundaryCondition],
         T_initial_K: float | np.ndarray,
         transient: bool = False,
@@ -96,10 +97,10 @@ class Assembler:
         cond_thermal = np.zeros((3, 3, field.mesh.n_tets), dtype=np.float64)
         specific_heat = np.zeros((3, 3, field.mesh.n_tets), dtype=np.float64)
 
-        for mat in materials:
-            density = mat.density(1.0, density)
-            cond_thermal = mat.cond_thermal(1.0, cond_thermal)
-            specific_heat = mat.specific_heat(1.0, specific_heat)
+        for mat, coords, ids in mat_assy.iter_materials():
+            density = mat.density(1.0, density, coords, ids)
+            cond_thermal = mat.cond_thermal(1.0, cond_thermal, coords, ids)
+            specific_heat = mat.specific_heat(1.0, specific_heat, coords, ids)
 
         density = density[0, 0, :].squeeze()
         specific_heat = specific_heat[0, 0, :].squeeze()

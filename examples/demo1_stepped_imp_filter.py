@@ -24,7 +24,7 @@ Hair = 60
 ## Material definition
 
 # We can define the material using the Material class. Just supply the dielectric properties and you are done!
-pcbmat = em.Material(er=er, color="#217627", opacity=0.6, name='PCB Material')
+pcbmat = em.Material(er=er, color="#217627", opacity=0.2)
 
 # We start by creating our simulation object.
 
@@ -35,7 +35,7 @@ model.check_version("3.0.0")  # Checks version compatibility.
 # supply it with a thickness, the desired air-box height, the units at which we supply
 # the dimensions and the PCB material.
 
-layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3, trace_material=em.lib.PEC)
+layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3)
 
 # We will route our PCB using the "method chaining" syntax. First we call the .new() method
 # to start a new trace. This will returna StripPath object on which we may call methods that
@@ -58,6 +58,7 @@ p2 = layouter.modal_port(layouter.load("p2"), 2, height=0)
 # GeoSurface objects that form the polygon. Additionally, we may turn on the Merge feature
 # which will then return a single GeoSurface type object that we can use later.
 polies = layouter.compile_paths(True)
+
 # We can manually define blocks for the dielectric or air or let the PCBLayouter do it for us.
 # First we must determine the bounds of our PCB. This function by default will make a PCB
 # just large enough to contain all the coordinates in it (in the XY plane). By adding extra
@@ -93,7 +94,7 @@ model.generate_mesh()
 model.view(bc=True)
 
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
-sol = model.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8)
+sol = model.mw.run_sweep(parallel=False, n_workers=4, frequency_groups=8)
 
 # Our "sol" variable is of type MWData (Microwave Data). This contains a set of scalar data
 # like S-parameters and field data like the E/H field. The scalar data is in sol.scalar and the
@@ -126,14 +127,14 @@ S21 = gritted_data.model_S(2, 1)
 smith(S11, labels="S11", f=f)
 
 plot_sp(f, [S11, S21], labels=["S11", "S21"], dblim=[-40, 6], logx=True)
-
-field = sol.field.find(freq=0.2e9)
+port1, port2 = model.mw.bc.get_port(1), model.mw.bc.get_port(2)
+field = sol.field.find(freq=5.5e9)
 model.display.add_object(pcb, opacity=0.1)
 model.display.add_object(polies, opacity=0.5)
 model.display.animate().add_field(
     field.cutplane(0.5 * mm, z=-0.75 * th * mil).scalar("Ez", "complex"),
     symmetrize=True,
 )
-model.display.add_portmode(model.mw.bc.get_port(1), k0=field.k0)
-model.display.add_portmode(model.mw.bc.get_port(2), k0=field.k0)
+model.display.add_portmode(port1, k0=field.k0)
+model.display.add_portmode(port2, k0=field.k0)
 model.display.show()

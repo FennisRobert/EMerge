@@ -19,7 +19,7 @@ class PortMode(Saveable):
     freq: float = 0
     neff: float = 1
     Z0: float = 50.0
-    # modetype: Literal["TEM", "TE", "TM"] = "TEM"
+    modetype: Literal["TEM", "TE", "TM"] = "TEM"
 
     @property
     def w0(self) -> float:

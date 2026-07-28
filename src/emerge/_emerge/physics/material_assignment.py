@@ -1,9 +1,13 @@
 from __future__ import annotations
-from emsutil import Material
-from ..geometry import GeoObject
-import numpy as np
-from loguru import logger
+
 from typing import Generator
+
+import numpy as np
+from emsutil import Material
+from loguru import logger
+
+from ..geometry import GeoObject
+
 
 class MaterialAssignment:
     
@@ -31,14 +35,13 @@ class MaterialAssignment:
         
         # Step 1: Generate unique list of materials
         ctr = 0
-        names = []
+        matlist = []
         for mat in [geo.material for geo in self._geos if geo.material is not None]:
-            if mat.name not in names:
+            if mat not in matlist:
                 self.mat2ind[mat] = ctr
                 self.ind2mat[ctr] = mat
                 logger.debug(f'   {ctr}: {mat.name}')
                 ctr += 1
-                names.append(mat.name)
                 self.materials.append(mat)
         # From here on out each material has a unique index
         # Step 2: Assign by priority

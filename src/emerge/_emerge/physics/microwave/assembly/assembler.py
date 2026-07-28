@@ -482,6 +482,7 @@ class Assembler:
                 conductor_tets.append(itet)
         conductor_tets = np.array(conductor_tets)
         logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
+
         # Only used cahced matrices if they are there, it is asked and there are no frequency dependent material properties.
         if (
             cache_matrices
@@ -549,6 +550,7 @@ class Assembler:
             pec_ids.extend(field.tet_to_field[:, itet])
             for tri in field.mesh.tet_to_tri[:, itet]:
                 pec_tris.append(tri)
+                
         if ipec > 0:
             logger.trace(
                 f" - Extended PEC with {ipec} tets with a conductivity > {self.settings.mw_3d_peclim}."
@@ -719,7 +721,7 @@ class Assembler:
             )
             dv = np.array(pbc.dv)
             phi = pbc.phi(K0)
-            logger.trace(f"    - ϕ={phi} rad/m")
+            logger.info(f"    - ϕ={phi} rad/m")
             # Generate the matrix Pmat
             Pmat, rows = gen_periodic_matrix(
                 tri_ids_1,

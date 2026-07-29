@@ -721,7 +721,7 @@ class Assembler:
             )
             dv = np.array(pbc.dv)
             phi = pbc.phi(K0)
-            logger.info(f"    - ϕ={phi} rad/m")
+            logger.trace(f"    - ϕ={phi} rad/m")
             # Generate the matrix Pmat
             Pmat, rows = gen_periodic_matrix(
                 tri_ids_1,
@@ -770,6 +770,7 @@ class Assembler:
             K = Pd @ K @ Pmat
             for key, b in port_vectors.items():
                 port_vectors[key] = Pd @ b
+            K = K.tocsc()
 
         logger.debug(f"  - Number of tets: {mesh.n_tets:,}")
         logger.debug(f"  - Number of DoF: {K.shape[0]:,}")

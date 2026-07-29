@@ -561,13 +561,18 @@ class MWField(Saveable):
 
 
     @property
-    def relative(self) -> MWData:
+    def relative(self) -> MWField:
         """ Returns the same MWField object but with the relative flag turned on
         so that all fields are the relative field instead of the total field.
         """
         self._rel = True
         return self
 
+    def set_backgroundfield(self, bf) -> None:
+        """ Activate a specific background field"""
+        self.excitations = {key: 0.0 for key in self._fields.keys()}
+        self.excitation[bf] = 1.0
+    
     def backE(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Compute the background E-field at the provided coordinates.
 

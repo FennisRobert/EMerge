@@ -161,6 +161,7 @@ class AbsorbingBoundary(RobinBC, Saveable):
 
     def details(self) -> str:
         return f' ABC: order={self.order}, type={self.abctype}'
+    
     def get_basis(self) -> np.ndarray:
         return np.eye(3)
 

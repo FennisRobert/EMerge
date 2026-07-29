@@ -607,11 +607,11 @@ class Microwave3D:
             if (geometry.material.cond.value > self.assembler.settings.mw_3d_surfimplim):
                 logger.info(f"Assigning ThinConductor BC to {geometry}")
                 tags_ext = [tag for tag in geometry.tags if tag in external_tags]
+                tags_int = [tag for tag in geometry.tags if tag not in external_tags]
                 if len(tags_ext) > 0:
                     self.bc.no_overwrite().SurfaceImpedance(
                         FaceSelection(tags_ext), geometry.material
                     )
-                tags_int = [tag for tag in geometry.tags if tag not in external_tags]
                 if len(tags_int) > 0:
                     self.bc.no_overwrite().ThinConductor(
                         FaceSelection(tags_int), geometry.material

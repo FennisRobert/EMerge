@@ -467,6 +467,7 @@ class Assembler:
                 or cond[0, 0, itet] > self.settings.mw_3d_surfimplim
             ):
                 conductor_tets.append(itet)
+        
         conductor_tets = np.array(conductor_tets)
         logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
         # Only used cahced matrices if they are there, it is asked and there are no frequency dependent material properties.
@@ -536,6 +537,7 @@ class Assembler:
             pec_ids.extend(field.tet_to_field[:, itet])
             for tri in field.mesh.tet_to_tri[:, itet]:
                 pec_tris.append(tri)
+        
         if ipec > 0:
             logger.trace(
                 f"Extended PEC with {ipec} tets with a conductivity > {self.settings.mw_3d_peclim}."
@@ -583,7 +585,7 @@ class Assembler:
 
             for bc in robin_bcs:
                 logger.trace(f".Implementing {bc}")
-                logger.debug(bc.details())
+                
                 # Get all Robin BC face triangle and edge
                 tri_ids = mesh.get_triangles(bc.tags)
 
@@ -1222,13 +1224,13 @@ class Assembler:
                         B_matrix_robin_2 = assemble_robin_bc(
                             field, B_matrix_robin_2, tri_ids, gamma
                         )
-            ## Second order absorbing boundary correction
-            if bc._isabc:
-                if bc.order == 2:
-                    c2 = bc.o2coeffs[bc.abctype][1]
-                    logger.debug("Implementing second order ABC correction.")
-                    mat = abc_order_2_matrix(field, tri_ids, 1j * c2 / k0)
-                    B_matrix_robin += mat
+                ## Second order absorbing boundary correction
+                if bc._isabc:
+                    if bc.order == 2:
+                        c2 = bc.o2coeffs[bc.abctype][1]
+                        logger.debug("Implementing second order ABC correction.")
+                        mat = abc_order_2_matrix(field, tri_ids, 1j * c2 / k0)
+                        B_matrix_robin += mat
 
             matrix_mass -= field.generate_csc(B_matrix_robin) / (k0**2)
             if B_matrix_robin_2 is not None:

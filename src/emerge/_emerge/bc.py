@@ -198,7 +198,7 @@ class BoundaryConditionSet(Saveable):
         """
         self.boundary_conditions = []
 
-    def no_overwrite(self) -> BoundaryConditionSet:
+    def no_overwrite(self: T) -> T:
         """Turns overwrite of for the next boundary condition assignment
 
         Returns:

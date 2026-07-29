@@ -17,7 +17,7 @@
 
 # Last Cleanup: 2025-01-01
 from __future__ import annotations
-from scipy.sparse import csc_matrix  # type: ignore
+from scipy.sparse import csc_matrix, save_npz # type: ignore
 from scipy.sparse.csgraph import reverse_cuthill_mckee  # type: ignore
 from scipy.sparse.linalg import bicgstab, cg, gmres, gcrotmk, eigs, splu  # type: ignore
 from scipy.linalg import eig  # type: ignore
@@ -1735,7 +1735,7 @@ class SolveRoutine:
         self.use_sorter: bool = False
         self.use_preconditioner: bool = False
         self.use_direct: bool = True
-
+        self.save_disk: bool = False
         for solverkey, solver in self.solvers.items():
             if solver.name in _FORCED_SOLVER:
                 self.forced_solver.append(solver)
@@ -2057,6 +2057,13 @@ class SolveRoutine:
 
         logger.debug(f"{_pfx(self.pre, id)} matrix type: {matrix_type}")
 
+        if self.save_disk:
+            name_A = f'SparseMatrix_{id}.npz'
+            name_b = f'SolVector_{id}.npy'
+            save_npz(name_A, A)
+            np.save(name_b, b)
+            logger.info(f'Saved {name_A} and {name_b}')
+            
         if b.ndim == 1:
             b = b.reshape((b.shape[0], 1))
         solver: Solver = self._get_solver(A, b, matrix_type=matrix_type, direct=direct)

@@ -17,7 +17,7 @@ Lrod = 70 * mm
 
 # Create simulation container
 sim = em.Simulation("StepImport")
-sim.check_version("2.8.1")
+sim.check_version("2.8.2")
 
 # Set field resolution and frequency sweep
 sim.mw.set_resolution(0.25)

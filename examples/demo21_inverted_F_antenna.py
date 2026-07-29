@@ -38,7 +38,7 @@ f2 = 3e9  # stop frequency
 
 # --- Create simulation object -------------------------------------------
 model = em.Simulation("IFA")
-model.check_version("2.8.1")  # Checks version compatibility.
+model.check_version("2.8.2")  # Checks version compatibility.
 
 # --- Define geometry primitives -----------------------------------------
 # Substrate block, thickness in Z (negative down)

@@ -987,7 +987,7 @@ class Microwave3D(GenericPhysics3D):
         # These values are used to coarsely estimate what the
         # out of plane propagation constant may be.
         erp = er[:,:,itri_port]
-        urp = er[:,:,itri_port]
+        urp = ur[:,:,itri_port]
         ermean = np.mean(erp[erp > 0].flatten())
         urmean = np.mean(urp[urp > 0].flatten())
         ermax = np.max(er[:, :, itri_port].flatten())

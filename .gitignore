@@ -55,3 +55,6 @@ search_prints.py
 check_directory_cleanup.py
 
 uv.lock
+
+*.diff
+diffmaker.py

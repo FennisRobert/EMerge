@@ -402,7 +402,7 @@ class Microwave3D:
         else:
             for bc in self.bc.oftype(ModalPort):
                 bc.reset()
-            
+
         self.basis: FEMBasis = None
         self.solveroutine.reset()
         self.assembler.cached_matrices = None

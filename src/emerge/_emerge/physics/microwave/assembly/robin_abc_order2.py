@@ -188,10 +188,10 @@ def _abc_order_2_terms(tri_vertices, cf, dofcodes):
         if i_type==0:
             # Edge mode
             _eval_curl_f_2d(bary_coeff, coords, i1, j1, k1, dofcodes[idof1], FC1)
-            _eval_div_f_2d(bary_coeff, coords, i1, j1, k1, dofcodes[idof1], FC2)
+            _eval_div_f_2d(bary_coeff, coords, i1, j1, k1, dofcodes[idof1], FD1)
         else:
             _eval_curl_f_2d(bary_coeff, coords, 0, 1, 2, dofcodes[idof1], FC1)
-            _eval_div_f_2d(bary_coeff, coords, 0, 1, 2, dofcodes[idof1], FD2)
+            _eval_div_f_2d(bary_coeff, coords, 0, 1, 2, dofcodes[idof1], FD1)
 
         for idof2 in range(ndof):
             i_type = typearry[idof2]

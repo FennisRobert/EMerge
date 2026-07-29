@@ -1,165 +1,3 @@
-# Git Diff: `main` → `v3.0-dev`
-
-- **Base Branch:** `main`
-- **Compare Branch:** `v3.0-dev`
-- **Raw Diff File:** `diff_main_to_v3.0-dev.diff`
-
-## Summary Statistics
-
-```text
-.bumpversion.toml                                  |   2 +-
- .gitignore                                         |   5 +-
- examples/demo0_parallel_plate.py                   |   2 +-
- examples/demo10_sgh.py                             |   2 +-
- examples/demo11_lumped_element_filter.py           |  46 ++-
- examples/demo12_mode_alignment.py                  |   2 +-
- examples/demo13_helix_antenna.py                   |   2 +-
- examples/demo14_boundary_selection.py              |   2 +-
- examples/demo15_strip_slotline_transition.py       |  35 +-
- examples/demo16_differential_common_mode.py        |  15 +-
- examples/demo17_step_import.py                     |   2 +-
- examples/demo18_plotting_and_visualization.py      |   2 +-
- examples/demo19_vivaldi_antenna.py                 |   5 +-
- examples/demo1_stepped_imp_filter.py               |  23 +-
- examples/demo20_optimization.py                    |   2 +-
- examples/demo21_inverted_F_antenna.py              |   2 +-
- examples/demo22_RCS.py                             |   6 +-
- examples/demo2_combline_filter.py                  |   2 +-
- examples/demo3_coupled_line_filter.py              |  18 +-
- examples/demo4_patch_antenna.py                    |   9 +-
- examples/demo5_revolve.py                          |   2 +-
- examples/demo6_striplines_with_vias.py             |  26 +-
- examples/demo7_periodic_cells.py                   |   2 +-
- examples/demo8_waveguide_bpf_synthesis.py          |   2 +-
- examples/demo9_dielectric_resonator.py             |   2 +-
- pyproject.toml                                     |   6 +-
- src/emerge/__init__.py                             |  33 +-
- src/emerge/_emerge/_global.py                      |  50 +++
- src/emerge/_emerge/attributes.py                   | 324 ++++++++++++++++
- src/emerge/_emerge/bc.py                           |   5 +-
- src/emerge/_emerge/cleanup.py                      |  56 +--
- src/emerge/_emerge/compiled/ccbf.py                |   1 +
- src/emerge/_emerge/geo/__init__.py                 |   2 +-
- src/emerge/_emerge/geo/open_region.py              |   3 +-
- src/emerge/_emerge/geo/operations.py               |  95 ++++-
- src/emerge/_emerge/geo/pcb.py                      | 418 +++++++++++----------
- src/emerge/_emerge/geo/pmlbox.py                   |  16 +-
- src/emerge/_emerge/geo/polybased.py                |   2 +-
- src/emerge/_emerge/geo/shapes.py                   |  62 ++-
- src/emerge/_emerge/geo/step.py                     |   4 +-
- src/emerge/_emerge/geometry.py                     |  90 +++--
- src/emerge/_emerge/install_check.py                |   4 +-
- src/emerge/_emerge/logsettings.py                  |  28 +-
- src/emerge/_emerge/mesh3d.py                       |  17 +-
- src/emerge/_emerge/mesher.py                       |   2 +-
- src/emerge/_emerge/periodic.py                     |  23 +-
- .../physics/heatconduction/assembly/assembler.py   |  11 +-
- .../physics/heatconduction/heatconduction_3d.py    |  19 +-
- src/emerge/_emerge/physics/material_assignment.py  |  92 +++++
- .../physics/microwave/assembly/assembler.py        | 133 ++++---
- .../physics/microwave/assembly/robin_abc_order2.py |   8 +-
- .../_emerge/physics/microwave/assembly/robinbc.py  |   2 +-
- .../physics/microwave/bcs/background_field.py      | 219 ++++++++++-
- .../microwave/bcs/boundary_condition_set.py        |  14 +
- .../physics/microwave/bcs/boundary_conditions.py   |  29 +-
- .../_emerge/physics/microwave/bcs/port_bcs.py      |  24 +-
- .../_emerge/physics/microwave/microwave_3d.py      | 328 ++++++++--------
- .../_emerge/physics/microwave/microwave_data.py    |  74 +++-
- src/emerge/_emerge/physics/physics_generic.py      |  71 +---
- src/emerge/_emerge/plot/pyvista/display.py         |  38 ++
- src/emerge/_emerge/selection.py                    |  81 ++--
- src/emerge/_emerge/settings.py                     |   2 +-
- src/emerge/_emerge/simmodel.py                     |  76 +++-
- src/emerge/_emerge/simstate.py                     |  28 +-
- src/emerge/_emerge/solver.py                       |   7 -
- src/emerge/core.py                                 |   6 +-
- src/emerge/optycal.py                              | 128 +++++++
- uv.lock                                            |  26 +-
- 68 files changed, 1986 insertions(+), 889 deletions(-)
-```
-
-## Changed Files Table
-
-| Status | File Path |
-| :--- | :--- |
-| Modified | `.bumpversion.toml` |
-| Modified | `.gitignore` |
-| Modified | `examples/demo0_parallel_plate.py` |
-| Modified | `examples/demo10_sgh.py` |
-| Modified | `examples/demo11_lumped_element_filter.py` |
-| Modified | `examples/demo12_mode_alignment.py` |
-| Modified | `examples/demo13_helix_antenna.py` |
-| Modified | `examples/demo14_boundary_selection.py` |
-| Modified | `examples/demo15_strip_slotline_transition.py` |
-| Modified | `examples/demo16_differential_common_mode.py` |
-| Modified | `examples/demo17_step_import.py` |
-| Modified | `examples/demo18_plotting_and_visualization.py` |
-| Modified | `examples/demo19_vivaldi_antenna.py` |
-| Modified | `examples/demo1_stepped_imp_filter.py` |
-| Modified | `examples/demo20_optimization.py` |
-| Modified | `examples/demo21_inverted_F_antenna.py` |
-| Modified | `examples/demo22_RCS.py` |
-| Modified | `examples/demo2_combline_filter.py` |
-| Modified | `examples/demo3_coupled_line_filter.py` |
-| Modified | `examples/demo4_patch_antenna.py` |
-| Modified | `examples/demo5_revolve.py` |
-| Modified | `examples/demo6_striplines_with_vias.py` |
-| Modified | `examples/demo7_periodic_cells.py` |
-| Modified | `examples/demo8_waveguide_bpf_synthesis.py` |
-| Modified | `examples/demo9_dielectric_resonator.py` |
-| Modified | `pyproject.toml` |
-| Modified | `src/emerge/__init__.py` |
-| Added | `src/emerge/_emerge/_global.py` |
-| Added | `src/emerge/_emerge/attributes.py` |
-| Modified | `src/emerge/_emerge/bc.py` |
-| Modified | `src/emerge/_emerge/cleanup.py` |
-| Modified | `src/emerge/_emerge/compiled/ccbf.py` |
-| Modified | `src/emerge/_emerge/geo/__init__.py` |
-| Modified | `src/emerge/_emerge/geo/open_region.py` |
-| Modified | `src/emerge/_emerge/geo/operations.py` |
-| Modified | `src/emerge/_emerge/geo/pcb.py` |
-| Modified | `src/emerge/_emerge/geo/pmlbox.py` |
-| Modified | `src/emerge/_emerge/geo/polybased.py` |
-| Modified | `src/emerge/_emerge/geo/shapes.py` |
-| Modified | `src/emerge/_emerge/geo/step.py` |
-| Modified | `src/emerge/_emerge/geometry.py` |
-| Modified | `src/emerge/_emerge/install_check.py` |
-| Modified | `src/emerge/_emerge/logsettings.py` |
-| Modified | `src/emerge/_emerge/mesh3d.py` |
-| Modified | `src/emerge/_emerge/mesher.py` |
-| Modified | `src/emerge/_emerge/periodic.py` |
-| Modified | `src/emerge/_emerge/physics/heatconduction/assembly/assembler.py` |
-| Modified | `src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py` |
-| Added | `src/emerge/_emerge/physics/material_assignment.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/assembly/assembler.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/assembly/robinbc.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/bcs/background_field.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/bcs/port_bcs.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/microwave_3d.py` |
-| Modified | `src/emerge/_emerge/physics/microwave/microwave_data.py` |
-| Modified | `src/emerge/_emerge/physics/physics_generic.py` |
-| Modified | `src/emerge/_emerge/plot/pyvista/display.py` |
-| Modified | `src/emerge/_emerge/selection.py` |
-| Modified | `src/emerge/_emerge/settings.py` |
-| Modified | `src/emerge/_emerge/simmodel.py` |
-| Modified | `src/emerge/_emerge/simstate.py` |
-| Modified | `src/emerge/_emerge/solver.py` |
-| Modified | `src/emerge/core.py` |
-| Added | `src/emerge/optycal.py` |
-| Modified | `uv.lock` |
-
----
-
-## Detailed File Changes
-
-### `.bumpversion.toml`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/.bumpversion.toml b/.bumpversion.toml
 index 65d7264..dba5476 100644
 --- a/.bumpversion.toml
@@ -171,35 +9,1308 @@ index 65d7264..dba5476 100644
  parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
  serialize = ["{major}.{minor}.{patch}"]
  search = "{current_version}"
-```
-
-### `.gitignore`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/.gitignore b/.gitignore
-index 59911d7..54ca920 100644
+index 95da655..54ca920 100644
 --- a/.gitignore
 +++ b/.gitignore
-@@ -54,7 +54,4 @@ search_globals.py
+@@ -54,8 +54,4 @@ search_globals.py
  search_prints.py
  check_directory_cleanup.py
  
 -uv.lock
 -
 -*.diff
+-
 -diffmaker.py
 \ No newline at end of file
 +uv.lock
 \ No newline at end of file
-```
-
-### `examples/demo0_parallel_plate.py`
-
-**Status:** `Modified`
-
-```diff
+diff --git a/diff_main_to_v3.0-dev.md b/diff_main_to_v3.0-dev.diff
+similarity index 94%
+rename from diff_main_to_v3.0-dev.md
+rename to diff_main_to_v3.0-dev.diff
+index 59a796f..5759acb 100644
+--- a/diff_main_to_v3.0-dev.md
++++ b/diff_main_to_v3.0-dev.diff
+@@ -1,165 +1,3 @@
+-# Git Diff: `main` → `v3.0-dev`
+-
+-- **Base Branch:** `main`
+-- **Compare Branch:** `v3.0-dev`
+-- **Raw Diff File:** `diff_main_to_v3.0-dev.diff`
+-
+-## Summary Statistics
+-
+-```text
+-.bumpversion.toml                                  |   2 +-
+- .gitignore                                         |   5 +-
+- examples/demo0_parallel_plate.py                   |   2 +-
+- examples/demo10_sgh.py                             |   2 +-
+- examples/demo11_lumped_element_filter.py           |  46 ++-
+- examples/demo12_mode_alignment.py                  |   2 +-
+- examples/demo13_helix_antenna.py                   |   2 +-
+- examples/demo14_boundary_selection.py              |   2 +-
+- examples/demo15_strip_slotline_transition.py       |  35 +-
+- examples/demo16_differential_common_mode.py        |  15 +-
+- examples/demo17_step_import.py                     |   2 +-
+- examples/demo18_plotting_and_visualization.py      |   2 +-
+- examples/demo19_vivaldi_antenna.py                 |   5 +-
+- examples/demo1_stepped_imp_filter.py               |  23 +-
+- examples/demo20_optimization.py                    |   2 +-
+- examples/demo21_inverted_F_antenna.py              |   2 +-
+- examples/demo22_RCS.py                             |   6 +-
+- examples/demo2_combline_filter.py                  |   2 +-
+- examples/demo3_coupled_line_filter.py              |  18 +-
+- examples/demo4_patch_antenna.py                    |   9 +-
+- examples/demo5_revolve.py                          |   2 +-
+- examples/demo6_striplines_with_vias.py             |  26 +-
+- examples/demo7_periodic_cells.py                   |   2 +-
+- examples/demo8_waveguide_bpf_synthesis.py          |   2 +-
+- examples/demo9_dielectric_resonator.py             |   2 +-
+- pyproject.toml                                     |   6 +-
+- src/emerge/__init__.py                             |  33 +-
+- src/emerge/_emerge/_global.py                      |  50 +++
+- src/emerge/_emerge/attributes.py                   | 324 ++++++++++++++++
+- src/emerge/_emerge/bc.py                           |   5 +-
+- src/emerge/_emerge/cleanup.py                      |  56 +--
+- src/emerge/_emerge/compiled/ccbf.py                |   1 +
+- src/emerge/_emerge/geo/__init__.py                 |   2 +-
+- src/emerge/_emerge/geo/open_region.py              |   3 +-
+- src/emerge/_emerge/geo/operations.py               |  95 ++++-
+- src/emerge/_emerge/geo/pcb.py                      | 418 +++++++++++----------
+- src/emerge/_emerge/geo/pmlbox.py                   |  16 +-
+- src/emerge/_emerge/geo/polybased.py                |   2 +-
+- src/emerge/_emerge/geo/shapes.py                   |  62 ++-
+- src/emerge/_emerge/geo/step.py                     |   4 +-
+- src/emerge/_emerge/geometry.py                     |  90 +++--
+- src/emerge/_emerge/install_check.py                |   4 +-
+- src/emerge/_emerge/logsettings.py                  |  28 +-
+- src/emerge/_emerge/mesh3d.py                       |  17 +-
+- src/emerge/_emerge/mesher.py                       |   2 +-
+- src/emerge/_emerge/periodic.py                     |  23 +-
+- .../physics/heatconduction/assembly/assembler.py   |  11 +-
+- .../physics/heatconduction/heatconduction_3d.py    |  19 +-
+- src/emerge/_emerge/physics/material_assignment.py  |  92 +++++
+- .../physics/microwave/assembly/assembler.py        | 133 ++++---
+- .../physics/microwave/assembly/robin_abc_order2.py |   8 +-
+- .../_emerge/physics/microwave/assembly/robinbc.py  |   2 +-
+- .../physics/microwave/bcs/background_field.py      | 219 ++++++++++-
+- .../microwave/bcs/boundary_condition_set.py        |  14 +
+- .../physics/microwave/bcs/boundary_conditions.py   |  29 +-
+- .../_emerge/physics/microwave/bcs/port_bcs.py      |  24 +-
+- .../_emerge/physics/microwave/microwave_3d.py      | 328 ++++++++--------
+- .../_emerge/physics/microwave/microwave_data.py    |  74 +++-
+- src/emerge/_emerge/physics/physics_generic.py      |  71 +---
+- src/emerge/_emerge/plot/pyvista/display.py         |  38 ++
+- src/emerge/_emerge/selection.py                    |  81 ++--
+- src/emerge/_emerge/settings.py                     |   2 +-
+- src/emerge/_emerge/simmodel.py                     |  76 +++-
+- src/emerge/_emerge/simstate.py                     |  28 +-
+- src/emerge/_emerge/solver.py                       |   7 -
+- src/emerge/core.py                                 |   6 +-
+- src/emerge/optycal.py                              | 128 +++++++
+- uv.lock                                            |  26 +-
+- 68 files changed, 1986 insertions(+), 889 deletions(-)
+-```
+-
+-## Changed Files Table
+-
+-| Status | File Path |
+-| :--- | :--- |
+-| Modified | `.bumpversion.toml` |
+-| Modified | `.gitignore` |
+-| Modified | `examples/demo0_parallel_plate.py` |
+-| Modified | `examples/demo10_sgh.py` |
+-| Modified | `examples/demo11_lumped_element_filter.py` |
+-| Modified | `examples/demo12_mode_alignment.py` |
+-| Modified | `examples/demo13_helix_antenna.py` |
+-| Modified | `examples/demo14_boundary_selection.py` |
+-| Modified | `examples/demo15_strip_slotline_transition.py` |
+-| Modified | `examples/demo16_differential_common_mode.py` |
+-| Modified | `examples/demo17_step_import.py` |
+-| Modified | `examples/demo18_plotting_and_visualization.py` |
+-| Modified | `examples/demo19_vivaldi_antenna.py` |
+-| Modified | `examples/demo1_stepped_imp_filter.py` |
+-| Modified | `examples/demo20_optimization.py` |
+-| Modified | `examples/demo21_inverted_F_antenna.py` |
+-| Modified | `examples/demo22_RCS.py` |
+-| Modified | `examples/demo2_combline_filter.py` |
+-| Modified | `examples/demo3_coupled_line_filter.py` |
+-| Modified | `examples/demo4_patch_antenna.py` |
+-| Modified | `examples/demo5_revolve.py` |
+-| Modified | `examples/demo6_striplines_with_vias.py` |
+-| Modified | `examples/demo7_periodic_cells.py` |
+-| Modified | `examples/demo8_waveguide_bpf_synthesis.py` |
+-| Modified | `examples/demo9_dielectric_resonator.py` |
+-| Modified | `pyproject.toml` |
+-| Modified | `src/emerge/__init__.py` |
+-| Added | `src/emerge/_emerge/_global.py` |
+-| Added | `src/emerge/_emerge/attributes.py` |
+-| Modified | `src/emerge/_emerge/bc.py` |
+-| Modified | `src/emerge/_emerge/cleanup.py` |
+-| Modified | `src/emerge/_emerge/compiled/ccbf.py` |
+-| Modified | `src/emerge/_emerge/geo/__init__.py` |
+-| Modified | `src/emerge/_emerge/geo/open_region.py` |
+-| Modified | `src/emerge/_emerge/geo/operations.py` |
+-| Modified | `src/emerge/_emerge/geo/pcb.py` |
+-| Modified | `src/emerge/_emerge/geo/pmlbox.py` |
+-| Modified | `src/emerge/_emerge/geo/polybased.py` |
+-| Modified | `src/emerge/_emerge/geo/shapes.py` |
+-| Modified | `src/emerge/_emerge/geo/step.py` |
+-| Modified | `src/emerge/_emerge/geometry.py` |
+-| Modified | `src/emerge/_emerge/install_check.py` |
+-| Modified | `src/emerge/_emerge/logsettings.py` |
+-| Modified | `src/emerge/_emerge/mesh3d.py` |
+-| Modified | `src/emerge/_emerge/mesher.py` |
+-| Modified | `src/emerge/_emerge/periodic.py` |
+-| Modified | `src/emerge/_emerge/physics/heatconduction/assembly/assembler.py` |
+-| Modified | `src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py` |
+-| Added | `src/emerge/_emerge/physics/material_assignment.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/assembly/assembler.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/assembly/robinbc.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/bcs/background_field.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/bcs/port_bcs.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/microwave_3d.py` |
+-| Modified | `src/emerge/_emerge/physics/microwave/microwave_data.py` |
+-| Modified | `src/emerge/_emerge/physics/physics_generic.py` |
+-| Modified | `src/emerge/_emerge/plot/pyvista/display.py` |
+-| Modified | `src/emerge/_emerge/selection.py` |
+-| Modified | `src/emerge/_emerge/settings.py` |
+-| Modified | `src/emerge/_emerge/simmodel.py` |
+-| Modified | `src/emerge/_emerge/simstate.py` |
+-| Modified | `src/emerge/_emerge/solver.py` |
+-| Modified | `src/emerge/core.py` |
+-| Added | `src/emerge/optycal.py` |
+-| Modified | `uv.lock` |
+-
+----
+-
+-## Detailed File Changes
+-
+-### `.bumpversion.toml`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/.bumpversion.toml b/.bumpversion.toml
+ index 65d7264..dba5476 100644
+ --- a/.bumpversion.toml
+@@ -171,13 +9,6 @@ index 65d7264..dba5476 100644
+  parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+  serialize = ["{major}.{minor}.{patch}"]
+  search = "{current_version}"
+-```
+-
+-### `.gitignore`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/.gitignore b/.gitignore
+ index 59911d7..54ca920 100644
+ --- a/.gitignore
+@@ -193,13 +24,6 @@ index 59911d7..54ca920 100644
+ \ No newline at end of file
+ +uv.lock
+ \ No newline at end of file
+-```
+-
+-### `examples/demo0_parallel_plate.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo0_parallel_plate.py b/examples/demo0_parallel_plate.py
+ index 2e93f1e..5b59326 100644
+ --- a/examples/demo0_parallel_plate.py
+@@ -213,13 +37,6 @@ index 2e93f1e..5b59326 100644
+  
+  # Before we can generate the mesh we have to set a simulation frequency (range)
+  model.mw.set_frequency(10e9)
+-```
+-
+-### `examples/demo10_sgh.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo10_sgh.py b/examples/demo10_sgh.py
+ index 6809218..4a4dc65 100644
+ --- a/examples/demo10_sgh.py
+@@ -233,13 +50,6 @@ index 6809218..4a4dc65 100644
+  
+  # --- Coordinate system for horn geometry -------------------------------
+  hornCS = em.CS(em.YAX, em.ZAX, em.XAX)
+-```
+-
+-### `examples/demo11_lumped_element_filter.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo11_lumped_element_filter.py b/examples/demo11_lumped_element_filter.py
+ index 0be6bc9..ac3529f 100644
+ --- a/examples/demo11_lumped_element_filter.py
+@@ -318,13 +128,6 @@ index 0be6bc9..ac3529f 100644
+  # Add lumped element BCs for each element
+  for le in LEs:
+      model.mw.bc.LumpedElement(le)
+-```
+-
+-### `examples/demo12_mode_alignment.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo12_mode_alignment.py b/examples/demo12_mode_alignment.py
+ index 4e62a2f..f10425b 100644
+ --- a/examples/demo12_mode_alignment.py
+@@ -338,13 +141,6 @@ index 4e62a2f..f10425b 100644
+  
+  # We create a cyllindrical waveguide in the Y-axis.
+  cyl = em.geo.Cylinder(0.012, 0.05, em.YAX.construct_cs())
+-```
+-
+-### `examples/demo13_helix_antenna.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo13_helix_antenna.py b/examples/demo13_helix_antenna.py
+ index 8b0d810..a26a630 100644
+ --- a/examples/demo13_helix_antenna.py
+@@ -357,13 +153,7 @@ index 8b0d810..a26a630 100644
+ +model.check_version("3.0.0")  # Checks version compatibility.
+  
+  dfeed = 3 * mm  # straight feed length before the helix starts
+-```
+-
+-### `examples/demo14_boundary_selection.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/examples/demo14_boundary_selection.py b/examples/demo14_boundary_selection.py
+ index 154d7c5..3b203f4 100644
+ --- a/examples/demo14_boundary_selection.py
+@@ -377,13 +167,6 @@ index 154d7c5..3b203f4 100644
+  
+  # first lets define a WR90 waveguide
+  wg_box = em.geo.Box(L, wga, wgb, position=(-L, -wga/2, -wgb/2))
+-```
+-
+-### `examples/demo15_strip_slotline_transition.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo15_strip_slotline_transition.py b/examples/demo15_strip_slotline_transition.py
+ index f793592..d49b518 100644
+ --- a/examples/demo15_strip_slotline_transition.py
+@@ -465,13 +248,6 @@ index f793592..d49b518 100644
+  model.adaptive_mesh_refinement(max_steps=8, frequency=5.5e9)
+  
+  # We can view the improvement in the refined mesh.
+-```
+-
+-### `examples/demo16_differential_common_mode.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo16_differential_common_mode.py b/examples/demo16_differential_common_mode.py
+ index 7b23e06..85afec9 100644
+ --- a/examples/demo16_differential_common_mode.py
+@@ -511,13 +287,7 @@ index 7b23e06..85afec9 100644
+ -model.mw.bc.LumpedPort(lp4, 4)
+  
+  data = model.mw.run_sweep(True, 4)  # frequency sweep, parallel workers=4
+-```
+-
+-### `examples/demo17_step_import.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/examples/demo17_step_import.py b/examples/demo17_step_import.py
+ index 95501d9..aa3dfd9 100644
+ --- a/examples/demo17_step_import.py
+@@ -531,13 +301,6 @@ index 95501d9..aa3dfd9 100644
+  
+  # Set field resolution and frequency sweep
+  sim.mw.set_resolution(0.25)
+-```
+-
+-### `examples/demo18_plotting_and_visualization.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo18_plotting_and_visualization.py b/examples/demo18_plotting_and_visualization.py
+ index ea32cb7..308f247 100644
+ --- a/examples/demo18_plotting_and_visualization.py
+@@ -551,13 +314,6 @@ index ea32cb7..308f247 100644
+  
+  box = em.geo.Box(wgb, wga, L, (-wgb / 2, -wga / 2, -L))
+  cut1 = em.geo.Box(
+-```
+-
+-### `examples/demo19_vivaldi_antenna.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo19_vivaldi_antenna.py b/examples/demo19_vivaldi_antenna.py
+ index 5eff620..5eecd8e 100644
+ --- a/examples/demo19_vivaldi_antenna.py
+@@ -588,13 +344,6 @@ index 5eff620..5eecd8e 100644
+  model.mw.bc.AbsorbingBoundary(abc)
+  model.mesher.set_pec_face(polies)
+  model.mesher.set_pec_face(ground)
+-```
+-
+-### `examples/demo1_stepped_imp_filter.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo1_stepped_imp_filter.py b/examples/demo1_stepped_imp_filter.py
+ index 725784d..03f5c34 100644
+ --- a/examples/demo1_stepped_imp_filter.py
+@@ -664,13 +413,6 @@ index 725784d..03f5c34 100644
+ -model.display.show()
+ +model.display.show()
+ \ No newline at end of file
+-```
+-
+-### `examples/demo20_optimization.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo20_optimization.py b/examples/demo20_optimization.py
+ index 12175dd..a04f24e 100644
+ --- a/examples/demo20_optimization.py
+@@ -684,13 +426,6 @@ index 12175dd..a04f24e 100644
+  
+  # Here will will set out optimization. We will tune two parameters
+  # Offset is the distance from the back wall
+-```
+-
+-### `examples/demo21_inverted_F_antenna.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo21_inverted_F_antenna.py b/examples/demo21_inverted_F_antenna.py
+ index fdc1ca2..23f906f 100644
+ --- a/examples/demo21_inverted_F_antenna.py
+@@ -704,13 +439,6 @@ index fdc1ca2..23f906f 100644
+  
+  # --- Define geometry primitives -----------------------------------------
+  # Substrate block, thickness in Z (negative down)
+-```
+-
+-### `examples/demo22_RCS.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo22_RCS.py b/examples/demo22_RCS.py
+ index a0a179a..384c21d 100644
+ --- a/examples/demo22_RCS.py
+@@ -735,13 +463,6 @@ index a0a179a..384c21d 100644
+  
+  # +Y Polarization
+  scat.set_excitations(polarizations=90)
+-```
+-
+-### `examples/demo2_combline_filter.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo2_combline_filter.py b/examples/demo2_combline_filter.py
+ index 46b2a72..9282956 100644
+ --- a/examples/demo2_combline_filter.py
+@@ -755,13 +476,6 @@ index 46b2a72..9282956 100644
+  
+  # The filter consists of quarter lamba cylindrical pins inside an airbox.
+  # First we create the airbox
+-```
+-
+-### `examples/demo3_coupled_line_filter.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo3_coupled_line_filter.py b/examples/demo3_coupled_line_filter.py
+ index 744063b..f8d1f9d 100644
+ --- a/examples/demo3_coupled_line_filter.py
+@@ -824,13 +538,6 @@ index 744063b..f8d1f9d 100644
+  model.display.add_object(diel)
+  model.display.add_object(stripline)
+  model.display.animate().add_field(
+-```
+-
+-### `examples/demo4_patch_antenna.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo4_patch_antenna.py b/examples/demo4_patch_antenna.py
+ index 8f8f18c..cb98cb0 100644
+ --- a/examples/demo4_patch_antenna.py
+@@ -861,13 +568,7 @@ index 8f8f18c..cb98cb0 100644
+ +model.mesher.set_boundary_size(rpatch, 1 * mm)
+  # Refined mesh on port face for excitation accuracy
+  model.mesher.set_face_size(port, 1 * mm)
+-```
+-
+-### `examples/demo5_revolve.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/examples/demo5_revolve.py b/examples/demo5_revolve.py
+ index 4c73e9e..2da5e4b 100644
+ --- a/examples/demo5_revolve.py
+@@ -881,13 +582,6 @@ index 4c73e9e..2da5e4b 100644
+  
+  # --- Feed geometry -------------------------------------------------------
+  feed = em.geo.Cylinder(waveguide_radius, waveguide_length, cs=em.YZPLANE.cs())
+-```
+-
+-### `examples/demo6_striplines_with_vias.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo6_striplines_with_vias.py b/examples/demo6_striplines_with_vias.py
+ index a8d5692..89681cc 100644
+ --- a/examples/demo6_striplines_with_vias.py
+@@ -941,13 +635,6 @@ index a8d5692..89681cc 100644
+  
+  # Because lumped ports don't stop at the edge of our domain, we make sure to add some margins everywhere.
+  pcb.determine_bounds(5, 5, 5, 5)
+-```
+-
+-### `examples/demo7_periodic_cells.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo7_periodic_cells.py b/examples/demo7_periodic_cells.py
+ index 5d24aff..785c294 100644
+ --- a/examples/demo7_periodic_cells.py
+@@ -961,13 +648,6 @@ index 5d24aff..785c294 100644
+  
+  # Next we will create a PeriodicCell class (in our case a hexagonal cell). This class
+  # is simply meant to simplify our lives and improve the simulation setup flow.
+-```
+-
+-### `examples/demo8_waveguide_bpf_synthesis.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo8_waveguide_bpf_synthesis.py b/examples/demo8_waveguide_bpf_synthesis.py
+ index e2cb854..f59dd90 100644
+ --- a/examples/demo8_waveguide_bpf_synthesis.py
+@@ -981,13 +661,6 @@ index e2cb854..f59dd90 100644
+  
+      for wgap in model_iris.parameter_sweep(True, wgap=wgaps):
+          # Define two short waveguide sections separated by iris plate
+-```
+-
+-### `examples/demo9_dielectric_resonator.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/examples/demo9_dielectric_resonator.py b/examples/demo9_dielectric_resonator.py
+ index 8f7f251..16239b3 100644
+ --- a/examples/demo9_dielectric_resonator.py
+@@ -1001,13 +674,6 @@ index 8f7f251..16239b3 100644
+  
+  # --- Build geometry ------------------------------------------------------
+  # Metal enclosure box (PEC by default)
+-```
+-
+-### `pyproject.toml`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/pyproject.toml b/pyproject.toml
+ index 154874f..b607ccf 100644
+ --- a/pyproject.toml
+@@ -1046,13 +712,6 @@ index 154874f..b607ccf 100644
+  
+  [tool.pytest.ini_options]
+  addopts = [
+-```
+-
+-### `src/emerge/__init__.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/__init__.py b/src/emerge/__init__.py
+ index 00dfb29..64ebde8 100644
+ --- a/src/emerge/__init__.py
+@@ -1132,13 +791,6 @@ index 00dfb29..64ebde8 100644
+  ############################################################
+  #                         CONSTANTS                        #
+  ############################################################
+-```
+-
+-### `src/emerge/_emerge/_global.py`
+-
+-**Status:** `Added`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/_global.py b/src/emerge/_emerge/_global.py
+ new file mode 100644
+ index 0000000..cf055c3
+@@ -1196,13 +848,6 @@ index 0000000..cf055c3
+ +def cleanup():
+ +    _GlobalHandler.active().reset()
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/attributes.py`
+-
+-**Status:** `Added`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/attributes.py b/src/emerge/_emerge/attributes.py
+ new file mode 100644
+ index 0000000..0c31b72
+@@ -1534,13 +1179,6 @@ index 0000000..0c31b72
+ +    pset += AIR
+ +    print(pset)
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/bc.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/bc.py b/src/emerge/_emerge/bc.py
+ index c97a213..e291d00 100644
+ --- a/src/emerge/_emerge/bc.py
+@@ -1563,13 +1201,7 @@ index c97a213..e291d00 100644
+ +        logger.info(f'Adding {type(bc).__name__} to domain tags {bc.tags}(dim = {bc.dim})')
+          self._overwrite = True
+          self.boundary_conditions.append(bc)
+-```
+-
+-### `src/emerge/_emerge/cleanup.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/src/emerge/_emerge/cleanup.py b/src/emerge/_emerge/cleanup.py
+ index f6a6c64..08792bf 100644
+ --- a/src/emerge/_emerge/cleanup.py
+@@ -1638,13 +1270,6 @@ index f6a6c64..08792bf 100644
+ -    DEBUG_COLLECTOR.clear()
+ +#     _GlobalHandler.active().logcontroller.clear()
+ +#     _GlobalHandler.active().debugcollector.clear()
+-```
+-
+-### `src/emerge/_emerge/compiled/ccbf.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/compiled/ccbf.py b/src/emerge/_emerge/compiled/ccbf.py
+ index 12c2e3b..006c329 100644
+ --- a/src/emerge/_emerge/compiled/ccbf.py
+@@ -1657,13 +1282,6 @@ index 12c2e3b..006c329 100644
+  
+  @njit(cache=True)
+  def get_type_index(number: int):
+-```
+-
+-### `src/emerge/_emerge/geo/__init__.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/__init__.py b/src/emerge/_emerge/geo/__init__.py
+ index ad65cb5..04b8b93 100644
+ --- a/src/emerge/_emerge/geo/__init__.py
+@@ -1678,13 +1296,6 @@ index ad65cb5..04b8b93 100644
+  from .step import STEPItems
+  from .open_region import open_region, open_pml_region
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/geo/open_region.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/open_region.py b/src/emerge/_emerge/geo/open_region.py
+ index 254e8a8..23eef10 100644
+ --- a/src/emerge/_emerge/geo/open_region.py
+@@ -1706,13 +1317,6 @@ index 254e8a8..23eef10 100644
+      if isinstance(xmargin, Number):
+          xmargin = (xmargin, xmargin)
+      if isinstance(ymargin, Number):
+-```
+-
+-### `src/emerge/_emerge/geo/operations.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/operations.py b/src/emerge/_emerge/geo/operations.py
+ index 9657f5b..2da65df 100644
+ --- a/src/emerge/_emerge/geo/operations.py
+@@ -1855,13 +1459,6 @@ index 9657f5b..2da65df 100644
+ +    print('2D Entities final:', gmsh.model.occ.getEntities(2))
+ +    print(new_vol)
+ +    return new_vol
+-```
+-
+-### `src/emerge/_emerge/geo/pcb.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/pcb.py b/src/emerge/_emerge/geo/pcb.py
+ index a3954b8..8efde1d 100644
+ --- a/src/emerge/_emerge/geo/pcb.py
+@@ -2975,13 +2572,6 @@ index a3954b8..8efde1d 100644
+ -        return self._zs[layer - 1]
+ +PCBNew = PCB
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/geo/pmlbox.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/pmlbox.py b/src/emerge/_emerge/geo/pmlbox.py
+ index 47a83aa..f5cbac4 100644
+ --- a/src/emerge/_emerge/geo/pmlbox.py
+@@ -3048,13 +2638,6 @@ index 47a83aa..f5cbac4 100644
+  
+      main_box._unset_constraints = True
+      other_boxes = []
+-```
+-
+-### `src/emerge/_emerge/geo/polybased.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/polybased.py b/src/emerge/_emerge/geo/polybased.py
+ index a51c5ba..1512fc5 100644
+ --- a/src/emerge/_emerge/geo/polybased.py
+@@ -3068,13 +2651,6 @@ index a51c5ba..1512fc5 100644
+          vol = GeoVolume([t for d,t in dts if d==3], name=name)
+          
+          vol._add_face_pointer('front',o1, self._cs.zax.np)
+-```
+-
+-### `src/emerge/_emerge/geo/shapes.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/shapes.py b/src/emerge/_emerge/geo/shapes.py
+ index 1ded5fd..90b6d8a 100644
+ --- a/src/emerge/_emerge/geo/shapes.py
+@@ -3155,13 +2731,6 @@ index 1ded5fd..90b6d8a 100644
+  
+  class Cone(GeoVolume):
+      """Constructis a cone that starts at position p0 and is aimed in the given direction.
+-```
+-
+-### `src/emerge/_emerge/geo/step.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geo/step.py b/src/emerge/_emerge/geo/step.py
+ index c5353c6..ab8989e 100644
+ --- a/src/emerge/_emerge/geo/step.py
+@@ -3182,13 +2751,6 @@ index c5353c6..ab8989e 100644
+          namegen = STEPNameGenerator(filename, string_parser)
+  
+          for dim, tag in dimtags:
+-```
+-
+-### `src/emerge/_emerge/geometry.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/geometry.py b/src/emerge/_emerge/geometry.py
+ index d2ca5c0..e74404b 100644
+ --- a/src/emerge/_emerge/geometry.py
+@@ -3433,13 +2995,6 @@ index d2ca5c0..e74404b 100644
+          return self
+  
+      def boundary(
+-```
+-
+-### `src/emerge/_emerge/install_check.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/install_check.py b/src/emerge/_emerge/install_check.py
+ index f3fe8f2..de1b47b 100644
+ --- a/src/emerge/_emerge/install_check.py
+@@ -3461,13 +3016,6 @@ index f3fe8f2..de1b47b 100644
+ +        _GlobalHandler.active().debugcollector.add_report('A Microsoft Store Python installation is detected. This may cause errors when caching Numba code. \n' +
+                                  'If you run into issues, consider using Conda or UV to install Python on Windows.')
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/logsettings.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/logsettings.py b/src/emerge/_emerge/logsettings.py
+ index 2984441..b9739f2 100644
+ --- a/src/emerge/_emerge/logsettings.py
+@@ -3559,13 +3107,6 @@ index 2984441..b9739f2 100644
+ -
+ -LOG_CONTROLLER = LogController()
+ -DEBUG_COLLECTOR = DebugCollector()
+-```
+-
+-### `src/emerge/_emerge/mesh3d.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/mesh3d.py b/src/emerge/_emerge/mesh3d.py
+ index 72b7c43..6dde448 100644
+ --- a/src/emerge/_emerge/mesh3d.py
+@@ -3621,13 +3162,6 @@ index 72b7c43..6dde448 100644
+                  "A missing key error usually indicates that there are flat geometries sticking out of the simulation domain.\nEMerge can only deal with volumetric data. Please check the geometry using .view(use_gmsh=True) before meshing to make sure no surfaces are sticking out of the domain."
+              )
+              raise e
+-```
+-
+-### `src/emerge/_emerge/mesher.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/mesher.py b/src/emerge/_emerge/mesher.py
+ index 0a46dfa..a773ae6 100644
+ --- a/src/emerge/_emerge/mesher.py
+@@ -3641,13 +3175,6 @@ index 0a46dfa..a773ae6 100644
+              if dim == 2:
+                  logger.debug(
+                      f"Somehow setting mesh size:{1000 * size:.3f}mm on boundary: {tag}"
+-```
+-
+-### `src/emerge/_emerge/periodic.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/periodic.py b/src/emerge/_emerge/periodic.py
+ index 040a9c0..216e5f8 100644
+ --- a/src/emerge/_emerge/periodic.py
+@@ -3720,13 +3247,6 @@ index 040a9c0..216e5f8 100644
+              .exclude(lambda x, y, z: (nrm(np.array([x,y])+o)>w) or (abs((np.array([x,y])+o) @ n ) > 1e-6))
+          vec = - (self.p3 - self.p1)
+          for f1, f2 in zip(*_pair_selection(f1s, f2s, vec)): # type: ignore
+-```
+-
+-### `src/emerge/_emerge/physics/heatconduction/assembly/assembler.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/heatconduction/assembly/assembler.py b/src/emerge/_emerge/physics/heatconduction/assembly/assembler.py
+ index aa9addb..71e5887 100644
+ --- a/src/emerge/_emerge/physics/heatconduction/assembly/assembler.py
+@@ -3763,13 +3283,6 @@ index aa9addb..71e5887 100644
+  
+          density = density[0, 0, :].squeeze()
+          specific_heat = specific_heat[0, 0, :].squeeze()
+-```
+-
+-### `src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py b/src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py
+ index 8083e2d..51367f9 100644
+ --- a/src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py
+@@ -3858,13 +3371,7 @@ index 8083e2d..51367f9 100644
+ +                self.basis, self.mat_assy, self.bc.boundary_conditions, T_current
+              )
+              material_set = mats
+-```
+-
+-### `src/emerge/_emerge/physics/material_assignment.py`
+-
+-**Status:** `Added`
+-
+-```diff
++ 
+ diff --git a/src/emerge/_emerge/physics/material_assignment.py b/src/emerge/_emerge/physics/material_assignment.py
+ new file mode 100644
+ index 0000000..b7d60ea
+@@ -3964,13 +3471,6 @@ index 0000000..b7d60ea
+ +                return True
+ +        return False
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/assembly/assembler.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/microwave/assembly/assembler.py b/src/emerge/_emerge/physics/microwave/assembly/assembler.py
+ index 0e89c2a..afa6aa5 100644
+ --- a/src/emerge/_emerge/physics/microwave/assembly/assembler.py
+@@ -4341,13 +3841,6 @@ index 0e89c2a..afa6aa5 100644
+  
+              matrix_mass -= field.generate_csc(B_matrix_robin) / (k0**2)
+              if B_matrix_robin_2 is not None:
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py b/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py
+ index d577e0e..1aee11f 100644
+ --- a/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py
+@@ -4366,13 +3859,7 @@ index d577e0e..1aee11f 100644
+ +    [0.33333333333333343, 0.20000000000000001, 0.20000000000000007, 0.60000000000000009],  # L3
+  ], dtype=np.float64)
+  # fmt: on
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/assembly/robinbc.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/src/emerge/_emerge/physics/microwave/assembly/robinbc.py b/src/emerge/_emerge/physics/microwave/assembly/robinbc.py
+ index 5bc2955..4b6e72f 100644
+ --- a/src/emerge/_emerge/physics/microwave/assembly/robinbc.py
+@@ -4384,13 +3871,6 @@ index 5bc2955..4b6e72f 100644
+ -    return Bvec
+ \ No newline at end of file
+ +    return Bvec
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/bcs/background_field.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/microwave/bcs/background_field.py b/src/emerge/_emerge/physics/microwave/bcs/background_field.py
+ index 87cbabb..5663fe2 100644
+ --- a/src/emerge/_emerge/physics/microwave/bcs/background_field.py
+@@ -4667,13 +4147,6 @@ index 87cbabb..5663fe2 100644
+ +
+ +        return E, H, K
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py b/src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py
+ index 7a77fb5..82696c5 100644
+ --- a/src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py
+@@ -4699,13 +4172,6 @@ index 7a77fb5..82696c5 100644
+      def floquet_port(self, poly: GeoSurface, port_number: int) -> FloquetPort:
+          if self._cell is None:
+              raise ValueError("Periodic cel must be defined for this simulation.")
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py b/src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py
+ index 4c5cbf8..08fc39f 100644
+ --- a/src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py
+@@ -4817,13 +4283,7 @@ index 4c5cbf8..08fc39f 100644
+ +        _GlobalHandler.active().debugcollector.add_report(
+              "The ThinConductor boundary condition uses a new DoF splitting algorithm which may not be perfect. If you run into any issues, please condtact info@emerge-software.com to resolve any issues! :)"
+          )
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/bcs/port_bcs.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/src/emerge/_emerge/physics/microwave/bcs/port_bcs.py b/src/emerge/_emerge/physics/microwave/bcs/port_bcs.py
+ index e93d4dc..f68a5b0 100644
+ --- a/src/emerge/_emerge/physics/microwave/bcs/port_bcs.py
+@@ -4901,13 +4361,7 @@ index e93d4dc..f68a5b0 100644
+ +            _GlobalHandler.active().debugcollector.add_report(
+                  f"{self}: A lumped port width/height larger than 0.5m has been detected: width={self.width:.3f}m. Height={self.height:.3f}.m. Perhaps you forgot a unit like mm, um, or mil"
+              )
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/microwave_3d.py`
+-
+-**Status:** `Modified`
+-
+-```diff
++ 
+ diff --git a/src/emerge/_emerge/physics/microwave/microwave_3d.py b/src/emerge/_emerge/physics/microwave/microwave_3d.py
+ index 3307f09..54171e8 100644
+ --- a/src/emerge/_emerge/physics/microwave/microwave_3d.py
+@@ -5588,13 +5042,6 @@ index 3307f09..54171e8 100644
+  
+          ertri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
+          urtri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
+-```
+-
+-### `src/emerge/_emerge/physics/microwave/microwave_data.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/microwave/microwave_data.py b/src/emerge/_emerge/physics/microwave/microwave_data.py
+ index 0dd6e07..5172e81 100644
+ --- a/src/emerge/_emerge/physics/microwave/microwave_data.py
+@@ -5751,13 +5198,6 @@ index 0dd6e07..5172e81 100644
+              return E[0, :], E[1, :], E[2, :], H[0, :], H[1, :], H[2, :]
+  
+          return dict(freq=freq, ff_function=function)
+-```
+-
+-### `src/emerge/_emerge/physics/physics_generic.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/physics/physics_generic.py b/src/emerge/_emerge/physics/physics_generic.py
+ index a954da2..4dcce9d 100644
+ --- a/src/emerge/_emerge/physics/physics_generic.py
+@@ -5847,13 +5287,6 @@ index a954da2..4dcce9d 100644
+ +            self.mat_assy.set_tet_assignment(self.mesh._get_tet_to_tag(), self.mesh.centers)
+ +    
+ \ No newline at end of file
+-```
+-
+-### `src/emerge/_emerge/plot/pyvista/display.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/plot/pyvista/display.py b/src/emerge/_emerge/plot/pyvista/display.py
+ index 6044484..f0e8229 100644
+ --- a/src/emerge/_emerge/plot/pyvista/display.py
+@@ -5910,13 +5343,6 @@ index 6044484..f0e8229 100644
+      def add_farfield3d(
+          self,
+          farfield_obj: EHFieldFF,
+-```
+-
+-### `src/emerge/_emerge/selection.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/selection.py b/src/emerge/_emerge/selection.py
+ index 163ecb1..d1db522 100644
+ --- a/src/emerge/_emerge/selection.py
+@@ -6116,13 +5542,6 @@ index 163ecb1..d1db522 100644
+  
+ -
+ -SELECTOR_OBJ = Selector()
+-```
+-
+-### `src/emerge/_emerge/settings.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/settings.py b/src/emerge/_emerge/settings.py
+ index f232270..3fb61ff 100644
+ --- a/src/emerge/_emerge/settings.py
+@@ -6136,13 +5555,6 @@ index f232270..3fb61ff 100644
+  
+  
+  DEFAULT_SETTINGS = Settings()
+-```
+-
+-### `src/emerge/_emerge/simmodel.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/simmodel.py b/src/emerge/_emerge/simmodel.py
+ index c01586a..0083f53 100644
+ --- a/src/emerge/_emerge/simmodel.py
+@@ -6336,13 +5748,6 @@ index c01586a..0083f53 100644
+          try:
+              gmsh.logger.start()
+              gmsh.model.mesh.generate(3)
+-```
+-
+-### `src/emerge/_emerge/simstate.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/simstate.py b/src/emerge/_emerge/simstate.py
+ index 2cb71e4..25a0be9 100644
+ --- a/src/emerge/_emerge/simstate.py
+@@ -6448,13 +5853,6 @@ index 2cb71e4..25a0be9 100644
+  
+      def clear_mesh(self) -> None:
+          """resets the current mesh object to an empty one."""
+-```
+-
+-### `src/emerge/_emerge/solver.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/_emerge/solver.py b/src/emerge/_emerge/solver.py
+ index 149345e..961a249 100644
+ --- a/src/emerge/_emerge/solver.py
+@@ -6470,13 +5868,6 @@ index 149345e..961a249 100644
+ -############################################################
+ -
+ -DEFAULT_ROUTINE = AutomaticRoutine()
+-```
+-
+-### `src/emerge/core.py`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/src/emerge/core.py b/src/emerge/core.py
+ index 327ac06..8105e2e 100644
+ --- a/src/emerge/core.py
+@@ -6497,13 +5888,6 @@ index 327ac06..8105e2e 100644
+  
+  import gmsh
+  from ._emerge.simmodel import Simulation, SimulationBeta
+-```
+-
+-### `src/emerge/optycal.py`
+-
+-**Status:** `Added`
+-
+-```diff
+ diff --git a/src/emerge/optycal.py b/src/emerge/optycal.py
+ new file mode 100644
+ index 0000000..28011e6
+@@ -6639,13 +6023,6 @@ index 0000000..28011e6
+ +        dataset['solutions'].append(data_out)
+ +    return dataset
+ \ No newline at end of file
+-```
+-
+-### `uv.lock`
+-
+-**Status:** `Modified`
+-
+-```diff
+ diff --git a/uv.lock b/uv.lock
+ index 212d11b..1a53c26 100644
+ --- a/uv.lock
+@@ -6720,4 +6097,3 @@ index 212d11b..1a53c26 100644
+  [[package]]
+  name = "exceptiongroup"
+  version = "1.3.1"
+-```
+diff --git a/diffmaker.py b/diffmaker.py
+new file mode 100644
+index 0000000..6c6f963
+--- /dev/null
++++ b/diffmaker.py
+@@ -0,0 +1,155 @@
++#!/usr/bin/env python3
++"""
++git_diff_to_md.py
++Generates a raw .diff file and a human-readable Markdown report comparing two git branches.
++"""
++
++import argparse
++import re
++import subprocess
++import sys
++from pathlib import Path
++
++
++def run_cmd(cmd: list[str]) -> str:
++    """Executes a subprocess command and returns stdout."""
++    try:
++        result = subprocess.run(
++            cmd, check=True, capture_output=True, text=True, encoding="utf-8"
++        )
++        return result.stdout
++    except subprocess.CalledProcessError as e:
++        print(f"Error executing {' '.join(cmd)}:\n{e.stderr}", file=sys.stderr)
++        sys.exit(1)
++
++
++def sanitize_filename(name: str) -> str:
++    """Sanitizes branch names for safe file creation."""
++    return re.sub(r'[/\\?%*:|"<>]', "_", name)
++
++
++def main():
++    parser = argparse.ArgumentParser(
++        description="Compare two git branches and output raw diff and readable Markdown files."
++    )
++    parser.add_argument("branch1", help="Base branch name (e.g., main)")
++    parser.add_argument("branch2", help="Target branch name (e.g., feature-branch)")
++    parser.add_argument(
++        "-o",
++        "--output",
++        help="Optional custom output Markdown filename",
++        default=None,
++    )
++    parser.add_argument(
++        "--no-collapse",
++        action="store_true",
++        help="Do not wrap diff blocks in expandable <details> tags",
++    )
++
++    args = parser.parse_args()
++
++    # Verify git repository
++    run_cmd(["git", "rev-parse", "--is-inside-work-tree"])
++
++    b1, b2 = args.branch1, args.branch2
++    diff_target = f"{b1}..{b2}"
++
++    # Verify branches exist
++    run_cmd(["git", "rev-parse", "--verify", b1])
++    run_cmd(["git", "rev-parse", "--verify", b2])
++
++    print(f"Comparing `{b1}` -> `{b2}`...")
++
++    # 1. Generate Raw Patch File
++    raw_diff = run_cmd(["git", "diff", diff_target])
++    safe_b1 = sanitize_filename(b1)
++    safe_b2 = sanitize_filename(b2)
++    
++    diff_filename = f"diff_{safe_b1}_to_{safe_b2}.diff"
++    Path(diff_filename).write_text(raw_diff, encoding="utf-8")
++    print(f"Generated raw diff: {diff_filename}")
++
++    # 2. Gather Diff Data for Markdown
++    stat_output = run_cmd(["git", "diff", "--stat", diff_target])
++    name_status = run_cmd(["git", "diff", "--name-status", diff_target])
++
++    status_map = {
++        "M": "Modified",
++        "A": "Added",
++        "D": "Deleted",
++        "R": "Renamed",
++        "C": "Copied",
++        "T": "Type Changed",
++    }
++
++    parsed_files = []
++    for line in name_status.strip().split("\n"):
++        if not line:
++            continue
++        parts = line.split("\t")
++        st = parts[0]
++        src = parts[1]
++        dst = parts[2] if len(parts) > 2 else None
++        parsed_files.append((st, src, dst))
++
++    # 3. Build Markdown Report
++    md = []
++    md.append(f"# Git Diff: `{b1}` → `{b2}`\n")
++    md.append(f"- **Base Branch:** `{b1}`")
++    md.append(f"- **Compare Branch:** `{b2}`")
++    md.append(f"- **Raw Diff File:** `{diff_filename}`\n")
++
++    md.append("## Summary Statistics\n")
++    md.append("```text")
++    md.append(stat_output.strip())
++    md.append("```\n")
++
++    md.append("## Changed Files Table\n")
++    md.append("| Status | File Path |")
++    md.append("| :--- | :--- |")
++
++    for st, src, dst in parsed_files:
++        st_code = st[0]
++        label = status_map.get(st_code, st_code)
++        path_str = f"`{src}` → `{dst}`" if dst else f"`{src}`"
++        md.append(f"| {label} | {path_str} |")
++    
++    md.append("\n---\n")
++    md.append("## Detailed File Changes\n")
++
++    for st, src, dst in parsed_files:
++        file_path = dst if dst else src
++        st_code = st[0]
++        label = status_map.get(st_code, st_code)
++
++        title_path = f"`{src}` → `{dst}`" if dst else f"`{src}`"
++        md.append(f"### {title_path}\n")
++        md.append(f"**Status:** `{label}`\n")
++
++        # Get diff for individual file
++        file_diff = run_cmd(["git", "diff", diff_target, "--", file_path])
++        
++        if not file_diff.strip() and dst:
++            # Handle renamed files without content changes
++            file_diff = run_cmd(["git", "diff", diff_target, "--", src, dst])
++
++        if file_diff.strip():
++            if not args.no_collapse:
++                md.append("<details><summary>Click to view diff</summary>\n")
++            
++            md.append("```diff")
++            md.append(file_diff.strip())
++            md.append("```\n")
++
++            if not args.no_collapse:
++                md.append("</details>\n")
++        else:
++            md.append("*No text changes (binary file or empty diff).*\n")
++
++    md_filename = args.output if args.output else f"diff_{safe_b1}_to_{safe_b2}.md"
++    Path(md_filename).write_text("\n".join(md), encoding="utf-8")
++    print(f"Generated Markdown report: {md_filename}")
++
++
++if __name__ == "__main__":
++    main()
+\ No newline at end of file
 diff --git a/examples/demo0_parallel_plate.py b/examples/demo0_parallel_plate.py
 index 2e93f1e..5b59326 100644
 --- a/examples/demo0_parallel_plate.py
@@ -213,13 +1324,6 @@ index 2e93f1e..5b59326 100644
  
  # Before we can generate the mesh we have to set a simulation frequency (range)
  model.mw.set_frequency(10e9)
-```
-
-### `examples/demo10_sgh.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo10_sgh.py b/examples/demo10_sgh.py
 index 6809218..4a4dc65 100644
 --- a/examples/demo10_sgh.py
@@ -233,13 +1337,6 @@ index 6809218..4a4dc65 100644
  
  # --- Coordinate system for horn geometry -------------------------------
  hornCS = em.CS(em.YAX, em.ZAX, em.XAX)
-```
-
-### `examples/demo11_lumped_element_filter.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo11_lumped_element_filter.py b/examples/demo11_lumped_element_filter.py
 index 0be6bc9..ac3529f 100644
 --- a/examples/demo11_lumped_element_filter.py
@@ -318,13 +1415,6 @@ index 0be6bc9..ac3529f 100644
  # Add lumped element BCs for each element
  for le in LEs:
      model.mw.bc.LumpedElement(le)
-```
-
-### `examples/demo12_mode_alignment.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo12_mode_alignment.py b/examples/demo12_mode_alignment.py
 index 4e62a2f..f10425b 100644
 --- a/examples/demo12_mode_alignment.py
@@ -338,13 +1428,6 @@ index 4e62a2f..f10425b 100644
  
  # We create a cyllindrical waveguide in the Y-axis.
  cyl = em.geo.Cylinder(0.012, 0.05, em.YAX.construct_cs())
-```
-
-### `examples/demo13_helix_antenna.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo13_helix_antenna.py b/examples/demo13_helix_antenna.py
 index 8b0d810..a26a630 100644
 --- a/examples/demo13_helix_antenna.py
@@ -357,13 +1440,7 @@ index 8b0d810..a26a630 100644
 +model.check_version("3.0.0")  # Checks version compatibility.
  
  dfeed = 3 * mm  # straight feed length before the helix starts
-```
-
-### `examples/demo14_boundary_selection.py`
-
-**Status:** `Modified`
-
-```diff
+ 
 diff --git a/examples/demo14_boundary_selection.py b/examples/demo14_boundary_selection.py
 index 154d7c5..3b203f4 100644
 --- a/examples/demo14_boundary_selection.py
@@ -377,13 +1454,6 @@ index 154d7c5..3b203f4 100644
  
  # first lets define a WR90 waveguide
  wg_box = em.geo.Box(L, wga, wgb, position=(-L, -wga/2, -wgb/2))
-```
-
-### `examples/demo15_strip_slotline_transition.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo15_strip_slotline_transition.py b/examples/demo15_strip_slotline_transition.py
 index f793592..d49b518 100644
 --- a/examples/demo15_strip_slotline_transition.py
@@ -465,13 +1535,6 @@ index f793592..d49b518 100644
  model.adaptive_mesh_refinement(max_steps=8, frequency=5.5e9)
  
  # We can view the improvement in the refined mesh.
-```
-
-### `examples/demo16_differential_common_mode.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo16_differential_common_mode.py b/examples/demo16_differential_common_mode.py
 index 7b23e06..85afec9 100644
 --- a/examples/demo16_differential_common_mode.py
@@ -511,13 +1574,7 @@ index 7b23e06..85afec9 100644
 -model.mw.bc.LumpedPort(lp4, 4)
  
  data = model.mw.run_sweep(True, 4)  # frequency sweep, parallel workers=4
-```
-
-### `examples/demo17_step_import.py`
-
-**Status:** `Modified`
-
-```diff
+ 
 diff --git a/examples/demo17_step_import.py b/examples/demo17_step_import.py
 index 95501d9..aa3dfd9 100644
 --- a/examples/demo17_step_import.py
@@ -531,13 +1588,6 @@ index 95501d9..aa3dfd9 100644
  
  # Set field resolution and frequency sweep
  sim.mw.set_resolution(0.25)
-```
-
-### `examples/demo18_plotting_and_visualization.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo18_plotting_and_visualization.py b/examples/demo18_plotting_and_visualization.py
 index ea32cb7..308f247 100644
 --- a/examples/demo18_plotting_and_visualization.py
@@ -551,13 +1601,6 @@ index ea32cb7..308f247 100644
  
  box = em.geo.Box(wgb, wga, L, (-wgb / 2, -wga / 2, -L))
  cut1 = em.geo.Box(
-```
-
-### `examples/demo19_vivaldi_antenna.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo19_vivaldi_antenna.py b/examples/demo19_vivaldi_antenna.py
 index 5eff620..5eecd8e 100644
 --- a/examples/demo19_vivaldi_antenna.py
@@ -588,13 +1631,6 @@ index 5eff620..5eecd8e 100644
  model.mw.bc.AbsorbingBoundary(abc)
  model.mesher.set_pec_face(polies)
  model.mesher.set_pec_face(ground)
-```
-
-### `examples/demo1_stepped_imp_filter.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo1_stepped_imp_filter.py b/examples/demo1_stepped_imp_filter.py
 index 725784d..03f5c34 100644
 --- a/examples/demo1_stepped_imp_filter.py
@@ -664,13 +1700,6 @@ index 725784d..03f5c34 100644
 -model.display.show()
 +model.display.show()
 \ No newline at end of file
-```
-
-### `examples/demo20_optimization.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo20_optimization.py b/examples/demo20_optimization.py
 index 12175dd..a04f24e 100644
 --- a/examples/demo20_optimization.py
@@ -684,13 +1713,6 @@ index 12175dd..a04f24e 100644
  
  # Here will will set out optimization. We will tune two parameters
  # Offset is the distance from the back wall
-```
-
-### `examples/demo21_inverted_F_antenna.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo21_inverted_F_antenna.py b/examples/demo21_inverted_F_antenna.py
 index fdc1ca2..23f906f 100644
 --- a/examples/demo21_inverted_F_antenna.py
@@ -704,13 +1726,6 @@ index fdc1ca2..23f906f 100644
  
  # --- Define geometry primitives -----------------------------------------
  # Substrate block, thickness in Z (negative down)
-```
-
-### `examples/demo22_RCS.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo22_RCS.py b/examples/demo22_RCS.py
 index a0a179a..384c21d 100644
 --- a/examples/demo22_RCS.py
@@ -735,13 +1750,6 @@ index a0a179a..384c21d 100644
  
  # +Y Polarization
  scat.set_excitations(polarizations=90)
-```
-
-### `examples/demo2_combline_filter.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo2_combline_filter.py b/examples/demo2_combline_filter.py
 index 46b2a72..9282956 100644
 --- a/examples/demo2_combline_filter.py
@@ -755,13 +1763,6 @@ index 46b2a72..9282956 100644
  
  # The filter consists of quarter lamba cylindrical pins inside an airbox.
  # First we create the airbox
-```
-
-### `examples/demo3_coupled_line_filter.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo3_coupled_line_filter.py b/examples/demo3_coupled_line_filter.py
 index 744063b..f8d1f9d 100644
 --- a/examples/demo3_coupled_line_filter.py
@@ -824,13 +1825,6 @@ index 744063b..f8d1f9d 100644
  model.display.add_object(diel)
  model.display.add_object(stripline)
  model.display.animate().add_field(
-```
-
-### `examples/demo4_patch_antenna.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo4_patch_antenna.py b/examples/demo4_patch_antenna.py
 index 8f8f18c..cb98cb0 100644
 --- a/examples/demo4_patch_antenna.py
@@ -861,13 +1855,7 @@ index 8f8f18c..cb98cb0 100644
 +model.mesher.set_boundary_size(rpatch, 1 * mm)
  # Refined mesh on port face for excitation accuracy
  model.mesher.set_face_size(port, 1 * mm)
-```
-
-### `examples/demo5_revolve.py`
-
-**Status:** `Modified`
-
-```diff
+ 
 diff --git a/examples/demo5_revolve.py b/examples/demo5_revolve.py
 index 4c73e9e..2da5e4b 100644
 --- a/examples/demo5_revolve.py
@@ -881,13 +1869,6 @@ index 4c73e9e..2da5e4b 100644
  
  # --- Feed geometry -------------------------------------------------------
  feed = em.geo.Cylinder(waveguide_radius, waveguide_length, cs=em.YZPLANE.cs())
-```
-
-### `examples/demo6_striplines_with_vias.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo6_striplines_with_vias.py b/examples/demo6_striplines_with_vias.py
 index a8d5692..89681cc 100644
 --- a/examples/demo6_striplines_with_vias.py
@@ -941,13 +1922,6 @@ index a8d5692..89681cc 100644
  
  # Because lumped ports don't stop at the edge of our domain, we make sure to add some margins everywhere.
  pcb.determine_bounds(5, 5, 5, 5)
-```
-
-### `examples/demo7_periodic_cells.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo7_periodic_cells.py b/examples/demo7_periodic_cells.py
 index 5d24aff..785c294 100644
 --- a/examples/demo7_periodic_cells.py
@@ -961,13 +1935,6 @@ index 5d24aff..785c294 100644
  
  # Next we will create a PeriodicCell class (in our case a hexagonal cell). This class
  # is simply meant to simplify our lives and improve the simulation setup flow.
-```
-
-### `examples/demo8_waveguide_bpf_synthesis.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo8_waveguide_bpf_synthesis.py b/examples/demo8_waveguide_bpf_synthesis.py
 index e2cb854..f59dd90 100644
 --- a/examples/demo8_waveguide_bpf_synthesis.py
@@ -981,13 +1948,6 @@ index e2cb854..f59dd90 100644
  
      for wgap in model_iris.parameter_sweep(True, wgap=wgaps):
          # Define two short waveguide sections separated by iris plate
-```
-
-### `examples/demo9_dielectric_resonator.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/examples/demo9_dielectric_resonator.py b/examples/demo9_dielectric_resonator.py
 index 8f7f251..16239b3 100644
 --- a/examples/demo9_dielectric_resonator.py
@@ -1001,13 +1961,6 @@ index 8f7f251..16239b3 100644
  
  # --- Build geometry ------------------------------------------------------
  # Metal enclosure box (PEC by default)
-```
-
-### `pyproject.toml`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/pyproject.toml b/pyproject.toml
 index 154874f..b607ccf 100644
 --- a/pyproject.toml
@@ -1046,13 +1999,6 @@ index 154874f..b607ccf 100644
  
  [tool.pytest.ini_options]
  addopts = [
-```
-
-### `src/emerge/__init__.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/__init__.py b/src/emerge/__init__.py
 index 00dfb29..64ebde8 100644
 --- a/src/emerge/__init__.py
@@ -1132,13 +2078,6 @@ index 00dfb29..64ebde8 100644
  ############################################################
  #                         CONSTANTS                        #
  ############################################################
-```
-
-### `src/emerge/_emerge/_global.py`
-
-**Status:** `Added`
-
-```diff
 diff --git a/src/emerge/_emerge/_global.py b/src/emerge/_emerge/_global.py
 new file mode 100644
 index 0000000..cf055c3
@@ -1196,13 +2135,6 @@ index 0000000..cf055c3
 +def cleanup():
 +    _GlobalHandler.active().reset()
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/attributes.py`
-
-**Status:** `Added`
-
-```diff
 diff --git a/src/emerge/_emerge/attributes.py b/src/emerge/_emerge/attributes.py
 new file mode 100644
 index 0000000..0c31b72
@@ -1534,13 +2466,6 @@ index 0000000..0c31b72
 +    pset += AIR
 +    print(pset)
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/bc.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/bc.py b/src/emerge/_emerge/bc.py
 index c97a213..e291d00 100644
 --- a/src/emerge/_emerge/bc.py
@@ -1563,13 +2488,7 @@ index c97a213..e291d00 100644
 +        logger.info(f'Adding {type(bc).__name__} to domain tags {bc.tags}(dim = {bc.dim})')
          self._overwrite = True
          self.boundary_conditions.append(bc)
-```
-
-### `src/emerge/_emerge/cleanup.py`
-
-**Status:** `Modified`
-
-```diff
+ 
 diff --git a/src/emerge/_emerge/cleanup.py b/src/emerge/_emerge/cleanup.py
 index f6a6c64..08792bf 100644
 --- a/src/emerge/_emerge/cleanup.py
@@ -1638,13 +2557,6 @@ index f6a6c64..08792bf 100644
 -    DEBUG_COLLECTOR.clear()
 +#     _GlobalHandler.active().logcontroller.clear()
 +#     _GlobalHandler.active().debugcollector.clear()
-```
-
-### `src/emerge/_emerge/compiled/ccbf.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/compiled/ccbf.py b/src/emerge/_emerge/compiled/ccbf.py
 index 12c2e3b..006c329 100644
 --- a/src/emerge/_emerge/compiled/ccbf.py
@@ -1657,13 +2569,6 @@ index 12c2e3b..006c329 100644
  
  @njit(cache=True)
  def get_type_index(number: int):
-```
-
-### `src/emerge/_emerge/geo/__init__.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/__init__.py b/src/emerge/_emerge/geo/__init__.py
 index ad65cb5..04b8b93 100644
 --- a/src/emerge/_emerge/geo/__init__.py
@@ -1678,13 +2583,6 @@ index ad65cb5..04b8b93 100644
  from .step import STEPItems
  from .open_region import open_region, open_pml_region
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/geo/open_region.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/open_region.py b/src/emerge/_emerge/geo/open_region.py
 index 254e8a8..23eef10 100644
 --- a/src/emerge/_emerge/geo/open_region.py
@@ -1706,13 +2604,6 @@ index 254e8a8..23eef10 100644
      if isinstance(xmargin, Number):
          xmargin = (xmargin, xmargin)
      if isinstance(ymargin, Number):
-```
-
-### `src/emerge/_emerge/geo/operations.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/operations.py b/src/emerge/_emerge/geo/operations.py
 index 9657f5b..2da65df 100644
 --- a/src/emerge/_emerge/geo/operations.py
@@ -1855,13 +2746,6 @@ index 9657f5b..2da65df 100644
 +    print('2D Entities final:', gmsh.model.occ.getEntities(2))
 +    print(new_vol)
 +    return new_vol
-```
-
-### `src/emerge/_emerge/geo/pcb.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/pcb.py b/src/emerge/_emerge/geo/pcb.py
 index a3954b8..8efde1d 100644
 --- a/src/emerge/_emerge/geo/pcb.py
@@ -2975,13 +3859,6 @@ index a3954b8..8efde1d 100644
 -        return self._zs[layer - 1]
 +PCBNew = PCB
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/geo/pmlbox.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/pmlbox.py b/src/emerge/_emerge/geo/pmlbox.py
 index 47a83aa..f5cbac4 100644
 --- a/src/emerge/_emerge/geo/pmlbox.py
@@ -3048,13 +3925,6 @@ index 47a83aa..f5cbac4 100644
  
      main_box._unset_constraints = True
      other_boxes = []
-```
-
-### `src/emerge/_emerge/geo/polybased.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/polybased.py b/src/emerge/_emerge/geo/polybased.py
 index a51c5ba..1512fc5 100644
 --- a/src/emerge/_emerge/geo/polybased.py
@@ -3068,13 +3938,6 @@ index a51c5ba..1512fc5 100644
          vol = GeoVolume([t for d,t in dts if d==3], name=name)
          
          vol._add_face_pointer('front',o1, self._cs.zax.np)
-```
-
-### `src/emerge/_emerge/geo/shapes.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/shapes.py b/src/emerge/_emerge/geo/shapes.py
 index 1ded5fd..90b6d8a 100644
 --- a/src/emerge/_emerge/geo/shapes.py
@@ -3155,13 +4018,6 @@ index 1ded5fd..90b6d8a 100644
  
  class Cone(GeoVolume):
      """Constructis a cone that starts at position p0 and is aimed in the given direction.
-```
-
-### `src/emerge/_emerge/geo/step.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geo/step.py b/src/emerge/_emerge/geo/step.py
 index c5353c6..ab8989e 100644
 --- a/src/emerge/_emerge/geo/step.py
@@ -3182,13 +4038,6 @@ index c5353c6..ab8989e 100644
          namegen = STEPNameGenerator(filename, string_parser)
  
          for dim, tag in dimtags:
-```
-
-### `src/emerge/_emerge/geometry.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/geometry.py b/src/emerge/_emerge/geometry.py
 index d2ca5c0..e74404b 100644
 --- a/src/emerge/_emerge/geometry.py
@@ -3433,13 +4282,6 @@ index d2ca5c0..e74404b 100644
          return self
  
      def boundary(
-```
-
-### `src/emerge/_emerge/install_check.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/install_check.py b/src/emerge/_emerge/install_check.py
 index f3fe8f2..de1b47b 100644
 --- a/src/emerge/_emerge/install_check.py
@@ -3461,13 +4303,6 @@ index f3fe8f2..de1b47b 100644
 +        _GlobalHandler.active().debugcollector.add_report('A Microsoft Store Python installation is detected. This may cause errors when caching Numba code. \n' +
                                  'If you run into issues, consider using Conda or UV to install Python on Windows.')
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/logsettings.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/logsettings.py b/src/emerge/_emerge/logsettings.py
 index 2984441..b9739f2 100644
 --- a/src/emerge/_emerge/logsettings.py
@@ -3559,13 +4394,6 @@ index 2984441..b9739f2 100644
 -
 -LOG_CONTROLLER = LogController()
 -DEBUG_COLLECTOR = DebugCollector()
-```
-
-### `src/emerge/_emerge/mesh3d.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/mesh3d.py b/src/emerge/_emerge/mesh3d.py
 index 72b7c43..6dde448 100644
 --- a/src/emerge/_emerge/mesh3d.py
@@ -3621,33 +4449,6 @@ index 72b7c43..6dde448 100644
                  "A missing key error usually indicates that there are flat geometries sticking out of the simulation domain.\nEMerge can only deal with volumetric data. Please check the geometry using .view(use_gmsh=True) before meshing to make sure no surfaces are sticking out of the domain."
              )
              raise e
-```
-
-### `src/emerge/_emerge/mesher.py`
-
-**Status:** `Modified`
-
-```diff
-diff --git a/src/emerge/_emerge/mesher.py b/src/emerge/_emerge/mesher.py
-index 0a46dfa..a773ae6 100644
---- a/src/emerge/_emerge/mesher.py
-+++ b/src/emerge/_emerge/mesher.py
-@@ -433,7 +433,7 @@ class Mesher:
-                 size_mapping[dimtag] = size
- 
-         for (dim, tag), size in size_mapping.items():
--            size = min(size, obj.max_meshsize)
-+            
-             if dim == 2:
-                 logger.debug(
-                     f"Somehow setting mesh size:{1000 * size:.3f}mm on boundary: {tag}"
-```
-
-### `src/emerge/_emerge/periodic.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/periodic.py b/src/emerge/_emerge/periodic.py
 index 040a9c0..216e5f8 100644
 --- a/src/emerge/_emerge/periodic.py
@@ -3720,13 +4521,6 @@ index 040a9c0..216e5f8 100644
              .exclude(lambda x, y, z: (nrm(np.array([x,y])+o)>w) or (abs((np.array([x,y])+o) @ n ) > 1e-6))
          vec = - (self.p3 - self.p1)
          for f1, f2 in zip(*_pair_selection(f1s, f2s, vec)): # type: ignore
-```
-
-### `src/emerge/_emerge/physics/heatconduction/assembly/assembler.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/heatconduction/assembly/assembler.py b/src/emerge/_emerge/physics/heatconduction/assembly/assembler.py
 index aa9addb..71e5887 100644
 --- a/src/emerge/_emerge/physics/heatconduction/assembly/assembler.py
@@ -3763,13 +4557,6 @@ index aa9addb..71e5887 100644
  
          density = density[0, 0, :].squeeze()
          specific_heat = specific_heat[0, 0, :].squeeze()
-```
-
-### `src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py b/src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py
 index 8083e2d..51367f9 100644
 --- a/src/emerge/_emerge/physics/heatconduction/heatconduction_3d.py
@@ -3858,13 +4645,7 @@ index 8083e2d..51367f9 100644
 +                self.basis, self.mat_assy, self.bc.boundary_conditions, T_current
              )
              material_set = mats
-```
-
-### `src/emerge/_emerge/physics/material_assignment.py`
-
-**Status:** `Added`
-
-```diff
+ 
 diff --git a/src/emerge/_emerge/physics/material_assignment.py b/src/emerge/_emerge/physics/material_assignment.py
 new file mode 100644
 index 0000000..b7d60ea
@@ -3964,13 +4745,6 @@ index 0000000..b7d60ea
 +                return True
 +        return False
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/physics/microwave/assembly/assembler.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/microwave/assembly/assembler.py b/src/emerge/_emerge/physics/microwave/assembly/assembler.py
 index 0e89c2a..afa6aa5 100644
 --- a/src/emerge/_emerge/physics/microwave/assembly/assembler.py
@@ -4341,15 +5115,8 @@ index 0e89c2a..afa6aa5 100644
  
              matrix_mass -= field.generate_csc(B_matrix_robin) / (k0**2)
              if B_matrix_robin_2 is not None:
-```
-
-### `src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py b/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py
-index d577e0e..1aee11f 100644
+index d577e0e..343fde3 100644
 --- a/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py
 +++ b/src/emerge/_emerge/physics/microwave/assembly/robin_abc_order2.py
 @@ -128,10 +128,10 @@ def tri_coefficients(vxs, vys):
@@ -4366,13 +5133,20 @@ index d577e0e..1aee11f 100644
 +    [0.33333333333333343, 0.20000000000000001, 0.20000000000000007, 0.60000000000000009],  # L3
  ], dtype=np.float64)
  # fmt: on
-```
-
-### `src/emerge/_emerge/physics/microwave/assembly/robinbc.py`
-
-**Status:** `Modified`
-
-```diff
+ 
+@@ -188,10 +188,10 @@ def _abc_order_2_terms(tri_vertices, cf, dofcodes):
+         if i_type==0:
+             # Edge mode
+             _eval_curl_f_2d(bary_coeff, coords, i1, j1, k1, dofcodes[idof1], FC1)
+-            _eval_div_f_2d(bary_coeff, coords, i1, j1, k1, dofcodes[idof1], FC2)
++            _eval_div_f_2d(bary_coeff, coords, i1, j1, k1, dofcodes[idof1], FD1)
+         else:
+             _eval_curl_f_2d(bary_coeff, coords, 0, 1, 2, dofcodes[idof1], FC1)
+-            _eval_div_f_2d(bary_coeff, coords, 0, 1, 2, dofcodes[idof1], FD2)
++            _eval_div_f_2d(bary_coeff, coords, 0, 1, 2, dofcodes[idof1], FD1)
+ 
+         for idof2 in range(ndof):
+             i_type = typearry[idof2]
 diff --git a/src/emerge/_emerge/physics/microwave/assembly/robinbc.py b/src/emerge/_emerge/physics/microwave/assembly/robinbc.py
 index 5bc2955..4b6e72f 100644
 --- a/src/emerge/_emerge/physics/microwave/assembly/robinbc.py
@@ -4384,13 +5158,6 @@ index 5bc2955..4b6e72f 100644
 -    return Bvec
 \ No newline at end of file
 +    return Bvec
-```
-
-### `src/emerge/_emerge/physics/microwave/bcs/background_field.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/microwave/bcs/background_field.py b/src/emerge/_emerge/physics/microwave/bcs/background_field.py
 index 87cbabb..5663fe2 100644
 --- a/src/emerge/_emerge/physics/microwave/bcs/background_field.py
@@ -4667,13 +5434,6 @@ index 87cbabb..5663fe2 100644
 +
 +        return E, H, K
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py b/src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py
 index 7a77fb5..82696c5 100644
 --- a/src/emerge/_emerge/physics/microwave/bcs/boundary_condition_set.py
@@ -4699,13 +5459,6 @@ index 7a77fb5..82696c5 100644
      def floquet_port(self, poly: GeoSurface, port_number: int) -> FloquetPort:
          if self._cell is None:
              raise ValueError("Periodic cel must be defined for this simulation.")
-```
-
-### `src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py b/src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py
 index 4c5cbf8..08fc39f 100644
 --- a/src/emerge/_emerge/physics/microwave/bcs/boundary_conditions.py
@@ -4817,13 +5570,7 @@ index 4c5cbf8..08fc39f 100644
 +        _GlobalHandler.active().debugcollector.add_report(
              "The ThinConductor boundary condition uses a new DoF splitting algorithm which may not be perfect. If you run into any issues, please condtact info@emerge-software.com to resolve any issues! :)"
          )
-```
-
-### `src/emerge/_emerge/physics/microwave/bcs/port_bcs.py`
-
-**Status:** `Modified`
-
-```diff
+ 
 diff --git a/src/emerge/_emerge/physics/microwave/bcs/port_bcs.py b/src/emerge/_emerge/physics/microwave/bcs/port_bcs.py
 index e93d4dc..f68a5b0 100644
 --- a/src/emerge/_emerge/physics/microwave/bcs/port_bcs.py
@@ -4901,15 +5648,9 @@ index e93d4dc..f68a5b0 100644
 +            _GlobalHandler.active().debugcollector.add_report(
                  f"{self}: A lumped port width/height larger than 0.5m has been detected: width={self.width:.3f}m. Height={self.height:.3f}.m. Perhaps you forgot a unit like mm, um, or mil"
              )
-```
-
-### `src/emerge/_emerge/physics/microwave/microwave_3d.py`
-
-**Status:** `Modified`
-
-```diff
+ 
 diff --git a/src/emerge/_emerge/physics/microwave/microwave_3d.py b/src/emerge/_emerge/physics/microwave/microwave_3d.py
-index 3307f09..54171e8 100644
+index 3307f09..ef9b523 100644
 --- a/src/emerge/_emerge/physics/microwave/microwave_3d.py
 +++ b/src/emerge/_emerge/physics/microwave/microwave_3d.py
 @@ -16,21 +16,23 @@
@@ -5268,7 +6009,7 @@ index 3307f09..54171e8 100644
 -        ermean = np.mean(er[er > 0].flatten()[itri_port])
 -        urmean = np.mean(ur[ur > 0].flatten()[itri_port])
 +        erp = er[:,:,itri_port]
-+        urp = er[:,:,itri_port]
++        urp = ur[:,:,itri_port]
 +        ermean = np.mean(erp[erp > 0].flatten())
 +        urmean = np.mean(urp[urp > 0].flatten())
          ermax = np.max(er[:, :, itri_port].flatten())
@@ -5588,13 +6329,6 @@ index 3307f09..54171e8 100644
  
          ertri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
          urtri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
-```
-
-### `src/emerge/_emerge/physics/microwave/microwave_data.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/microwave/microwave_data.py b/src/emerge/_emerge/physics/microwave/microwave_data.py
 index 0dd6e07..5172e81 100644
 --- a/src/emerge/_emerge/physics/microwave/microwave_data.py
@@ -5751,13 +6485,6 @@ index 0dd6e07..5172e81 100644
              return E[0, :], E[1, :], E[2, :], H[0, :], H[1, :], H[2, :]
  
          return dict(freq=freq, ff_function=function)
-```
-
-### `src/emerge/_emerge/physics/physics_generic.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/physics/physics_generic.py b/src/emerge/_emerge/physics/physics_generic.py
 index a954da2..4dcce9d 100644
 --- a/src/emerge/_emerge/physics/physics_generic.py
@@ -5847,13 +6574,6 @@ index a954da2..4dcce9d 100644
 +            self.mat_assy.set_tet_assignment(self.mesh._get_tet_to_tag(), self.mesh.centers)
 +    
 \ No newline at end of file
-```
-
-### `src/emerge/_emerge/plot/pyvista/display.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/plot/pyvista/display.py b/src/emerge/_emerge/plot/pyvista/display.py
 index 6044484..f0e8229 100644
 --- a/src/emerge/_emerge/plot/pyvista/display.py
@@ -5910,13 +6630,6 @@ index 6044484..f0e8229 100644
      def add_farfield3d(
          self,
          farfield_obj: EHFieldFF,
-```
-
-### `src/emerge/_emerge/selection.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/selection.py b/src/emerge/_emerge/selection.py
 index 163ecb1..d1db522 100644
 --- a/src/emerge/_emerge/selection.py
@@ -6116,13 +6829,6 @@ index 163ecb1..d1db522 100644
  
 -
 -SELECTOR_OBJ = Selector()
-```
-
-### `src/emerge/_emerge/settings.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/settings.py b/src/emerge/_emerge/settings.py
 index f232270..3fb61ff 100644
 --- a/src/emerge/_emerge/settings.py
@@ -6136,13 +6842,6 @@ index f232270..3fb61ff 100644
  
  
  DEFAULT_SETTINGS = Settings()
-```
-
-### `src/emerge/_emerge/simmodel.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/simmodel.py b/src/emerge/_emerge/simmodel.py
 index c01586a..0083f53 100644
 --- a/src/emerge/_emerge/simmodel.py
@@ -6336,13 +7035,6 @@ index c01586a..0083f53 100644
          try:
              gmsh.logger.start()
              gmsh.model.mesh.generate(3)
-```
-
-### `src/emerge/_emerge/simstate.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/simstate.py b/src/emerge/_emerge/simstate.py
 index 2cb71e4..25a0be9 100644
 --- a/src/emerge/_emerge/simstate.py
@@ -6448,18 +7140,42 @@ index 2cb71e4..25a0be9 100644
  
      def clear_mesh(self) -> None:
          """resets the current mesh object to an empty one."""
-```
-
-### `src/emerge/_emerge/solver.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/_emerge/solver.py b/src/emerge/_emerge/solver.py
-index 149345e..961a249 100644
+index 149345e..3c2b3bd 100644
 --- a/src/emerge/_emerge/solver.py
 +++ b/src/emerge/_emerge/solver.py
-@@ -2313,10 +2313,3 @@ class AutomaticRoutine(SolveRoutine):
+@@ -17,7 +17,7 @@
+ 
+ # Last Cleanup: 2025-01-01
+ from __future__ import annotations
+-from scipy.sparse import csc_matrix  # type: ignore
++from scipy.sparse import csc_matrix, save_npz# type: ignore
+ from scipy.sparse.csgraph import reverse_cuthill_mckee  # type: ignore
+ from scipy.sparse.linalg import bicgstab, cg, gmres, gcrotmk, eigs, splu  # type: ignore
+ from scipy.linalg import eig  # type: ignore
+@@ -1736,6 +1736,8 @@ class SolveRoutine:
+         self.use_preconditioner: bool = False
+         self.use_direct: bool = True
+ 
++        self.save_disk: bool = False
++
+         for solverkey, solver in self.solvers.items():
+             if solver.name in _FORCED_SOLVER:
+                 self.forced_solver.append(solver)
+@@ -2055,6 +2057,12 @@ class SolveRoutine:
+         if matrix_type is MatrixType.UNKNOWN:
+             matrix_type = classify_matrix(A)
+ 
++        if self.save_disk:
++            name_A = f'SparseMatrix_{id}.npz'
++            name_b = f'SolVector_{id}.npy'
++            save_npz(name_A, A)
++            np.save(name_b, b)
++            logger.info(f'Saved {name_A} and {name_b}')
+         logger.debug(f"{_pfx(self.pre, id)} matrix type: {matrix_type}")
+ 
+         if b.ndim == 1:
+@@ -2313,10 +2321,3 @@ class AutomaticRoutine(SolveRoutine):
              return self._try_solver(EMSolver.SUPERLU)
  
          return self._try_solver(EMSolver.SUPERLU)
@@ -6470,13 +7186,6 @@ index 149345e..961a249 100644
 -############################################################
 -
 -DEFAULT_ROUTINE = AutomaticRoutine()
-```
-
-### `src/emerge/core.py`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/src/emerge/core.py b/src/emerge/core.py
 index 327ac06..8105e2e 100644
 --- a/src/emerge/core.py
@@ -6497,13 +7206,6 @@ index 327ac06..8105e2e 100644
  
  import gmsh
  from ._emerge.simmodel import Simulation, SimulationBeta
-```
-
-### `src/emerge/optycal.py`
-
-**Status:** `Added`
-
-```diff
 diff --git a/src/emerge/optycal.py b/src/emerge/optycal.py
 new file mode 100644
 index 0000000..28011e6
@@ -6639,13 +7341,6 @@ index 0000000..28011e6
 +        dataset['solutions'].append(data_out)
 +    return dataset
 \ No newline at end of file
-```
-
-### `uv.lock`
-
-**Status:** `Modified`
-
-```diff
 diff --git a/uv.lock b/uv.lock
 index 212d11b..1a53c26 100644
 --- a/uv.lock
@@ -6720,4 +7415,3 @@ index 212d11b..1a53c26 100644
  [[package]]
  name = "exceptiongroup"
  version = "1.3.1"
-```

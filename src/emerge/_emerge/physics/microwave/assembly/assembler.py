@@ -47,7 +47,45 @@ _PBC_DSMAX = 1e-15
 #                         FUNCTIONS                        #
 ############################################################
 
+def fingerprint(M, name="M"):
+    M = M.tocsc()
+    M.eliminate_zeros()          # canonicalize: drop explicit zeros
+    M.sort_indices()             # canonicalize: stable index order
+    print(f"--- {name} ---")
+    print(f"  shape   : {M.shape}")
+    print(f"  nnz     : {M.nnz}")
+    print(f"  sum     : {M.sum():.6e}")
+    print(f"  abssum  : {np.abs(M.data).sum():.6e}")
+    print(f"  fro     : {np.sqrt((np.abs(M.data)**2).sum()):.6e}")
+    print(f"  max|.|  : {np.abs(M.data).max() if M.nnz else 0:.6e}")
+    # a few deterministic sample points
+    rng = np.random.default_rng(0)   # fixed seed → same points every run
+    D = M.toarray() if M.shape[0] < 2000 else None
+    for _ in range(8):
+        i = int(rng.integers(M.shape[0]))
+        j = int(rng.integers(M.shape[1]))
+        v = (D[i, j] if D is not None else M[i, j])
+        print(f"  M[{i:5d},{j:5d}] = {v:+.6e}")
 
+def fingerprint_vec(b, name="b"):
+    b = np.asarray(b).ravel()
+    print(f"--- {name} ---")
+    print(f"  len     : {b.size}")
+    print(f"  nnz     : {int(np.count_nonzero(b))}")
+    print(f"  sum     : {b.sum():+.6e}")
+    print(f"  abssum  : {np.abs(b).sum():.6e}")
+    print(f"  L2      : {np.linalg.norm(b):.6e}")
+    print(f"  max|.|  : {np.abs(b).max() if b.size else 0:.6e}")
+    print(f"  argmax  : {int(np.abs(b).argmax()) if b.size else -1}")
+    # deterministic sample points — same indices on both runs
+    rng = np.random.default_rng(0)
+    for _ in range(8):
+        i = int(rng.integers(b.size))
+        print(f"  b[{i:5d}] = {b[i]:+.6e}")
+    # permutation-robust: sorted magnitude profile
+    s = np.sort(np.abs(b))
+    print(f"  sorted|.| head: {s[:5]}")
+    print(f"  sorted|.| tail: {s[-5:]}")
 def do_assemble_wpbc(bc: BoundaryCondition) -> bool:
     if isinstance(bc, WavePortIH):
         return True
@@ -389,6 +427,7 @@ class Assembler:
 
         return E, B, np.array(solve_ids), nedlegfield
 
+    #NOT WORKING
     def assemble_freq_matrix(
         self,
         field: Nedelec2,
@@ -419,6 +458,7 @@ class Assembler:
         from ....mth.pairing import pair_coordinates
         from .periodicbc import gen_periodic_matrix
         from .robin_abc_order2 import abc_order_2_matrix
+
         #from .wpbc import assemble_wpbc
         # PREDEFINE CONSTANTS
         W0 = 2 * np.pi * frequency
@@ -436,7 +476,7 @@ class Assembler:
             if mat.frequency_dependent:
                 is_frequency_dependent = True
                 break
-
+        
         # Prepare the 3x3 material property tensors.
         er = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         tand = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
@@ -619,6 +659,7 @@ class Assembler:
                     for number, Ufunc in bc._iter_modes(K0):
                         # Assemble and store in the port_vectors dictionary.
                         b_p = assemble_robin_bc_bvec(field, tri_ids, Ufunc)  # type: ignore
+
                         port_vectors[number] += b_p  # type: ignore
                         logger.trace(
                             f"..included force vector term with norm {np.linalg.norm(b_p):.3f}"
@@ -633,7 +674,7 @@ class Assembler:
                         logger.debug("Implementing second order ABC correction.")
                         mat = abc_order_2_matrix(field, tri_ids, c2)
                         B_matrix_robin += mat
-
+            
             # Add the total contribution of B_matrix_robin to K
             K += field.generate_csc(B_matrix_robin)
 

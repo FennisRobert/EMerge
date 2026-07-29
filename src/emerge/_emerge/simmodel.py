@@ -826,6 +826,8 @@ class Simulation:
         self.state._geometry_committed = True
         self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
 
+        if self._mw_active:
+            self.mw._initialize_bcs(None)
     def all_geos(self) -> list[GeoObject]:
         """Returns all geometries in a list
 
@@ -902,6 +904,37 @@ class Simulation:
         self.mesh._quick_mesh = True
         logger.trace(" (3) Mesh routine complete")
 
+    def _cleanup_entities(self):
+        gmsh.model.occ.synchronize()
+
+        # 1. Get all 3D volumes
+        volumes = gmsh.model.getEntities(dim=3)
+
+        # 2. Extract every surface, curve, and point that forms the boundary of these 3D volumes
+        valid_boundary_entities = set()
+        if volumes:
+            valid_boundary_entities = set(
+                gmsh.model.getBoundary(volumes, combined=False, oriented=False, recursive=True)
+            )
+
+        # 3. Gather all 0D, 1D, and 2D entities currently in the model
+        entities_0to2 = (
+            gmsh.model.getEntities(dim=0) + 
+            gmsh.model.getEntities(dim=1) + 
+            gmsh.model.getEntities(dim=2)
+        )
+
+        # 4. Filter for entities that aren't in the 3D boundary tree
+        orphans = [ent for ent in entities_0to2 if ent not in valid_boundary_entities]
+
+        # 5. Purge the orphans from OCC
+        if orphans:
+            logger.debug(f' Removing orphans: {orphans}')
+            gmsh.model.occ.remove(orphans, recursive=True)
+            gmsh.model.occ.synchronize()
+
+        return orphans
+    
     def generate_mesh(self, regenerate: bool = False) -> None:
         """Generate the mesh.
         This can only be done after commit_geometry(...) is called and if frequencies are defined.
@@ -912,6 +945,10 @@ class Simulation:
         Raises:
             ValueError: ValueError if no frequencies are defined.
         """
+        logger.info("Starting mesh generation phase.")
+
+        if len(self.state.all3d) == 0:
+            raise SimulationError("EMerge can only generate meshes of 3D geometries. You need at least one 3D geometry to start the mesh procedure.")
         logger.info("Starting mesh generation phase.")
 
         if self.mesh.defined and self.mesh._quick_mesh:
@@ -971,6 +1008,7 @@ class Simulation:
             if len(up) == 0:
                 logger.debug(f"  Surface {tag} has no parent volume — orphan face!")
 
+        self._cleanup_entities()
         logger.info("Calling GMSH mesher")
         try:
             gmsh.logger.start()
@@ -985,6 +1023,7 @@ class Simulation:
             print(_GMSH_ERROR_TEXT)
             raise
 
+        
         logger.info("GMSH Meshing complete!")
         self.mesh._pre_update(self.mesher._get_periodic_bcs())
         if self.settings.safe_mode:

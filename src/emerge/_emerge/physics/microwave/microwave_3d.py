@@ -2373,6 +2373,7 @@ class Microwave3D:
                     )
 
                     Sij = bi * np.abs(port_mode_powers[smat_index_j])
+                    logger.debug(f"S[{smat_index_i},{smat_index_j}] = {20*np.log10(np.abs(Sij)):.2f}dB")
                     scalardata.write_S(smat_index_i, smat_index_j, Sij)
                     if abs(Sij) > 1.0:
                         logger.debug(

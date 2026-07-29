@@ -159,6 +159,8 @@ class AbsorbingBoundary(RobinBC, Saveable):
         self.material: Material = AIR
         self.abctype: Literal["A", "B", "C", "D", "E"] = abctype
 
+    def details(self) -> str:
+        return f' ABC: order={self.order}, type={self.abctype}'
     def get_basis(self) -> np.ndarray:
         return np.eye(3)
 

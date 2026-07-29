@@ -554,8 +554,12 @@ def compute_force_entries_scat(
         for i in range(start_idx, end_idx):
             itri = surf_triangle_indices[i]
             vertex_ids = tris[:, itri]
-            Ulocal = Uglobal_all[:, :, i]
-            bvec = ned2_tri_force(vertices_global[:, vertex_ids], Ulocal, dofcodes)
+            Uglobal = Uglobal_all[:, :, i]
+            UglobalCurl = Uglobal_all_curl[:, :, i]
+
+            bvec = ned2_tri_force_scat(
+                vertices_global[:, vertex_ids], Uglobal, UglobalCurl, normals[:, i], dofcodes
+            )
             indices = tri_to_field[:, itri]
 
             for k in range(indices.shape[0]):

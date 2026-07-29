@@ -340,9 +340,10 @@ class Assembler:
         ermesh = er[:, :, tri_ids]
         urmesh = ur[:, :, tri_ids]
         sigmesh = sig[tri_ids]
-        ermesh[0, 0, :] = ermesh[0, 0, :] - 1j * sigmesh / (k0 * C0 * EPS0)
-        ermesh[1, 1, :] = ermesh[0, 0, :] - 1j * sigmesh / (k0 * C0 * EPS0)
-        ermesh[2, 2, :] = ermesh[0, 0, :] - 1j * sigmesh / (k0 * C0 * EPS0)
+        loss = -1j * sigmesh / (k0 * C0 * EPS0)
+        ermesh[0, 0, :] = ermesh[0, 0, :] + loss
+        ermesh[1, 1, :] = ermesh[1, 1, :] + loss
+        ermesh[2, 2, :] = ermesh[2, 2, :] + loss
 
         logger.trace(f".assembling matrices for {nedlegfield} at k0={k0:.2f}")
         E, B = generelized_eigenvalue_matrix(
@@ -582,7 +583,7 @@ class Assembler:
 
             for bc in robin_bcs:
                 logger.trace(f".Implementing {bc}")
-
+                logger.debug(bc.details())
                 # Get all Robin BC face triangle and edge
                 tri_ids = mesh.get_triangles(bc.tags)
 

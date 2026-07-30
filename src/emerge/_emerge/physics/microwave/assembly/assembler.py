@@ -502,9 +502,7 @@ class Assembler:
             # IF CACHED AND AVAILABLE PULL E AND B FROM CACHE
             logger.debug(" - Using cached matricies.")
             Evec, Bvec = self.cached_matrices
-            _TMR('Start')
             K: csc_matrix = csc_axpy_same_pattern(Evec, Bvec, (-K0**2))
-            _TMR('Finish')
         else:
             # OTHERWISE, COMPUTE
             logger.debug(" - Calling matrix assembler...")

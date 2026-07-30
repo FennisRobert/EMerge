@@ -455,7 +455,7 @@ class BackgroundField(Saveable):
         xp = x - self.origin[0]
         yp = y - self.origin[1]
         zp = z - self.origin[2]
-        Phi = 1.0#np.exp(-1j * (kx * xp + ky * yp + kz * zp))
+        Phi = np.exp(-1j * (kx * xp + ky * yp + kz * zp))
 
         if self.definition == "EA":
             Ex = (np.sin(theta) * np.cos(phi) * np.cos(psi) - np.sin(phi) * np.sin(psi)) * Phi

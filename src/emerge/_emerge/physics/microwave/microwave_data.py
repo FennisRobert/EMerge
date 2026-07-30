@@ -610,13 +610,11 @@ class MWField(Saveable):
 
     def set_field_vector(self) -> None:
         """Defines the default excitation coefficients for the current dataset as an excitation of only port 1."""
-        self.excitation = {key: 0.0 for key in self._fields.keys()}
-
         # Freq sweep with ports
         if len(self.port_modes) > 0:
-            self.excitation[self.port_modes[0].smat_index] = 1.0 + 0.0j
+            self.excite_port(self.port_modes[0].port_number)
         elif len(self.background_fields) > 0:
-            self.excitation[self.background_fields[0]] = 1.0 + 0.0j
+            self.set_backgroundfield(self.background_fields[0])
 
     def excite_port(
         self, number: int | float, excitation: complex = 1.0 + 0.0j
@@ -1322,15 +1320,10 @@ class MWField(Saveable):
 
         from .sc import stratton_chu
 
-        if faces.tags == self._bstags and False:
-            surface = self._bssurf
-        else:
-            surface = self.basis.mesh.boundary_surface(
-                faces.tags, inward_normal=False, origin=origin
-            )
-            self._bstags = faces.tags
-            self._bssurf = surface
 
+        surface = self.basis.mesh.boundary_surface(
+            faces.tags, inward_normal=False, origin=origin
+        )
         ehfield = self.interpolate(*surface.exyz)
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
 

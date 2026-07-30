@@ -25,7 +25,7 @@ OBJECT = "PEC SPHERE"
 
 air_radius = 1.5
 # First we create our simulation object
-model = em.Simulation("RCS")
+model = em.Simulation("RCS", loglevel='DEBUG')
 model.check_version("3.0.0")  # Checks version compatibility
 
 # We select the material of choice
@@ -91,10 +91,14 @@ display.populate(smooth_shading=True)  # Adds all geometries
 display.add_field(field.relative.grid(N=5000).vector("E"))  # Adds a vector polot
 display.add_farfield3d(
     ff3d, component="RCS", rmax=0.6, offset=(0, 0, 1.2)
-)  # Adds the 3D Farfield plot
+)  
+
+# Adds the 3D Farfield plot
 display.animate().add_field(
     field.relative.grid(N=10_000).scalar("Ey", "complex"), symmetrize=True
-)  # Adds an animation of the plane wave
+)  
+
+# Adds an animation of the plane wave
 display.show()
 
 # Finally we will also create a 2D plot
@@ -111,6 +115,7 @@ ff2d_Y = field.farfield_2d(
 ff2d_Z = field.farfield_2d(
     (-1, 0, 0), em.ZAX, scatter_object.boundary(), ang_range=(0, 180)
 )
+
 plot(
     ff2d_Y.ang * 180 / np.pi,
     [10 * np.log10(np.abs(ff2d_Z.RCS)), 10 * np.log10(np.abs(ff2d_Y.RCS))],

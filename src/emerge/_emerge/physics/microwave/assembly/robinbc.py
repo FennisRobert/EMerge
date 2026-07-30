@@ -198,13 +198,7 @@ def construct_local_vertices(glob_vertices):
     basis[1, :] = yhat
     basis[2, :] = zhat
 
-    data = 1.0*glob_vertices
-    data[0, :] = basis[0, 0] * data[0, :] + basis[0, 1] * data[1, :] + basis[0, 2] * data[2, :]
-    data[1, :] = basis[1, 0] * data[0, :] + basis[1, 1] * data[1, :] + basis[1, 2] * data[2, :]
-    data[2, :] = basis[2, 0] * data[0, :] + basis[2, 1] * data[1, :] + basis[2, 2] * data[2, :]
-
-
-    return basis, data
+    return basis, optim_matmul(basis, glob_vertices - origin[:, np.newaxis])
 
 
 ############################################################

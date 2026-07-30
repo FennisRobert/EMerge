@@ -1386,10 +1386,10 @@ class UserDefinedPort(PortBC, Saveable):
         mode_nr: int = 1,
     ) -> np.ndarray:
         """Compute the port mode field for global xyz coordinates."""
-        xl, yl, _ = self.cs.in_local_cs(x_global, y_global, z_global)
-        Ex = self._fex(k0, x_global, y_global, z_global)
-        Ey = self._fey(k0, x_global, y_global, z_global)
-        Ez = self._fez(k0, x_global, y_global, z_global)
+        xl, yl, zl = self.cs.in_local_cs(x_global, y_global, z_global)
+        Ex = self._fex(k0, xl, yl, zl)
+        Ey = self._fey(k0, xl, yl, zl)
+        Ez = self._fez(k0, xl, yl, zl)
         Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
         return np.array([Exg, Eyg, Ezg])
 

@@ -1,0 +1,380 @@
+diff --git a/src/emerge/_emerge/physics/microwave/microwave_data.py b/src/emerge/_emerge/physics/microwave/microwave_data.py
+index 0dd6e07..5172e81 100644
+--- a/src/emerge/_emerge/physics/microwave/microwave_data.py
++++ b/src/emerge/_emerge/physics/microwave/microwave_data.py
+@@ -480,44 +480,48 @@ class MWField(Saveable):
+         self._dur: np.ndarray = None
+         self._dsig: np.ndarray = None
+         self.freq: float = None
+         self.Q: float = None
+         self.basis: FEMBasis = None
+         self._fields: dict[int | int, np.ndarray] = dict()
+         self._mode_field: np.ndarray = None
+         self.excitation: dict[int | float, complex] = dict()
+         self.Nports: int = None
+         self.port_modes: list[PortProperties] = []
+         self.background_fields: list[bf.BackgroundField] = []
+         self.Ex: np.ndarray = None
+         self.Ey: np.ndarray = None
+         self.Ez: np.ndarray = None
+         self.Hx: np.ndarray = None
+         self.Hy: np.ndarray = None
+         self.Hz: np.ndarray = None
+         self.er: np.ndarray = None
+         self.ur: np.ndarray = None
+         self.sig: np.ndarray = None
+-        self._rel: bool = False
+ 
++        self._rel: bool = False
++        self._Sp: np.ndarray | None = None
+         self._Texcite: np.ndarray = 1.0
+ 
++        self._bstags = None
++        self._bssurf = None
++
+     def add_port_properties(
+         self,
+         port_number: int,
+         mode_number: int,
+         smat_index: int | float,
+         k0: float,
+         beta: float,
+         Z0: float | complex | None,
+         Pout: float,
+     ) -> None:
+         self.port_modes.append(
+             PortProperties(
+                 port_number=port_number,
+                 mode_number=mode_number,
+                 smat_index=smat_index,
+                 k0=k0,
+                 beta=beta,
+                 Z0=Z0,
+                 Pout=Pout,
+             )
+@@ -551,45 +555,40 @@ class MWField(Saveable):
+                 ]
+             )  # type: ignore
+ 
+         elif len(self.background_fields) > 0:
+             return sum(
+                 [
+                     self.excitation[mode] * self._fields[mode]
+                     for mode in self.background_fields
+                 ]
+             )
+ 
+ 
+     @property
+     def relative(self) -> MWField:
+         """ Returns the same MWField object but with the relative flag turned on
+         so that all fields are the relative field instead of the total field.
+         """
+         self._rel = True
+         return self
+ 
+-    def set_backgroundfield(self, bf) -> None:
+-        """ Activate a specific background field"""
+-        self.excitations = {key: 0.0 for key in self._fields.keys()}
+-        self.excitation[bf] = 1.0
+-    
+     def backE(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, mask: np.ndarray) -> np.ndarray:
+         """Compute the background E-field at the provided coordinates.
+ 
+         Args:
+             x (np.ndarray): An array of X-coordinates
+             y (np.ndarray): An array of X-coordinates
+             z (np.ndarray): An array of X-coordinates
+             mask (np.ndarray): A binary mask array that tells this funtion on which coordinates to evaluate the field.
+ 
+         Returns:
+             np.ndarray: _description_
+         """
+         out = np.zeros((3, x.shape[0]), dtype=np.complex128)
+         out[:, ~mask] = np.nan
+         for field in self.background_fields:
+             out[:, mask] += self.excitation[field] * field.E(x, y, z)[:, mask]
+         return out
+ 
+     def backH(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, mask: np.ndarray) -> np.ndarray:
+         """Compute the background H-field at the provided coordinates.
+@@ -624,40 +623,49 @@ class MWField(Saveable):
+     ) -> None:
+         """Excite a single port provided by a given port number
+ 
+         Args:
+             number (int): The port number to excite
+             coefficient (complex): The port excitation. Defaults to 1.0 + 0.0j
+         """
+         self.excitation = {key: 0.0 for key in self._fields.keys()}
+         self.excitation[number] = excitation
+ 
+     def set_excitations(self, *excitations: complex) -> None:
+         """Set bulk port excitations by an ordered array of excitation coefficients.
+ 
+         Returns:
+             *complex: A sequence of complex numbers
+         """
+         self.excitation = {key: 0.0 for key in self._fields.keys()}
+         for imode, coeff in enumerate(excitations):
+             self.excitation[self.port_modes[imode].smat_index] = coeff
+ 
++    def set_backgroundfield(self, bf) -> None:
++        """Activate a specific background field
++
++        Args:
++            index (int): _description_
++        """
++        self.excitation = {key: 0.0 for key in self._fields.keys()}
++        self.excitation[bf] = 1.0
++
+     def combine_ports(self, p1: int, p2: int) -> MWField:
+         """Combines ports p1 and p2 into a cifferential and common mode port respectively.
+ 
+         The p1 index becomes the differential mode port
+         The p2 index becomes the common mode port
+ 
+         Args:
+             p1 (int): The first port number
+             p2 (int): The second port number
+ 
+         Returns:
+             MWField: _description_
+         """
+ 
+         fp1 = self._fields[p1]
+         fp2 = self._fields[p2]
+ 
+         self._fields[p1] = (fp1 - fp2) / np.sqrt(2)
+         self._fields[p2] = (fp1 + fp2) / np.sqrt(2)
+         return self
+@@ -1172,145 +1180,175 @@ class MWField(Saveable):
+         origin: tuple[float, float, float] | None = None,
+         syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+     ) -> EHFieldFF:  # tuple[np.ndarray, np.ndarray, np.ndarray]:
+         """Compute the farfield electric and magnetic field defined by a circle.
+ 
+         Args:
+             ref_direction (tuple[float,float,float] | Axis): The direction for angle=0
+             plane_normal (tuple[float,float,float] | Axis): The rotation axis of the angular cutplane
+             faces (FaceSelection | GeoSurface): The faces to integrate over
+             ang_range (tuple[float, float], optional): The angular rage limits. Defaults to (-180, 180).
+             Npoints (int, optional): The number of angular points. Defaults to 201.
+             origin (tuple[float, float, float], optional): The farfield origin. Defaults to (0,0,0).
+             syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+ 
+         Returns:
+             tuple[np.ndarray, np.ndarray, np.ndarray]: Angles (N,), E(3,N), H(3,N)
+         """
+         refdir = _parse_axis(ref_direction).np
+         plane_normal_parsed = _parse_axis(plane_normal).np
+         theta, phi = arc_on_plane(refdir, plane_normal_parsed, ang_range, Npoints)
+-        E, H, Ptot = self.farfield(theta, phi, faces, origin, syms=syms)
++        E, H, Ptot = self._farfield(theta, phi, faces, origin, syms=syms)
+         angs = np.linspace(*ang_range, Npoints) * np.pi / 180
+         return EHFieldFF(
+             _E=E, _H=H, theta=theta, phi=phi, Ptot=Ptot, ang=angs, freq=self.freq
+         )
+ 
+     def farfield_3d(
+         self,
+         faces: FaceSelection | GeoSurface,
+         thetas: np.ndarray | None = None,
+         phis: np.ndarray | None = None,
+         origin: tuple[float, float, float] | None = None,
+         syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+     ) -> EHFieldFF:
+         """Compute the farfield in a 3D angular grid
+ 
+         If thetas and phis are not provided, they default to a sample space of 2 degrees.
+ 
+         Args:
+             faces (FaceSelection | GeoSurface): The integration faces
+             thetas (np.ndarray, optional): The 1D array of theta values. Defaults to None.
+             phis (np.ndarray, optional): A 1D array of phi values. Defaults to None.
+             origin (tuple[float, float, float], optional): The boundary normal alignment origin. Defaults to (0,0,0).
+             syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+         Returns:
+             tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The 2D theta, phi, E and H matrices.
+         """
+         if thetas is None:
+             thetas = np.linspace(0, np.pi, 91)
+         if phis is None:
+             phis = np.linspace(-np.pi, np.pi, 181)
+ 
+-        T, P = np.meshgrid(thetas, phis)
++        T, P = np.meshgrid(thetas, phis, indexing='ij')
+ 
+-        E, H, Ptot = self.farfield(
++        E, H, Ptot = self._farfield(
+             T.flatten(), P.flatten(), faces, origin=origin, syms=syms
+         )
+         E = E.reshape((3,) + T.shape)
+         H = H.reshape((3,) + T.shape)
+ 
+         return EHFieldFF(E, H, T, P, Ptot, freq=self.freq)
+ 
+-    def embed_external_component(self, touchstone_file: str, port_indices: list[int], Smat: np.ndarray) -> MWScalarNdim:
+-        # 1. Load the external component
++    def embed_external_component(self, touchstone_file: str, port_indices: list[int]) -> None:
++        """Embed an external component based on S-parameter data in this model by connecting
++        a given set of port numbers using an N-port S-parameter file.
++
++        Args:
++            touchstone_file (str): The filename of the touchstone file to import
++            port_indices (list[int]): A list of port indices of the simualtion model to connect the touchstone file to.
++
++        Returns:
++            MWScalarNdim: _description_
++        """
+         from ....read import TouchstoneData
+ 
+         td = TouchstoneData(touchstone_file)
+-        fem_s_matrix = Smat
++        fem_s_matrix = self._Sp
+         S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
+         port_indices = [ind-1 for ind in port_indices]
+         all_ports = np.arange(fem_s_matrix.shape[1])
+         n_ports = np.setdiff1d(all_ports, port_indices)
+         
+         # 2. Partition the block matrix
+         # S_nn, S_nm, S_mn, S_mm
+         S_nn = fem_s_matrix[n_ports][:, n_ports]
+         S_nm = fem_s_matrix[n_ports][:, port_indices]
+         S_mn = fem_s_matrix[port_indices][:, n_ports]
+         S_mm = fem_s_matrix[port_indices][:, port_indices]
+         
+         # 3. Compute the reduction: S_red = S_nn + S_nm @ S_ext @ inv(I - S_mm @ S_ext) @ S_mn
+         # Use np.linalg.solve for stability instead of direct inv
+         N = len(n_ports)
+         M = len(port_indices)
+         I_n = np.eye(N)
+         I_m = np.eye(M)
+         # Pre-compute the coupling term: S_ext * (I - S_mm * S_ext)^-1 * S_mn
+         coupling = S_ext @ np.linalg.inv(I_m - S_mm @ S_ext) @ S_mn
+         zero_nm = np.zeros((N, M))
+         zero_mn = np.zeros((M, N))
+         self._Texcite = np.block([
+             [I_n,      zero_nm],
+             [coupling, zero_mn]
+         ]).squeeze()
+-    
++        
+     def farfield(
+         self,
+         theta: np.ndarray,
+         phi: np.ndarray,
+         faces: FaceSelection | GeoSurface,
+         origin: tuple[float, float, float] | None = None,
+         syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
++    ) -> EHFieldFF:
++        E, H, Ptot = self._farfield(
++            theta.flatten(), phi.flatten(), faces, origin=origin, syms=syms
++        )
++        E = E.reshape((3,) + theta.shape)
++        H = H.reshape((3,) + theta.shape)
++
++        return EHFieldFF(E, H, theta, phi, Ptot, freq=self.freq)
++        
++    def _farfield(
++        self,
++        theta: np.ndarray,
++        phi: np.ndarray,
++        faces: FaceSelection | GeoSurface,
++        origin: tuple[float, float, float] | None = None,
++        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+     ) -> tuple[np.ndarray, np.ndarray, float]:
+         """Compute the farfield at the provided theta/phi coordinates
+ 
+         Args:
+             theta (np.ndarray): The Theta coordinates as (N,) 1D Array
+             phi (np.ndarray): The Phi coordinates as (N,) 1D Array
+             faces (FaceSelection | GeoSurface): the faces to use as integration boundary
+             origin (tuple[float, float, float], optional): A normal alignment origin. Optional use in cases where the "inside" is not clear.
+             syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+ 
+         Returns:
+             tuple[np.ndarray, np.ndarray, float]: The E and H field as (3,N) arrays and the total radiated power
+         """
+         if syms is None:
+             syms = []
+ 
+         from .sc import stratton_chu
+ 
+-        surface = self.basis.mesh.boundary_surface(
+-            faces.tags, inward_normal=False, origin=origin
+-        )
+-        ehfield = self.interpolate(*surface.exyz)
++        if faces.tags == self._bstags and False:
++            surface = self._bssurf
++        else:
++            surface = self.basis.mesh.boundary_surface(
++                faces.tags, inward_normal=False, origin=origin
++            )
++            self._bstags = faces.tags
++            self._bssurf = surface
+ 
++        ehfield = self.interpolate(*surface.exyz)
+         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
+ 
+         Ptot = np.sum(
+             ehfield.Smx * wns[0, :] + ehfield.Smy * wns[1, :] + ehfield.Smz * wns[2, :]
+         ).real
+ 
+         if len(syms) == 0:
+             return Eff, Hff, Ptot
+ 
+         # fmt: off
+         factor = 1.0
+         if len(syms) == 1:
+             factor = (0.5) ** 0.5
+             flip_sets = ((syms[0], ),)
+ 
+         elif len(syms) == 2:
+             factor = (0.25) ** 0.5
+             s1, s2 = syms
+             flip_sets = ((s1,), (s2,), (s1, s2, ))
+ 
+@@ -1368,41 +1406,41 @@ class MWField(Saveable):
+         k0 = self.k0
+         return vertices, triangles, E, H, origin, k0
+ 
+     def optycal_antenna(
+         self,
+         faces: FaceSelection | GeoSurface | None = None,
+         origin: tuple[float, float, float] | None = None,
+         syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+     ) -> dict:
+         """Export this models exterior to an Optical acceptable dataset
+ 
+         Args:
+             faces (FaceSelection | GeoSurface): The faces to export. Defaults to None
+ 
+         Returns:
+             tuple: _description_
+         """
+         freq = self.freq
+ 
+         def function(theta: np.ndarray, phi: np.ndarray, k0: float):
+-            E, H, _ = self.farfield(theta, phi, faces, origin, syms)
++            E, H, _ = self._farfield(theta, phi, faces, origin, syms)
+             return E[0, :], E[1, :], E[2, :], H[0, :], H[1, :], H[2, :]
+ 
+         return dict(freq=freq, ff_function=function)
+ 
+ 
+ class MWScalar(Saveable):
+     """The MWDataSet class stores solution data of FEM Time Harmonic simulations."""
+ 
+     _fields: list[str] = ["freq", "k0", "Sp", "beta", "Pout", "Z0"]
+     _copy: list[str] = ["_portmap", "_portnumbers", "port_modes"]
+ 
+     def __init__(self):
+         self.freq: float = None
+         self.k0: float = None
+         self.Q: float = None
+         self.Sp: np.ndarray = None
+         self.beta: np.ndarray = None
+         self.Z0: np.ndarray = None
+         self.Pout: np.ndarray = None
+         self._portmap: dict[int | float, int] = dict()

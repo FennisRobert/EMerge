@@ -37,6 +37,7 @@ from ....mth.csc_cast import CSCMapping
 from emsutil import Material
 from ....settings import Settings
 from scipy.sparse import csc_matrix
+from .matrix_add import add_coo_to_csc, csc_axpy_same_pattern
 from loguru import logger
 from ..simjob import SimJob
 from ....const import EPS0, C0
@@ -46,7 +47,6 @@ _PBC_DSMAX = 1e-15
 ############################################################
 #                         FUNCTIONS                        #
 ############################################################
-
 
 def _format_freq(freq: float) -> str:
     units = ["Hz", "kHz", "MHz", "GHz", "THz"]
@@ -300,6 +300,21 @@ def plane_basis_from_points(points: np.ndarray) -> np.ndarray:
 #                    THE ASSEMBLER CLASS                   #
 ############################################################
 
+class TimeLogger:
+
+    def __init__(self):
+        self.ctr: int = 1
+        self.last_time = time.time()
+        self.active = True
+
+    def __call__(self, ref: str = ''):
+        if not self.active:
+            return
+        logger.info(f'{ref}: {self.ctr}: ΔT = {(time.time()-self.last_time)*1000:.2f}ms')
+        self.last_time = time.time()
+        self.ctr += 1
+
+_TMR = TimeLogger()
 
 class Assembler:
     """The assembler class is responsible for FEM EM problem assembly.
@@ -429,6 +444,7 @@ class Assembler:
         Returns:
             SimJob: The resultant SimJob object
         """
+        
         logger.debug(f'Assembling frequency = {_format_freq(frequency)}')
         # We import these Numba compiled function here because they may not always be needed so compilation is postponed until they
         # are actually used.
@@ -437,6 +453,7 @@ class Assembler:
         from ....mth.pairing import pair_coordinates
         from .periodicbc import gen_periodic_matrix
         from .robin_abc_order2 import abc_order_2_matrix
+
         #from .wpbc import assemble_wpbc
         # PREDEFINE CONSTANTS
         W0 = 2 * np.pi * frequency
@@ -449,20 +466,20 @@ class Assembler:
         is_frequency_dependent = mat_assy.frequency_dependent()
 
         mesh = field.mesh
-
+        
         # Prepare the 3x3 material property tensors.
         er = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         tand = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         cond = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
         ur = np.zeros((3, 3, field.mesh.n_tets), dtype=np.complex128)
-
+        
         # Take the material properties from the materials list.
         for mat, centers, ids in mat_assy.iter_materials():
             er = mat.er(frequency, er, centers, ids)
             ur = mat.ur(frequency, ur, centers, ids)
             tand = mat.tand(frequency, tand, centers, ids)
             cond = mat.cond(frequency, cond, centers, ids)
-
+        
         # Define the complex dielectric constant:
         er = er * (1 - 1j * tand) - 1j * cond / (W0 * EPS0)
 
@@ -473,41 +490,37 @@ class Assembler:
         NF = field.n_field
 
         # Find Conductor domain tets:
-        conductor_tets = []
-        for itet in range(field.n_tets):
-            if (
-                cond[0, 0, itet] > self.settings.mw_3d_peclim
-                or cond[0, 0, itet] > self.settings.mw_3d_surfimplim
-            ):
-                conductor_tets.append(itet)
-        conductor_tets = np.array(conductor_tets)
-        logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
+        # 1. Simplify the mathematical check: (x > A or x > B) is identical to x > min(A, B)
+        limit = min(self.settings.mw_3d_peclim, self.settings.mw_3d_surfimplim)
+        conductor_tets = np.flatnonzero(cond[0, 0, :field.n_tets] > limit)
 
+        logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
+        
+        full_caching = (cache_matrices and not is_frequency_dependent)
         # Only used cahced matrices if they are there, it is asked and there are no frequency dependent material properties.
-        if (
-            cache_matrices
-            and not is_frequency_dependent
-            and self.cached_matrices is not None
-        ):
+        if full_caching and self.cached_matrices is not None:
             # IF CACHED AND AVAILABLE PULL E AND B FROM CACHE
             logger.debug(" - Using cached matricies.")
-            Evec, Bvec = self.cached_matrices
+            stiffness_matrix, mass_matrix = self.cached_matrices
+            K: csc_matrix = csc_axpy_same_pattern(stiffness_matrix, mass_matrix, (-K0**2))
         else:
             # OTHERWISE, COMPUTE
             logger.debug(" - Calling matrix assembler...")
             t0 = time.time()
             # Store the E and B values in COO matrix format and the compressed-column object cscmap.
-            Evec, Bvec, cscmap = tet_mass_stiffness_matrices(
+            stiffness_coo, mass_coo, cscmap = tet_mass_stiffness_matrices(
                 field, er, ur, conductor_tets, self.cached_cscmap
             )
             t1 = time.time()
             logger.debug(f' - Assembly speed: {(field.ntets -len(conductor_tets))/(t1-t0):.1f} tets/s')
             self.cached_cscmap = cscmap
-            self.cached_matrices = (Evec, Bvec)
 
-        # COMBINE THE MASS AND STIFFNESS MATRIX
-        K: csc_matrix = self.cached_cscmap.to_csc(Evec - Bvec * (K0**2))
-
+            # COMBINE THE MASS AND STIFFNESS MATRIX
+            K: csc_matrix = self.cached_cscmap.to_csc(stiffness_coo - mass_coo * (K0**2))
+            
+            if full_caching:
+                self.cached_matrices = (self.cached_cscmap.to_csc(stiffness_coo), self.cached_cscmap.to_csc(mass_coo))
+        
         # ISOLATE BOUNDARY CONDITIONS TO ASSEMBLE
         thin_conductor_bcs: list[ThinConductor] = [
             bc for bc in bcs if isinstance(bc, ThinConductor)
@@ -526,7 +539,7 @@ class Assembler:
         ############################################################
         #                      PEC BOUNDARY CONDITIONS             #
         ############################################################
-
+        
         logger.debug(" - Implementing PEC Boundary Conditions.")
 
         # pec_ids is a list of degree of freedom indices that are 0 because
@@ -583,22 +596,22 @@ class Assembler:
         #                 ROBIN BOUNDARY CONDITIONS                #
         ############################################################
         # Robin boundary conditions are all ports, absorbing boundary dconditions and surface impedance etc.
-
+        
         if len(robin_bcs) > 0:
             logger.debug(" - Assembling Robin Boundary Conditions.")
-
+            
             # The contributions will be added to the mass+stiffness matrix A.
             # We assemble in B.
 
             B_matrix_robin = field.empty_tri_matrix()
             B_matrix_robin_2 = None
-
+            
             if len(thin_conductor_bcs) > 0:
                 B_matrix_robin_2 = B_matrix_robin.copy().astype(np.complex128)
-
+            
             for bc in robin_bcs:
                 logger.trace(f"   - Implementing {bc}")
-
+                
                 # Get all Robin BC face triangle and edge
                 tri_ids = mesh.get_triangles(bc.tags)
 
@@ -606,7 +619,7 @@ class Assembler:
                     dofs = set(field.tri_to_field[:, tri_ids].flatten())
                     pec_ids = pec_ids.difference(dofs)
                 edge_ids = list(mesh.tri_to_edge[:, tri_ids].flatten())
-
+                
                 # Compute the γ parameter which is a generic scaling factor
                 # used in the Robin boundary condition matrix etries.
                 gamma = bc.get_gamma(K0)
@@ -622,6 +635,7 @@ class Assembler:
                         B_matrix_robin_2 = assemble_robin_bc(
                             field, B_matrix_robin_2, tri_ids, gamma
                         )
+                
                 # The the forcing vector b-entries for excited ports are added.
                 # Don't include ScatteredField boundary conditions.
                 if (
@@ -636,7 +650,7 @@ class Assembler:
                         logger.trace(
                             f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}"
                         )
-
+                
                 ## Second order absorbing boundary correction
                 # Second order corrections are needed using gradient terms for improved absorption.
                 # Only used in AbsorbingBoundary conditions of order 2.
@@ -646,9 +660,9 @@ class Assembler:
                         logger.debug("    - Implementing second order ABC correction.")
                         mat = abc_order_2_matrix(field, tri_ids, c2)
                         B_matrix_robin += mat
-
+                
             # Add the total contribution of B_matrix_robin to K
-            K += field.generate_csc(B_matrix_robin)
+            add_coo_to_csc(K, B_matrix_robin, field._rows, field._cols)
 
             if B_matrix_robin_2 is not None:
                 logger.debug("    - Assembling opposite side matrix entries.")
@@ -755,8 +769,10 @@ class Assembler:
         ############################################################
         #                             FINALIZE                     #
         ############################################################
-
-        solve_ids = np.array([i for i in range(NF) if i not in pec_ids])
+        
+        mask = np.ones(NF, dtype=bool)
+        mask[list(pec_ids)] = False
+        solve_ids = np.flatnonzero(mask)
 
         # Because there are periodic boundaries which reduce the sets of degrees of freedom
         # We have to remap the indices that indicate which ones aren't PEC to the new counting system
@@ -775,12 +791,13 @@ class Assembler:
         logger.debug(f"  - Number of tets: {mesh.n_tets:,}")
         logger.debug(f"  - Number of DoF: {K.shape[0]:,}")
         logger.debug(f"  - Number of non-zero: {K.nnz:,}")
-
+        
         K.eliminate_zeros()
-
+        
         simjob = SimJob(
             K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic
-        )
+        )  
+        
 
         simjob.solve_ids = solve_ids
         simjob._pec_tris = pec_tris
@@ -851,36 +868,30 @@ class Assembler:
         NF = field.n_field
 
         # Find Conductor domain tets:
-        conductor_tets = []
-        for itet in range(field.n_tets):
-            if (
-                cond[0, 0, itet] > self.settings.mw_3d_peclim
-                or cond[0, 0, itet] > self.settings.mw_3d_surfimplim
-            ):
-                conductor_tets.append(itet)
-        conductor_tets = np.array(conductor_tets)
+        # 1. Simplify the mathematical check: (x > A or x > B) is identical to x > min(A, B)
+        limit = min(self.settings.mw_3d_peclim, self.settings.mw_3d_surfimplim)
+        conductor_tets = np.flatnonzero(cond[0, 0, :field.n_tets] > limit)
 
-        if (
-            cache_matrices
-            and not is_frequency_dependent
-            and self.cached_matrices is not None
-        ):
+        full_caching = (cache_matrices and not is_frequency_dependent)
+        # Only used cahced matrices if they are there, it is asked and there are no frequency dependent material properties.
+        if full_caching and self.cached_matrices is not None:
             # IF CACHED AND AVAILABLE PULL E AND B FROM CACHE
             logger.debug("Using cached matricies.")
-            matrix_stiff_coo, matrix_mass_coo = self.cached_matrices
+            stiffness_matrix, mass_matrix = self.cached_matrices
+            matrix_fem: csc_matrix = csc_axpy_same_pattern(stiffness_matrix, mass_matrix, (-K0**2))
         else:
             # OTHERWISE, COMPUTE
             logger.debug("Assembling matrices")
-            matrix_stiff_coo, matrix_mass_coo, cscmap = tet_mass_stiffness_matrices(
+            stiffness_coo, mass_coo, cscmap = tet_mass_stiffness_matrices(
                 field, er, ur, conductor_tets, self.cached_cscmap
             )
             self.cached_cscmap = cscmap
-            self.cached_matrices = (matrix_stiff_coo, matrix_mass_coo)
 
-        # COMBINE THE MASS AND STIFFNESS MATRIX
-        matrix_fem: csc_matrix = self.cached_cscmap.to_csc(
-            matrix_stiff_coo - matrix_mass_coo * (K0**2)
-        )
+            # COMBINE THE MASS AND STIFFNESS MATRIX
+            matrix_fem: csc_matrix = self.cached_cscmap.to_csc(stiffness_coo - mass_coo * (K0**2))
+
+            if full_caching:
+                self.cached_matrices = (self.cached_cscmap.to_csc(stiffness_coo), self.cached_cscmap.to_csc(mass_coo))
 
         # ISOLATE BOUNDARY CONDITIONS TO ASSEMBLE
         thin_conductor_bcs: list[ThinConductor] = [
@@ -984,7 +995,7 @@ class Assembler:
                             bf.Uinc_curl,
                             normals,
                         )  # type: ignore
-                        if bf in background_fields.items():
+                        if bf in background_fields:
                             background_fields[bf] += b_p
                         else:
                             background_fields[bf] = b_p  # type: ignore
@@ -1000,7 +1011,8 @@ class Assembler:
                         mat = abc_order_2_matrix(field, tri_ids, 1j * c2 / (K0))
                         B_matrix_robin += mat
 
-            matrix_fem += field.generate_csc(B_matrix_robin)
+            # Add the total contribution of B_matrix_robin to K
+            add_coo_to_csc(matrix_fem, B_matrix_robin, field._rows, field._cols)
 
             if B_matrix_robin_2 is not None:
                 logger.debug("Assembling opposite side matrix entries.")
@@ -1148,25 +1160,21 @@ class Assembler:
         er = er * (1 - 1j * tand) - 1j * cond / (w0 * EPS0)
 
         # Find Conductor domain tets:
-        conductor_tets = []
-        for itet in range(field.n_tets):
-            if (
-                cond[0, 0, itet] > self.settings.mw_3d_peclim
-                or cond[0, 0, itet] > self.settings.mw_3d_surfimplim
-            ):
-                conductor_tets.append(itet)
-        conductor_tets = np.array(conductor_tets)
+        # 1. Simplify the mathematical check: (x > A or x > B) is identical to x > min(A, B)
+        limit = min(self.settings.mw_3d_peclim, self.settings.mw_3d_surfimplim)
+        conductor_tets = np.flatnonzero(cond[0, 0, :field.n_tets] > limit)
 
         # Start the full assembly process
         logger.debug("Assembling matrices")
 
         # Assemble the E and B COO matrices plus cscmapping
-        matrix_stiff, matrix_mass, cscmapping = tet_mass_stiffness_matrices(
-            field, er, ur, conductor_tets
+        stiffness_coo, mass_coo, cscmapping = tet_mass_stiffness_matrices(
+            field, er, ur, conductor_tets, self.cached_cscmap
         )
+        self.cached_cscmap = cscmapping
 
-        matrix_stiff = cscmapping.to_csc(matrix_stiff)
-        matrix_mass = cscmapping.to_csc(matrix_mass)
+        matrix_stiff = cscmapping.to_csc(stiffness_coo)
+        matrix_mass = cscmapping.to_csc(mass_coo)
         self.cached_matrices = (matrix_stiff, matrix_mass)
 
         # Number of degrees of freedom
@@ -1236,15 +1244,17 @@ class Assembler:
                         B_matrix_robin_2 = assemble_robin_bc(
                             field, B_matrix_robin_2, tri_ids, gamma
                         )
-            ## Second order absorbing boundary correction
-            if bc._isabc:
-                if bc.order == 2:
-                    c2 = bc.o2coeffs[bc.abctype][1]
-                    logger.debug("Implementing second order ABC correction.")
-                    mat = abc_order_2_matrix(field, tri_ids, 1j * c2 / k0)
-                    B_matrix_robin += mat
 
-            matrix_mass -= field.generate_csc(B_matrix_robin) / (k0**2)
+                ## Second order absorbing boundary correction
+                if bc._isabc:
+                    if bc.order == 2:
+                        c2 = bc.o2coeffs[bc.abctype][1]
+                        logger.debug("Implementing second order ABC correction.")
+                        mat = abc_order_2_matrix(field, tri_ids, 1j * c2 / k0)
+                        B_matrix_robin += mat
+
+            # Add the total contribution of B_matrix_robin to K
+            add_coo_to_csc(matrix_mass, -B_matrix_robin / (k0**2), field._rows, field._cols)
             if B_matrix_robin_2 is not None:
                 logger.debug("Assembling opposite side matrix entries.")
                 rows, cols = field.empty_tri_rowcol(other_side=True)

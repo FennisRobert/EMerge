@@ -118,9 +118,12 @@ class RobinBC(BoundaryCondition, Saveable):
     ) -> np.ndarray:
         raise NotImplementedError("get_Uinc not implemented for Port class")
 
+    def _get_o2(self) -> float:
+        return self.o2coeffs[self.abctype][1]
+    
     def get_abccorr(self, k0: float) -> float:
         f = k0 * C0 / (2 * np.pi)
-        return 1j * self.o2coeffs[self.abctype][1] / (self.material.neff(f) * k0)
+        return 1j * self._get_o2() / (self.material.neff(f) * k0)
 
 
 class AbsorbingBoundary(RobinBC, Saveable):
@@ -160,6 +163,7 @@ class AbsorbingBoundary(RobinBC, Saveable):
         self.cs: CoordinateSystem = GCS
         self.material: Material = AIR
         self.abctype: Literal["A", "B", "C", "D", "E"] = abctype
+        self._coeffset: tuple[float, float] = None
 
     def get_basis(self) -> np.ndarray:
         return np.eye(3)
@@ -171,6 +175,98 @@ class AbsorbingBoundary(RobinBC, Saveable):
         """Return the out of plane propagation constant. βz."""
         return k0
 
+    def optimize_for_maximum_angle(self, angle_deg: float) -> None:
+        """Computes the optimal second-order ABC coefficients (c1, c2) that minimize
+
+        the worst-case reflection coefficient across the range [0, theta_max_deg].
+
+        Parameters
+        ----------
+        theta_max_deg : float
+            Maximum scan angle in degrees (e.g. 60.0).
+
+        Returns
+        -------
+        c1, c2 : tuple[float, float]
+            The two second-order ABC Robin coefficients.
+        """
+        from scipy.optimize import minimize
+        u_m = np.cos(np.radians(angle_deg))
+
+        # Plane wave reflection coefficient function R(u) where u = cos(theta)
+        def R(u, u1, u2):
+            return np.abs((u - u1) / (u + u1)) * np.abs((u - u2) / (u + u2))
+
+        # Objective function to enforce equiripple behavior: R(0) = R_peak = R(theta_max)
+        def objective(u_pair):
+            u1, u2 = u_pair
+            if not (1.0 > u1 > u2 > u_m):
+                return 1e6
+
+            r_0 = R(1.0, u1, u2)
+            r_peak = ((np.sqrt(u1) - np.sqrt(u2)) / (np.sqrt(u1) + np.sqrt(u2))) ** 2
+            r_max = R(u_m, u1, u2)
+
+            worst_case = max(r_0, r_peak, r_max)
+            equiripple_penalty = (r_0 - r_peak) ** 2 + (r_peak - r_max) ** 2
+            return worst_case + 10.0 * equiripple_penalty
+
+        # Initial guesses for directional cosines u1 and u2
+        u1_init = 1.0 - 0.3 * (1.0 - u_m)
+        u2_init = 1.0 - 0.7 * (1.0 - u_m)
+
+        # Solve for optimal zero-reflection directional cosines
+        res = minimize(
+            objective,
+            [u1_init, u2_init],
+            bounds=[(u_m, 1.0), (u_m, 1.0)],
+            method="Nelder-Mead",
+        )
+
+        u1_opt, u2_opt = sorted(res.x, reverse=True)
+
+        # Convert optimal cosines to Robin boundary condition weights
+        S = u1_opt + u2_opt
+        P = u1_opt * u2_opt
+
+        c1 = (1.0 + P) / S
+        c2 = 1.0 / S
+
+        self._coeffset = (c1, -c2)
+        
+    def set_zero_angles(self, ang1_deg: float, ang2_deg: float):
+        """Define two angles for which the absorbing boundary condition has a zero reflection
+
+        Args:
+            ang1_deg (float): _description_
+            ang2_deg (float): _description_
+        """
+        t1_rad = ang1_deg*np.pi/180
+        t2_rad = ang2_deg*np.pi/180
+        cos1 = np.cos(t1_rad)
+        cos2 = np.cos(t2_rad)
+
+        # Avoid division by zero at grazing incidence (theta1 = theta2 = 90 deg)
+        denom = cos1 + cos2
+        if abs(denom) < 1e-12:
+            raise ValueError("Angles cannot both be 90 degrees (grazing incidence).")
+
+        # Elementary symmetric coefficients (Higdon / polynomial expansion)
+        S = cos1 + cos2
+        P = cos1 * cos2
+
+        # Standard FEM 2nd-order Robin ABC coefficients:
+        # dE/dn = -j*k * c1 * E - (j / k) * c2 * (d^2 E / d_tau^2)
+        c1 = (1.0 + P) / S
+        c2 = 1.0 / S
+        self._coeffset = (c1, -c2)
+
+    def _get_o2(self) -> float:
+        if self._coeffset is not None:
+            return self._coeffset[1]
+        return self.o2coeffs[self.abctype][1]
+
+    
     def get_gamma(self, k0: float) -> complex:
         """Computes the γ-constant for matrix assembly. This constant is required for the Robin boundary condition.
 
@@ -185,6 +281,9 @@ class AbsorbingBoundary(RobinBC, Saveable):
         if self.order == 1: 
             return 1j * k0 * self.material.neff(f)
 
+        if self._coeffset is not None:
+            c1 = self._coeffset[0]
+            return 1j * k0 * c1 * self.material.neff(f)
         return 1j * k0 * self.o2coeffs[self.abctype][0] * self.material.neff(f)
 
 

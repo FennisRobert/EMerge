@@ -1,0 +1,281 @@
+"""
+In-place addition of COO-format increments into an existing CSC matrix,
+when the (row, col) pairs of the increment are a subset of the CSC
+matrix's existing sparsity pattern.
+
+Why this beats `K_csc += csc_matrix((data, (rows, cols)), shape=(N, N))`:
+that path builds a brand-new CSC matrix from the COO triplet (sorting +
+cumsum, O(nnz log nnz)) and then performs a *generic* sparse+sparse
+addition, which merges two sparsity patterns and reallocates data/indices
+arrays of size up to nnz(K) + nnz(coo), even though we already know every
+incoming entry lands on an existing nonzero. Here we instead locate each
+(row, col) directly within K_csc's existing structure and add in place:
+O(nnz_coo) work, zero allocation, no pattern merging.
+
+Two entry points:
+- add_coo_to_csc(...)            : one-shot convenience call.
+- build_positions(...) + add_coo_to_csc_with_positions(...) : if you call
+  this repeatedly with the SAME (rows_coo, cols_coo) pattern (e.g. a
+  Newton/FEM assembly loop where only values change each iteration),
+  compute `positions` once and reuse it -- each subsequent update becomes
+  a pure scatter-add over a fixed index array, about as fast as this can
+  possibly go.
+"""
+
+import numpy as np
+from numba import njit, prange
+from scipy.sparse import csc_matrix
+
+
+# Below this many entries in a column, a linear scan beats binary search
+# (fewer branch mispredictions, better cache behavior for tiny runs).
+_LINEAR_SCAN_THRESHOLD = 16
+
+
+@njit(cache=True, inline="always")
+def _find_pos(indices, lo, hi, target):
+    # indices[lo:hi] assumed sorted ascending; hybrid linear/binary search.
+    if hi - lo <= _LINEAR_SCAN_THRESHOLD:
+        for k in range(lo, hi):
+            if indices[k] == target:
+                return k
+        return -1
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        val = indices[mid]
+        if val == target:
+            return mid
+        elif val < target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return -1
+
+
+@njit(cache=True, fastmath=True)
+def _add_coo_to_csc_kernel(csc_data, csc_indices, csc_indptr,
+                            data_coo, rows_coo, cols_coo):
+    n = data_coo.shape[0]
+    for i in range(n):
+        v = data_coo[i]
+        if v == 0.0:
+            continue
+        c = cols_coo[i]
+        r = rows_coo[i]
+        lo = csc_indptr[c]
+        hi = csc_indptr[c + 1]
+        pos = _find_pos(csc_indices, lo, hi, r)
+        csc_data[pos] += v
+
+
+@njit(cache=True, parallel=True)
+def _build_positions_kernel(csc_indices, csc_indptr, rows_coo, cols_coo, positions):
+    n = rows_coo.shape[0]
+    for i in prange(n):
+        c = cols_coo[i]
+        r = rows_coo[i]
+        lo = csc_indptr[c]
+        hi = csc_indptr[c + 1]
+        positions[i] = _find_pos(csc_indices, lo, hi, r)
+
+
+@njit(cache=True, fastmath=True)
+def _add_with_positions_kernel(csc_data, data_coo, positions):
+    n = data_coo.shape[0]
+    for i in range(n):
+        v = data_coo[i]
+        if v == 0.0:
+            continue
+        csc_data[positions[i]] += v
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _add_with_positions_kernel_parallel(csc_data, data_coo, positions):
+    # ONLY safe if (rows_coo, cols_coo) contains no duplicate pairs --
+    # otherwise multiple threads race on the same csc_data[pos] += .
+    n = data_coo.shape[0]
+    for i in prange(n):
+        v = data_coo[i]
+        if v == 0.0:
+            continue
+        csc_data[positions[i]] += v
+
+
+def _ensure_sorted(K_csc):
+    if not K_csc.has_sorted_indices:
+        K_csc.sort_indices()
+
+
+def _as_dtype(arr, dtype):
+    # avoid a copy when the array already has the right dtype
+    arr = np.asarray(arr)
+    return arr if arr.dtype == dtype else arr.astype(dtype)
+
+
+def add_coo_to_csc(K_csc, data_coo, rows_coo, cols_coo):
+    """
+    In-place: K_csc[rows_coo[i], cols_coo[i]] += data_coo[i] for all i.
+
+    Requires every (rows_coo[i], cols_coo[i]) to already be an explicit
+    stored entry of K_csc (i.e. a subset of its sparsity pattern). Safe
+    with duplicate (row, col) pairs within the COO triplet -- they
+    accumulate correctly (this runs as a sequential scatter-add).
+
+    K_csc is modified in place; nothing is returned.
+    """
+    _ensure_sorted(K_csc)
+    rows_coo = _as_dtype(rows_coo, K_csc.indices.dtype)
+    cols_coo = _as_dtype(cols_coo, K_csc.indices.dtype)
+    data_coo = _as_dtype(data_coo, K_csc.data.dtype)
+    _add_coo_to_csc_kernel(K_csc.data, K_csc.indices, K_csc.indptr,
+                            data_coo, rows_coo, cols_coo)
+
+
+def build_positions(K_csc, rows_coo, cols_coo):
+    """
+    Precompute, once, the flat position in K_csc.data that each
+    (rows_coo[i], cols_coo[i]) maps to. Reuse this array across many
+    calls to add_coo_to_csc_with_positions when the sparsity pattern of
+    the increments doesn't change between calls (only the values do).
+    """
+    _ensure_sorted(K_csc)
+    rows_coo = _as_dtype(rows_coo, K_csc.indices.dtype)
+    cols_coo = _as_dtype(cols_coo, K_csc.indices.dtype)
+    positions = np.empty(rows_coo.shape[0], dtype=np.int64)
+    _build_positions_kernel(K_csc.indices, K_csc.indptr, rows_coo, cols_coo, positions)
+    if (positions < 0).any():
+        raise ValueError("Some (row, col) pairs are not present in K_csc's sparsity pattern.")
+    return positions
+
+
+def add_coo_to_csc_with_positions(K_csc, data_coo, positions, assume_unique=False):
+    """
+    Fast path once `positions` has been precomputed by build_positions().
+    Set assume_unique=True only if you are certain (rows_coo, cols_coo)
+    contains no repeated pair -- this unlocks a parallel scatter-add.
+    """
+    data_coo = _as_dtype(data_coo, K_csc.data.dtype)
+    if assume_unique:
+        _add_with_positions_kernel_parallel(K_csc.data, data_coo, positions)
+    else:
+        _add_with_positions_kernel(K_csc.data, data_coo, positions)
+
+
+# ---------------------------------------------------------------------------
+# CSC + CSC in-place addition, when both matrices share the EXACT SAME
+# sparsity pattern (identical indices and indptr arrays).
+#
+# In that case position i in A.data and position i in B.data refer to the
+# same (row, col) by construction -- there is no lookup to do at all. The
+# whole operation collapses to a flat vectorized add over .data, which is
+# why plain numpy already gets you (close to) optimal performance here;
+# the numba kernels below only pay off over numpy on very large nnz on a
+# genuinely multi-core machine, since this op is memory-bandwidth bound,
+# not compute bound.
+# ---------------------------------------------------------------------------
+
+# Below this nnz, thread launch overhead outweighs any bandwidth gain from
+# a parallel kernel -- tune this on your own hardware if needed.
+_PARALLEL_NNZ_THRESHOLD = 2_000_000
+
+
+@njit(cache=True, fastmath=True)
+def _axpy_serial(a_data, b_data, alpha):
+    n = a_data.shape[0]
+    for i in range(n):
+        a_data[i] += alpha * b_data[i]
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _axpy_parallel(a_data, b_data, alpha):
+    n = a_data.shape[0]
+    for i in prange(n):
+        a_data[i] += alpha * b_data[i]
+
+
+def same_csc_pattern(A, B):
+    """
+    One-time O(nnz) check that A and B share an identical CSC sparsity
+    pattern (same shape, same indices, same indptr). Call this once when
+    you establish that two matrices came from the same structure (e.g.
+    both built from the same mesh/assembly graph) -- don't call it on
+    every add, or you throw away the whole point of skipping the lookup.
+    """
+    return (A.shape == B.shape and
+            A.indptr.shape == B.indptr.shape and
+            A.indices.shape == B.indices.shape and
+            np.array_equal(A.indptr, B.indptr) and
+            np.array_equal(A.indices, B.indices))
+
+
+def add_csc_same_pattern(A, B, alpha=1.0):
+    """
+    In-place: A.data += alpha * B.data.
+
+    Only valid when A and B have the exact same CSC sparsity pattern
+    (verify once with same_csc_pattern -- this function does NOT check,
+    by design, so you don't pay an O(nnz) verification cost on every call).
+    Modifies A in place; returns A for convenience.
+    """
+    if A.data.shape[0] >= _PARALLEL_NNZ_THRESHOLD:
+        _axpy_parallel(A.data, B.data, alpha)
+    elif alpha == 1.0:
+        A.data += B.data
+    else:
+        _axpy_serial(A.data, B.data, alpha)
+    return A
+
+
+@njit(cache=True, fastmath=True)
+def _axpy_out_serial(c_data, a_data, b_data, alpha):
+    n = a_data.shape[0]
+    for i in range(n):
+        c_data[i] = a_data[i] + alpha * b_data[i]
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _axpy_out_parallel(c_data, a_data, b_data, alpha):
+    n = a_data.shape[0]
+    for i in prange(n):
+        c_data[i] = a_data[i] + alpha * b_data[i]
+
+
+def csc_axpy_same_pattern(A, B, alpha=1.0, out=None):
+    """
+    C = A + alpha * B, where A and B share the exact same CSC sparsity
+    pattern (verify once with same_csc_pattern). A and B are not modified.
+
+    If out is None (default): allocates one new `data` array and returns
+    a new csc_matrix C. C.indices/C.indptr share the same underlying
+    memory as A's (copy=False, verified via np.shares_memory -- scipy may
+    wrap them in a new array object, but no data is copied) -- cheap, but
+    means you must not mutate C's structure in a way that would touch
+    that shared buffer without expecting it to affect A too.
+
+    If out is given (a csc_matrix with the same pattern -- e.g. the C
+    returned by a previous call), the result is written directly into
+    out.data in place, with zero new allocation. Use this form inside a
+    loop, e.g.:
+
+        C = csc_axpy_same_pattern(A, B, alpha)      # first call: allocates
+        for t in range(n_steps):
+            A, B = step(...)                        # data changes, pattern doesn't
+            csc_axpy_same_pattern(A, B, alpha, out=C)  # reuses C's buffer
+    """
+    n = A.data.shape[0]
+    use_parallel = n >= _PARALLEL_NNZ_THRESHOLD
+    if out is not None:
+        if use_parallel:
+            _axpy_out_parallel(out.data, A.data, B.data, alpha)
+        else:
+            _axpy_out_serial(out.data, A.data, B.data, alpha)
+        return out
+    else:
+        if use_parallel:
+            new_data = np.empty_like(A.data)
+            _axpy_out_parallel(new_data, A.data, B.data, alpha)
+        elif alpha == 1.0:
+            new_data = A.data + B.data
+        else:
+            new_data = A.data + alpha * B.data
+        return csc_matrix((new_data, A.indices, A.indptr), shape=A.shape, copy=False)

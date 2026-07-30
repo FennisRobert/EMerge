@@ -1,3 +1,5 @@
+from emerge_config import config
+config.set_acc_threads(10)
 import emerge as em
 from emerge.plot import plot_sp
 import numpy as np
@@ -86,14 +88,13 @@ model.mw.set_frequency_range(5.2e9, 6.2e9, 30)  # 5.2–6.2 GHz, 31 points
 model.commit_geometry()
 # --- Mesh refinement -----------------------------------------------------
 # High growth rates are generally not adviced but used here to save some memory.
-model.mesher.set_boundary_size(stripline, 1 * mm, growth_rate=10)
-
+model.mesher.set_boundary_size(stripline, 1 * mm, growth_rate=4)
 model.mesher.set_face_size(p1, 1 * mm)
 model.mesher.set_face_size(p2, 1 * mm)
 
 # --- Mesh generation and view --------------------------------------------
 model.generate_mesh()  # build mesh
-model.view()
+model.view(plot_mesh=True, volume_mesh=False)
 
 # --- Run frequency-domain solver ----------------------------------------
 data = model.mw.run_sweep()

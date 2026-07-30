@@ -111,27 +111,47 @@ def generate_points(vertices_local, tris, DPTs, surf_triangle_indices):
 @njit(
     types.Tuple((f8[:], f8[:], f8[:]))(f8[:, :], i8[:, :], f8[:, :], i8[:]),
     cache=True,
+    fastmath=True,
     nogil=True,
+    parallel=True,
 )
 def generate_points_3d(vertices, tris, DPTs, surf_triangle_indices):
     NS = surf_triangle_indices.shape[0]
-    xall = np.zeros((DPTs.shape[1], NS))
-    yall = np.zeros((DPTs.shape[1], NS))
-    zall = np.zeros((DPTs.shape[1], NS))
-    for i in range(NS):
+    NDPT = DPTs.shape[1]
+    Ntotal = NS * NDPT
+
+    # 1. Directly allocate 1D target arrays (uninitialized, no zero-fill overhead)
+    xflat = np.empty(Ntotal, dtype=np.float64)
+    yflat = np.empty(Ntotal, dtype=np.float64)
+    zflat = np.empty(Ntotal, dtype=np.float64)
+
+    # 2. Extract DPT rows ONCE outside the loop
+    d1 = DPTs[1, :]
+    d2 = DPTs[2, :]
+    d3 = DPTs[3, :]
+
+    # 3. Parallelize over surface triangles across all CPU cores
+    for i in prange(NS):
         itri = surf_triangle_indices[i]
-        vertex_ids = tris[:, itri]
 
-        x1, x2, x3 = vertices[0, vertex_ids]
-        y1, y2, y3 = vertices[1, vertex_ids]
-        z1, z2, z3 = vertices[2, vertex_ids]
+        # Direct scalar indexing avoids temporary 1D slice array allocations
+        v1 = tris[0, itri]
+        v2 = tris[1, itri]
+        v3 = tris[2, itri]
 
-        xall[:, i] = x1 * DPTs[1, :] + x2 * DPTs[2, :] + x3 * DPTs[3, :]
-        yall[:, i] = y1 * DPTs[1, :] + y2 * DPTs[2, :] + y3 * DPTs[3, :]
-        zall[:, i] = z1 * DPTs[1, :] + z2 * DPTs[2, :] + z3 * DPTs[3, :]
-    xflat = xall.flatten()
-    yflat = yall.flatten()
-    zflat = zall.flatten()
+        x1, x2, x3 = vertices[0, v1], vertices[0, v2], vertices[0, v3]
+        y1, y2, y3 = vertices[1, v1], vertices[1, v2], vertices[1, v3]
+        z1, z2, z3 = vertices[2, v1], vertices[2, v2], vertices[2, v3]
+
+        for j in range(NDPT):
+            # Preserves exact output element ordering of original xall.flatten()
+            idx = j * NS + i
+            d1_j, d2_j, d3_j = d1[j], d2[j], d3[j]
+
+            xflat[idx] = x1 * d1_j + x2 * d2_j + x3 * d3_j
+            yflat[idx] = y1 * d1_j + y2 * d2_j + y3 * d3_j
+            zflat[idx] = z1 * d1_j + z2 * d2_j + z3 * d3_j
+
     return xflat, yflat, zflat
 
 
@@ -146,7 +166,7 @@ def compute_distances(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
     return Ds
 
 
-@njit(cache=True, nogil=True)
+@njit(f8[:](f8[:]), cache=True, nogil=True)
 def normalize(a: np.ndarray):
     return a / ((a[0] ** 2 + a[1] ** 2 + a[2] ** 2) ** 0.5)
 
@@ -178,7 +198,13 @@ def construct_local_vertices(glob_vertices):
     basis[1, :] = yhat
     basis[2, :] = zhat
 
-    return basis, optim_matmul(basis, glob_vertices - origin[:, np.newaxis])
+    data = 1.0*glob_vertices
+    data[0, :] = basis[0, 0] * data[0, :] + basis[0, 1] * data[1, :] + basis[0, 2] * data[2, :]
+    data[1, :] = basis[1, 0] * data[0, :] + basis[1, 1] * data[1, :] + basis[1, 2] * data[2, :]
+    data[2, :] = basis[2, 0] * data[0, :] + basis[2, 1] * data[1, :] + basis[2, 2] * data[2, :]
+
+
+    return basis, data
 
 
 ############################################################
@@ -407,19 +433,15 @@ def assemble_robin_bc_bvec(
     field: Nedelec2,
     surf_triangle_indices: np.ndarray,
     Ufunc: Callable,
-):
+):  
     Bvec = np.zeros((field.n_field,), dtype=np.complex128)
-
     vertices = field.mesh.nodes
 
     xflat, yflat, zflat = generate_points_3d(
         vertices, field.mesh.tris, DPTS, surf_triangle_indices
     )
-
     U_global = Ufunc(xflat, yflat, zflat)
-
     U_global_all = U_global.reshape((3, DPTS.shape[1], surf_triangle_indices.shape[0]))
-
     Bvec = compute_force_entries(
         vertices,
         field.mesh.tris,

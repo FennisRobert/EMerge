@@ -34,6 +34,70 @@ require_src_dir() {
     fi
 }
 
+detect_platform() {
+    local os
+    local arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+    case "$os" in
+        Darwin)
+            if [[ "$arch" == "x86_64" ]] && [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" == "1" ]]; then
+                arch="arm64"
+            fi
+
+            if [[ "$arch" == "arm64" ]]; then
+                echo "arm-macos"
+            else
+                echo "x86-macos"
+            fi
+            ;;
+        Linux)
+            echo "linux"
+            ;;
+        *)
+            echo "unknown"
+            ;;
+    esac
+}
+
+has_accelerate() {
+
+    for py in python3 python; do
+        if command -v "$py" &>/dev/null; then
+            if "$py" -c "import emerge_aasds" $>/dev/null; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+set_threads_armmacos() {
+    local nthreads="$1"
+    echo "Setting threads to $nthreads"
+    echo " - Checking if Accellerate solver is installed ..."
+    accelerate_installed="$(has_accelerate)"
+    if [[ accelerate_installed==0 ]]; then
+        echo " - Accellerate solver found!"
+        echo " - Setting Veclib thread count to ${nthreads}"
+        export VECLIB_NUM_THREADS="${nthreads}"
+        export VECLIB_MAXIMUM_THREADS="${nthreads}"
+    else
+        echo " - Accellerate solver not found :("
+        echo " - Consider installing using:"
+        echo " > pip install git+https://github.com/FennisRobert/emerge-aasds"
+    fi
+}
+
+set_threads_linux() {
+    local nthreads="$1"
+    echo "Setting threads to $nthreads"
+
+    echo " - Setting PARDISO/MKL thread count to ${nthreads}"
+
+    export MKL_NUM_THREADS="${nthreads}"
+    export OMP_NUM_THREADS="${nthreads}"
+}
+
 # ---------------------------------------------------------------------------
 # clean numba-cache
 # ---------------------------------------------------------------------------
@@ -167,11 +231,35 @@ main() {
         help|-h|--help)
             print_help
             ;;
+        threads)
+            if [[ $# -eq 0 ]]; then
+                err "Missing thread count specifier. Use an integer value above 0."
+                exit 1
+            fi
+
+            nthreads="$1"
+            my_os="$(detect_platform)"
+            case "$my_os" in
+                arm-macos)
+                    set_threads_armmacos "$nthreads"
+                    ;;
+                x86-macos)
+                    set_threads_armmacos "$nthreads"
+                    ;;
+                linux)
+                    set_threads_linux "$nthreads"
+                    ;;
+                *)
+                    echo "Unkonwn architecture :("
+                    ;;
+            esac
+            ;;
         *)
             err "Unknown command: $command"
             print_help
             exit 1
             ;;
+
     esac
 }
 

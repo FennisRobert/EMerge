@@ -332,7 +332,7 @@ class HeatConduction3D(GenericPhysics3D):
         # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         # --------------------------------------------------------------------
         # Initializing solve functions
@@ -341,7 +341,7 @@ class HeatConduction3D(GenericPhysics3D):
         # Assemble the FEM problem
         job, mats, T_current = self.assembler.assemble_hc_matrix(
             self.basis,
-            materials,
+            self.mat_assy,
             self.bc.boundary_conditions,
             self.T_initial_K,
             transient=True,

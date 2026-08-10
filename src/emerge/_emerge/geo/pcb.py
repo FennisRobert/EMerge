@@ -1121,6 +1121,7 @@ class StripPath:
         width: float | None = None,
         extra: float | None = None,
         segments: int = 6,
+        annular_ring_radius: float | None = None,
         hole_radius: float | None = None,
         hole_skip_layers: list[int] | None = None,
         reverse: float = 0.0,
@@ -1169,6 +1170,9 @@ class StripPath:
         # Create via hole objects
         if hole_radius is not None:
             self.pcb._via_hole(x, y, hole_radius, layer1, new_layer, hole_skip_layers)
+
+        if annular_ring_radius is not None:
+            self.pcb._annular_ring(x, y, annular_ring_radius, layer1, new_layer)
 
         if proceed:
             if width is None:
@@ -1555,7 +1559,8 @@ class PCB:
 
         self.hole_polies: list[PCBPoly] = []
         self.via_holes: list[PCBPoly] = []
-
+        self.annular_rings: list[PCBPoly] = []
+        
         self.lumped_ports: list[StripLine] = []
         self.lumped_elements: list[GeoPolygon] = []
         self.trace_thickness: float = trace_thickness
@@ -1758,6 +1763,31 @@ class PCB:
                 continue
             hole_poly = PCBPoly.circle(x, y, radius, layer_nr)
             self.via_holes.append(hole_poly)
+
+    def _annular_ring(
+        self,
+        x: float,
+        y: float,
+        radius: float,
+        layer1: int,
+        layer2: int,
+    ) -> None:
+        """Generates annular ring in the ground planes and polies.
+
+        Args:
+            x (float): The x-coordinate of the via
+            y (float): The y-coordinate of the via
+            radius (float): The via hole radius
+            layer1 (int): One end layer index of the via
+            layer2 (int): The other end layer index of the via
+            skip_layers (list[int] | None, optional): A list of layer numbers where the via hole should not be created. Defaults to None.
+        """
+        n = len(self._zs)
+        l1 = layer1 + n if layer1 < 0 else layer1
+        l2 = layer2 + n if layer2 < 0 else layer2
+        for layer_nr in (l1,l2):
+            hole_poly = PCBPoly.circle(x, y, radius, layer_nr)
+            self.annular_rings.append(hole_poly)
 
     ############################################################
     #                        USER FUNCTIONS                   #
@@ -2465,17 +2495,22 @@ class PCB:
         
         if fragment:
             polyset.fragment()
+
         for poly in polyset.polies:
             new_poly = self._gen_poly(poly.xys, poly.z)
             new_poly.properties += poly.material
             polys.append(new_poly)
-        
+
+        for ring in self.annular_rings:
+            poly = self._gen_poly(ring.xys, ring.layer, name=ring.name)
+            poly.properties += poly.material
+            polys.append(poly)
+            
         holes = []
         for holepoly in self.hole_polies + self.via_holes:
             self.zs.append(self.z(holepoly.layer))
             poly = self._gen_poly(holepoly.xys, holepoly.layer, name=holepoly.name)
             holes.append(poly)
-
 
         self.xs = allx
         self.ys = ally

@@ -83,7 +83,6 @@ publish-url = "https://test.pypi.org/legacy"
 [tool.uv.sources]
 emerge-iron = { git = "https://github.com/FennisRobert/EMerge-IRON" }
 emerge-aasds = { git = "https://github.com/FennisRobert/emerge-aasds" }
-emsutil = { path = "../emsutil" }
 
 [tool.pytest.ini_options]
 addopts = [

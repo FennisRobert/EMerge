@@ -275,7 +275,7 @@ class XYPolygon:
         The XYPolygon does not store redundant points p[0]==p[N] so if these are
         the same, this function will remove the last point.
         """
-        if np.sqrt((self.x[-1]-self.x[0])**2 + (self.y[-1]-self.y[0])**2) < 1e-9:
+        if np.sqrt((self.x[-1]-self.x[0])**2 + (self.y[-1]-self.y[0])**2) < 1e-6:
             self.x = self.x[:-1]
             self.y = self.y[:-1]
         
@@ -352,10 +352,11 @@ class XYPolygon:
 
         ptags = []
         
+        # Original global transformation preserved
         xg, yg, zg = cs.in_global_cs(self.x, self.y, 0*self.x)
-
+        
         points = dict()
-        for x,y,z in zip(xg, yg, zg):
+        for x, y, z in zip(xg, yg, zg):
             reuse = False
             for key, (px, py, pz) in points.items():
                 if ((x-px)**2 + (y-py)**2 + (z-pz)**2)**0.5 < 1e-12:
@@ -365,25 +366,37 @@ class XYPolygon:
             if reuse:
                 logger.warning(f'Reusing {ptags[-1]}')
                 continue
-            ptag = gmsh.model.occ.add_point(x,y,z)
-            points[ptag] = (x,y,z)
+            ptag = gmsh.model.occ.add_point(x, y, z)
+            points[ptag] = (x, y, z)
             ptags.append(ptag)
         
         lines = []
-        for i1, p1 in enumerate(ptags):
-            p2 = ptags[(i1+1) % len(ptags)]
+        num_pts = len(ptags)
+        for i in range(num_pts):
+            p1 = ptags[i]
+            p2 = ptags[(i + 1) % num_pts]
             lines.append(gmsh.model.occ.add_line(p1, p2))
         
-        add = 0
-        for radius, index in self.fillets:
-            t1 = lines[(index + add-1) % len(lines)]
-            t2 = lines[index + add]
-            tag = gmsh.model.occ.fillet2_d(t1, t2, radius)
-            lines.insert(index, tag)
-            add += 1
+        # Map indices to radii for O(1) lookup
+        fillet_map = {index: radius for radius, index in self.fillets}
+        final_edges = []
 
-        wiretag = gmsh.model.occ.add_wire(lines)
-        return ptags, lines, wiretag
+        for i in range(num_pts):
+            # Vertex i always connects the end of line(i-1) to the start of line(i)
+            t1 = lines[(i - 1) % num_pts]
+            t2 = lines[i]
+
+            if i in fillet_map:
+                radius = fillet_map[i]
+                # OCC trims t1 and t2 in place, and returns the newly created arc
+                arc_tag = gmsh.model.occ.fillet2_d(t1, t2, radius)
+                final_edges.append(arc_tag)
+            
+            # The outgoing line t2 is always appended after its preceding vertex
+            final_edges.append(t2)
+
+        wiretag = gmsh.model.occ.add_wire(final_edges)
+        return ptags, final_edges, wiretag
         
     def _finalize(self, cs: CoordinateSystem, name: str | None = 'GeoPolygon') -> GeoPolygon:
         """Turns the XYPolygon object into a GeoPolygon that is embedded in 3D space.

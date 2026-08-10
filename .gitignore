@@ -48,6 +48,7 @@ benchmarks/
 .pytest_cache/
 
 .vscode/
+.vscode/*
 .idea/
 pytest.ini
 search_globals.py

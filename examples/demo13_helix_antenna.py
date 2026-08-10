@@ -66,11 +66,14 @@ feed = feed_poly.extrude(porth, em.GCS.displace(x0, y0, 0))  # vertical feed stu
 
 # --- Background domain (airbox) & frequency sweep ---------------------------
 # Airbox centered around the helix with some clearance in X/Y and height in Z
-airbox = em.geo.Box(4 * rad0, 4 * rad0, 1.5 * L, (-2 * rad0, -2 * rad0, 0)).background()
+airbox = em.geo.Box(6 * rad0, 6 * rad0, 1.5 * L, (-3 * rad0, -3 * rad0, 0)).background()
 
 # Sweep across 2.8–3.4 GHz (11 points) to cover the operating band
 model.mw.set_frequency_range(2.8e9, 3.4e9, 11)
 model.set_resolution(0.33)
+model.mesher.set_face_size(feed.boundary(
+    exclude=("front", "back")
+), 0.5*mm)
 # --- Mesh generation & preview ----------------------------------------------
 model.generate_mesh()
 model.view()
@@ -85,7 +88,8 @@ port_sel = feed.boundary(
 
 # --- Boundary conditions -----------------------------------------------------
 abc = model.mw.bc.AbsorbingBoundary(abc_sel)  # open-space termination
-port_sel = model.mw.bc.LumpedPort(
+abc.optimize_for_maximum_angle(45)
+port_obj = model.mw.bc.LumpedPort(
     port_sel, 1, feed_poly.length, porth, em.ZAX, Z0=130
 )  # lumped port (Z-axis)
 
@@ -121,6 +125,9 @@ model.display.add_object(airbox)
 # Compute full 3D far-field (at the same frequency) and display |Erhcp|
 ff3d = data.field.find(freq=3.1e9).farfield_3d(abc_sel)
 model.display.add_farfield3d(ff3d, "Elhcp", "abs", rmax=L / 2, offset=(0, 0, L))
-
+model.display.add_particle_lines(
+    data.field.find(freq=3.1e9).trace_poynting_lines(seed_surface=port_sel, density='dense', ds_max = 0.0005, max_steps=500, verbose=True),
+    tube_radius=0.0001,
+    arrow_scale=0.0001)
 # Show interactive 3D scene
 model.display.show()

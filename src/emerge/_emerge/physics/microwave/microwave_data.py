@@ -501,6 +501,7 @@ class MWField(Saveable):
         self._rel: bool = False
         self._Sp: np.ndarray | None = None
         self._Texcite: np.ndarray = 1.0
+        self._silent: bool = False
 
         self._bstags = None
         self._bssurf = None
@@ -685,7 +686,8 @@ class MWField(Saveable):
 
         constants = 1 / (-1j * 2 * np.pi * self.freq * (self._dur * MU0))
 
-        logger.info(f"Interpolating {xf.shape[0]} field points")
+        if not self._silent:
+            logger.info(f"Interpolating {xf.shape[0]} field points")
         logger.debug('Finding tet_mapping')
 
         mapping = self.basis.interpolate_index(
@@ -1421,6 +1423,364 @@ class MWField(Saveable):
 
         return dict(freq=freq, ff_function=function)
 
+    def _field_weight(self, ehfield, weight_by: str) -> np.ndarray:
+        """Evaluate a scalar 'energy density' proxy from an interpolated EHField,
+        used to importance-weight seed-point sampling.
+
+        Args:
+            ehfield: An EHField (e.g. from self.interpolate(...)).
+            weight_by: 'E' -> |E|, 'H' -> |H|, 'EH' -> |E|*|H|.
+
+        Returns:
+            np.ndarray: weight per sample point.
+        """
+        if weight_by == "E":
+            return np.sqrt(np.abs(ehfield.Ex)**2 + np.abs(ehfield.Ey)**2 + np.abs(ehfield.Ez)**2)
+        if weight_by == "H":
+            return np.sqrt(np.abs(ehfield.Hx)**2 + np.abs(ehfield.Hy)**2 + np.abs(ehfield.Hz)**2)
+        if weight_by == "EH":
+            Emag = np.sqrt(np.abs(ehfield.Ex)**2 + np.abs(ehfield.Ey)**2 + np.abs(ehfield.Ez)**2)
+            Hmag = np.sqrt(np.abs(ehfield.Hx)**2 + np.abs(ehfield.Hy)**2 + np.abs(ehfield.Hz)**2)
+            return Emag * Hmag
+        raise ValueError(f"weight_by must be 'E', 'H', or 'EH', got {weight_by!r}")
+
+
+    def _normalize_weights(self, w: np.ndarray) -> np.ndarray:
+        """Turn a nonnegative weight array into a probability distribution,
+        falling back to uniform if the total weight is degenerate."""
+        w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+        w = np.clip(w, 0.0, None)
+        total = w.sum()
+        if not np.isfinite(total) or total <= 0:
+            return np.full(w.shape, 1.0 / w.shape[0])
+        return w / total
+
+
+    def _weighted_seed_points_surface(self, surface, n_particles: int, weight_by: str, quad_order: int = 4):
+        """Importance-sample seed points on a FaceSelection, concentrated on
+        triangles (and sub-triangle locations) with high |E|, |H|, or |E|*|H|.
+        Uses the same Gauss-quadrature machinery as int_surf."""
+        from ...mth.optimized import generate_int_data_tri
+        from ...mth.integrals import gaus_quad_tri
+
+        DPTS = gaus_quad_tri(quad_order)
+        tris = self.mesh.get_triangles(surface.tags)
+        X, Y, Z, W, A, shape = generate_int_data_tri(self.mesh.nodes, self.mesh.tris[:, tris], DPTS)
+
+        ehfield = self.interpolate(X, Y, Z, usenan=True)
+        w = self._field_weight(ehfield, weight_by) * np.abs(W) * np.abs(A)
+        probs = self._normalize_weights(w)
+
+        M = X.shape[0]
+        replace = n_particles > M
+        sel = np.random.choice(M, size=n_particles, replace=replace, p=probs)
+        return X[sel].copy(), Y[sel].copy(), Z[sel].copy()
+
+
+    def _weighted_seed_points_domain(self, domain, n_particles: int, weight_by: str, quad_order: int = 4):
+        """Importance-sample seed points in a DomainSelection, concentrated on
+        tets (and sub-tet locations) with high |E|, |H|, or |E|*|H|.
+        Uses the same Gauss-quadrature machinery as int_vol."""
+        from ...mth.optimized import gaus_quad_tet, generate_int_data_tet
+
+        DPTS = gaus_quad_tet(quad_order)
+        tets = self.mesh.get_tetrahedra(domain.tags)
+        X, Y, Z, W, A, shape = generate_int_data_tet(self.mesh.nodes, self.mesh.tets[:, tets], DPTS)
+
+        ehfield = self.interpolate(X, Y, Z, usenan=True)
+        w = self._field_weight(ehfield, weight_by) * np.abs(W) * np.abs(A)
+        probs = self._normalize_weights(w)
+
+        M = X.shape[0]
+        replace = n_particles > M
+        sel = np.random.choice(M, size=n_particles, replace=replace, p=probs)
+        return X[sel].copy(), Y[sel].copy(), Z[sel].copy()
+
+
+    def _seed_candidates(self, selection, is_domain: bool, density: str) -> np.ndarray:
+        """Build a (3, M) candidate seed-point cloud from a FaceSelection or
+        DomainSelection at a given density level, by progressively unioning
+        mesh entity centers:
+
+            'sparse' -> nodes only
+            'medium' -> nodes + edge centers
+            'dense'  -> nodes + edge centers + triangle centers
+                        (or + tet centroids, for a DomainSelection)
+
+        Args:
+            selection: FaceSelection or DomainSelection to seed from.
+            is_domain: True if `selection` is a DomainSelection (uses tet
+                centroids at 'dense'), False if it's a FaceSelection (uses
+                triangle centers at 'dense').
+            density: 'sparse' | 'medium' | 'dense'.
+
+        Returns:
+            np.ndarray: (3, M) candidate seed points.
+        """
+        if density not in ("sparse", "medium", "dense"):
+            raise ValueError(f"density must be 'sparse', 'medium', or 'dense', got {density!r}")
+
+        tags = selection.tags
+        node_ids = self.mesh.get_nodes(tags)
+        parts = [self.mesh.nodes[:, node_ids]]
+
+        if density in ("medium", "dense"):
+            edge_ids = self.mesh.get_edges(tags)
+            parts.append(self.mesh.edge_centers[:, edge_ids])
+
+        if density == "dense":
+            if is_domain:
+                tet_ids = self.mesh.get_tetrahedra(tags)
+                parts.append(self.mesh.centroids[:, tet_ids])
+            else:
+                tri_ids = self.mesh.get_triangles(tags)
+                parts.append(self.mesh.tri_centers[:, tri_ids])
+
+        return np.hstack(parts)
+
+
+    def trace_poynting_lines(
+        self,
+        seed_points=None,          # (3,N) array or (xs, ys, zs) tuple of user coordinates
+        seed_surface=None,         # FaceSelection -> seeds from nodes/edges/tris
+        seed_domain=None,          # DomainSelection -> seeds from nodes/edges/tets
+        density: str = "medium",   # 'sparse' | 'medium' | 'dense' -- unweighted seeding only
+        weight_by: Literal['E','H','EH'] | None = None,   # None | 'E' | 'H' | 'EH' -- importance-weighted seeding
+        quad_order: int = 4,       # Gauss quadrature order used when weight_by is set
+        n_particles: int | None = None,   # cap on seed count; required if weight_by is set
+        max_steps: int = 5000,
+        ds_init: float | None = None,
+        ds_min: float | None = None,
+        ds_max: float | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-9,
+        normalize: bool = True,
+        direction: int = 1,        # +1 along S, -1 against S
+        stagnation_eps: float = 1e-12,
+        safety: float = 0.9,
+        verbose: bool = False,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        dz: float = 0.0,
+    ) -> list[np.ndarray]:
+        """Trace particle/field-line trajectories through the time-averaged Poynting
+        vector field using an adaptive-step embedded RK4(5) (Dormand-Prince) integrator.
+
+        Each returned trajectory is a (4, n_i) array: rows 0-2 are x,y,z and row 3
+        is the local wave impedance Z = |E|/|H| at that point.
+
+        Args:
+            seed_points: Explicit start coordinates, either shape (3,N) or a tuple
+                (xs, ys, zs) of 1D arrays. Takes priority over everything else.
+            seed_surface: FaceSelection to seed particles from.
+            seed_domain: DomainSelection to seed particles from.
+            density: 'sparse' (just nodes), 'medium' (+ edge centers), or
+                'dense' (+ triangle centers / tet centroids -- everything).
+                Only used for *unweighted* seeding (weight_by is None), with
+                seed_surface or seed_domain.
+            weight_by: If set to 'E', 'H', or 'EH', seed points are instead
+                importance-sampled from Gauss-quadrature points across the
+                surface/domain, weighted by |E|, |H|, or |E|*|H| (times the
+                local area/volume element) -- i.e. more seeds land on
+                triangles/tets with higher local field energy, with
+                sub-triangle/sub-tet placement precision. Requires
+                seed_surface or seed_domain, and an explicit n_particles.
+            quad_order: Gauss quadrature order used to generate the candidate
+                points when weight_by is set (higher = more candidate points
+                per triangle/tet = finer sub-element resolution, at the cost
+                of more field evaluations). Defaults to 4, matching int_surf/int_vol.
+            n_particles: Cap on the number of seed points. Default None means
+                "use every candidate point at the chosen density" for
+                unweighted seeding -- only when a limit is given does it
+                randomly subsample down to that many points. Required
+                (must not be None) when weight_by is set, since importance
+                sampling needs an explicit target count. For the fallback
+                random-bounding-box seeding (no seed source given at all),
+                None falls back to 200 points.
+            max_steps: Hard cap on integrator iterations (safety stop).
+            ds_init/ds_min/ds_max: Arc-length step-size bounds. Defaults are
+                derived from the model's bounding-box diagonal.
+            rtol/atol: Relative/absolute local error tolerance for step control.
+            normalize: If True (recommended), integrate the unit tangent dr/ds =
+                S/|S| (stable arc-length parameterization). If False, integrates
+                the raw field as a literal velocity field (dr/dt = S).
+            direction: +1 to trace along the Poynting vector, -1 to trace against it.
+            stagnation_eps: |S| below this is treated as a stagnation point (terminate).
+            safety: Safety factor (<1) applied to the adaptive step-size update.
+            verbose: Print periodic progress.
+            dx, dy, dz: Constant offset applied to all generated seed points.
+
+        Returns:
+            list[np.ndarray]: one (4, n_i) array per particle: [x, y, z, Z_local].
+        """
+        self._silent = True
+        # -----------------------------------------------------------------
+        # 1. Generate the initial particle coordinates (seed points)
+        # -----------------------------------------------------------------
+        if seed_points is not None:
+            pts = np.asarray(seed_points, dtype=float)
+            if pts.shape[0] != 3:
+                pts = pts.T
+            x0, y0, z0 = pts[0].copy(), pts[1].copy(), pts[2].copy()
+
+        elif weight_by is not None:
+            if n_particles is None:
+                raise ValueError("weight_by requires an explicit n_particles (target seed count).")
+            if seed_surface is not None:
+                x0, y0, z0 = self._weighted_seed_points_surface(seed_surface, n_particles, weight_by, quad_order)
+            elif seed_domain is not None:
+                x0, y0, z0 = self._weighted_seed_points_domain(seed_domain, n_particles, weight_by, quad_order)
+            else:
+                raise ValueError("weight_by requires seed_surface or seed_domain to sample from.")
+
+        elif seed_surface is not None:
+            candidates = self._seed_candidates(seed_surface, is_domain=False, density=density)
+            if n_particles is not None and candidates.shape[1] > n_particles:
+                sel = np.random.choice(candidates.shape[1], n_particles, replace=False)
+                candidates = candidates[:, sel]
+            x0, y0, z0 = candidates[0], candidates[1], candidates[2]
+
+        elif seed_domain is not None:
+            candidates = self._seed_candidates(seed_domain, is_domain=True, density=density)
+            if n_particles is not None and candidates.shape[1] > n_particles:
+                sel = np.random.choice(candidates.shape[1], n_particles, replace=False)
+                candidates = candidates[:, sel]
+            x0, y0, z0 = candidates[0], candidates[1], candidates[2]
+
+        else:
+            # --- placeholder: default seeding strategy ---
+            n_fallback = n_particles if n_particles is not None else 200
+            xb, yb, zb = self.basis.bounds
+            x0 = np.random.uniform(xb[0], xb[1], n_fallback)
+            y0 = np.random.uniform(yb[0], yb[1], n_fallback)
+            z0 = np.random.uniform(zb[0], zb[1], n_fallback)
+
+        x0 = x0 + dx
+        y0 = y0 + dy
+        z0 = z0 + dz
+        N = x0.shape[0]
+        pos = np.vstack([x0, y0, z0]).astype(float)          # (3, N) current positions
+
+        # -----------------------------------------------------------------
+        # 2. Step-size bounds, derived from the model's bounding-box diagonal
+        # -----------------------------------------------------------------
+        xb, yb, zb = self.basis.bounds
+        diag = np.sqrt((xb[1] - xb[0])**2 + (yb[1] - yb[0])**2 + (zb[1] - zb[0])**2)
+        if ds_init is None:
+            ds_init = diag / 500
+        if ds_min is None:
+            ds_min = diag / 1e6
+        if ds_max is None:
+            ds_max = diag / 20
+
+        h = np.full(N, ds_init, dtype=float)     # per-particle current step size
+        active = np.ones(N, dtype=bool)          # per-particle still-running mask
+
+        # --- Dormand-Prince RK45 tableau ---
+        a21 = 1 / 5
+        a31, a32 = 3 / 40, 9 / 40
+        a41, a42, a43 = 44 / 45, -56 / 15, 32 / 9
+        a51, a52, a53, a54 = 19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729
+        a61, a62, a63, a64, a65 = 9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656
+        a71, a72, a73, a74, a75, a76 = 35 / 384, 0.0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84
+        b5 = np.array([35 / 384, 0.0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0.0])
+        b4 = np.array([5179 / 57600, 0.0, 7571 / 16695, 393 / 640, -92097 / 339200, 187 / 2100, 1 / 40])
+
+        imp_eps = 1e-30  # guards |E|/|H| against division by ~0
+
+        def field(p: np.ndarray) -> np.ndarray:
+            """Evaluate the (optionally normalized) time-averaged Poynting vector
+            at positions p, shape (3, M). NaN in -> NaN out (outside domain)."""
+            ehfield = self.interpolate(p[0], p[1], p[2], usenan=True)
+            S = np.vstack([ehfield.Smx, ehfield.Smy, ehfield.Smz]).real
+            if normalize:
+                mag = np.linalg.norm(S, axis=0)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    S = np.where(mag > stagnation_eps, S / mag, np.nan)
+            return direction * S
+
+        def field_with_impedance(p: np.ndarray):
+            """Same as field(), but also returns the local wave impedance
+            Z = |E|/|H| at p (shape (M,)). Reuses the same interpolate() call,
+            so this costs nothing extra beyond a normal field evaluation."""
+            ehfield = self.interpolate(p[0], p[1], p[2], usenan=True)
+            S = np.vstack([ehfield.Smx, ehfield.Smy, ehfield.Smz]).real
+            Emag = np.sqrt(np.abs(ehfield.Ex)**2 + np.abs(ehfield.Ey)**2 + np.abs(ehfield.Ez)**2)
+            Hmag = np.sqrt(np.abs(ehfield.Hx)**2 + np.abs(ehfield.Hy)**2 + np.abs(ehfield.Hz)**2)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                Z = np.where(Hmag > imp_eps, Emag / Hmag, np.nan)
+            if normalize:
+                mag = np.linalg.norm(S, axis=0)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    S = np.where(mag > stagnation_eps, S / mag, np.nan)
+            return direction * S, Z
+
+        # Initial impedance sample at each seed point
+        _, Z0 = field_with_impedance(pos)
+        paths = [[np.array([pos[0, i], pos[1, i], pos[2, i], Z0[i]])] for i in range(N)]
+
+        # -----------------------------------------------------------------
+        # 3. Main adaptive integration loop
+        # -----------------------------------------------------------------
+        step_count = 0
+        while active.any() and step_count < max_steps:
+            step_count += 1
+            idx = np.where(active)[0]
+            p0 = pos[:, idx]
+            hs = h[idx]
+
+            k1 = field(p0)
+            k2 = field(p0 + hs * a21 * k1)
+            k3 = field(p0 + hs * (a31 * k1 + a32 * k2))
+            k4 = field(p0 + hs * (a41 * k1 + a42 * k2 + a43 * k3))
+            k5 = field(p0 + hs * (a51 * k1 + a52 * k2 + a53 * k3 + a54 * k4))
+            k6 = field(p0 + hs * (a61 * k1 + a62 * k2 + a63 * k3 + a64 * k4 + a65 * k5))
+            p5 = p0 + hs * (a71 * k1 + a72 * k2 + a73 * k3 + a74 * k4 + a75 * k5 + a76 * k6)
+            # k7 is evaluated at p5, which (by the FSAL property of Dormand-Prince)
+            # is exactly the accepted 5th-order next position -- so we grab the
+            # local impedance there for free.
+            k7, Z_next = field_with_impedance(p5)
+
+            ks = np.stack([k1, k2, k3, k4, k5, k6, k7], axis=0)     # (7, 3, M)
+            sol5 = p0 + hs * np.einsum('i,ijk->jk', b5, ks)
+            sol4 = p0 + hs * np.einsum('i,ijk->jk', b4, ks)
+
+            stage_invalid = np.any(np.isnan(ks), axis=(0, 1)) | np.any(np.isnan(sol5), axis=0)
+
+            err = np.linalg.norm(np.nan_to_num(sol5 - sol4, nan=np.inf), axis=0)
+            scale = atol + rtol * np.maximum(np.linalg.norm(p0, axis=0), np.linalg.norm(sol5, axis=0))
+            err_ratio = err / np.maximum(scale, 1e-300)
+
+            accept = (~stage_invalid) & (err_ratio <= 1.0)
+
+            # PI-style step-size update (standard RK45 exponent)
+            factor = safety * np.power(np.maximum(err_ratio, 1e-12), -0.2)
+            factor = np.clip(factor, 0.2, 5.0)
+            new_h = np.clip(hs * factor, ds_min, ds_max)
+
+            for j, i in enumerate(idx):
+                if stage_invalid[j]:
+                    # A trial stage (or the final point) left the domain, or the
+                    # field vanished. Shrink and retry; terminate only once we
+                    # can't shrink any further.
+                    if hs[j] <= ds_min * 1.0001:
+                        active[i] = False
+                    else:
+                        h[i] = max(hs[j] * 0.25, ds_min)
+                    continue
+
+                if accept[j]:
+                    pos[:, i] = sol5[:, j]
+                    paths[i].append(np.array([pos[0, i], pos[1, i], pos[2, i], Z_next[j]]))
+                    h[i] = new_h[j]
+                else:
+                    h[i] = new_h[j]   # rejected step: same position, smaller h next try
+
+            if verbose and step_count % 100 == 0:
+                print(f"step {step_count}: {active.sum()} / {N} particles still active")
+
+        self._silent = False
+        return [np.array(p).T for p in paths]   # each entry: (4, n_i) -> x, y, z, Z_local
 
 class MWScalar(Saveable):
     """The MWDataSet class stores solution data of FEM Time Harmonic simulations."""

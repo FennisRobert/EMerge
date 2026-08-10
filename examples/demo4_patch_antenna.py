@@ -1,5 +1,3 @@
-from emerge_config import config
-config.set_acc_threads(1)
 import emerge as em
 import numpy as np
 from emerge.plot import plot_sp, smith, plot_ff_polar, plot_ff
@@ -78,7 +76,7 @@ rpatch.set_material(em.lib.PEC)
 dielectric.set_material(em.Material(3.38, color="EMERGE-DIEL", opacity=0.9))
 
 # Mesh resolution: fraction of wavelength
-model.mw.set_resolution(0.25)
+model.mw.set_resolution(0.1)
 
 # Frequency sweep across the resonance
 model.mw.set_frequency_range(f1, f2, 7)
@@ -88,9 +86,9 @@ model.commit_geometry()
 
 # --- Mesh refinement settings --------------------------------------------
 # Finer boundary mesh on patch edges for accuracy
-model.mesher.set_boundary_size(rpatch, 1 * mm)
+model.mesher.set_boundary_size(rpatch, 0.5 * mm)
 # Refined mesh on port face for excitation accuracy
-model.mesher.set_face_size(port, 1 * mm)
+model.mesher.set_face_size(port, 0.5 * mm)
 
 # --- Generate mesh and preview ------------------------------------------
 model.generate_mesh()  # build the finite-element mesh
@@ -150,5 +148,8 @@ model.display.add_farfield3d(ff3d, rmax=40 * mm, offset=(0, 0, 40 * mm))
 model.display.cbar("Ey [V/m]", clim=(-1000, 1000)).animate().add_field(
     field.grid(N=100_000, z_range=(-th, Rair)).scalar("Ey", "complex"), symmetrize=True
 )
-
+# model.display.add_particle_lines(
+#     field.trace_poynting_lines(weight_by='EH', seed_surface=rpatch, density='dense', n_particles=500, max_steps=200, dz = -th/2, verbose=True), 
+#     tube_radius=0.0002,
+#     arrow_scale=0.0002)
 model.display.show()

@@ -199,9 +199,13 @@ with em.Simulation("FullFilter") as model_final:
         model_final.display.add_object(obj, opacity=0.1)
     # Show electric field cut-plane at center frequency
     cut = data.field.find(freq=f0).cutplane(1 * mm, z=wgb / 2)
-    model_final.display.animate().add_field(
-        cut.scalar("Ez", "complex"), symmetrize=True
-    )
+    # model_final.display.animate().add_field(
+    #     cut.scalar("Ez", "complex"), symmetrize=True
+    # )
+    model_final.display.add_particle_lines(
+        data.field.find(freq=f0).trace_poynting_lines(seed_surface=feed1.front, max_steps=200, verbose=True),
+        tube_radius=0.0001,
+        arrow_scale=0.0001)
     model_final.display.add_portmode(p1, k0=data.field.find(freq=f0).k0)
     model_final.display.add_portmode(p2, k0=data.field.find(freq=f0).k0)
     model_final.display.show()

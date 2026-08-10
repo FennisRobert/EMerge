@@ -647,3 +647,95 @@ class PVDisplay(EMergeDisplay):
             _fieldname=surfobj.name,
             **self.set.theme.farfield_3d_kwarg,
         )
+
+    def add_particle_lines(
+        self, 
+        lines: list[np.ndarray] | np.ndarray, 
+        tube_radius: float = 0.0001, 
+        cmap: str = 'coolwarm',
+        add_arrows: bool = True,
+        num_arrows: int = 8,
+        arrow_scale: float = 0.003,
+        show_scalar_bar: bool = False
+    ) -> None:
+        """Adds particle trajectories as smooth tubes with gradient coloring and directional arrows.
+        
+        Supports (3, N) arrays for arc-length coloring or (4, N) arrays where the 4th row 
+        defines custom scalar values (e.g., velocity, Poynting magnitude, time).
+        """
+        if isinstance(lines, np.ndarray) and lines.ndim == 2:
+            lines = [lines]
+
+        for traj in lines:
+            # Standardize orientation to N rows
+            data = traj.T if traj.shape[0] in (3, 4) else traj
+            n_pts, n_cols = data.shape
+            
+            if n_pts < 2:
+                continue
+
+            # Extract 3D spatial points
+            pts = data[:, :3]
+
+            # Determine scalar values: 4th axis if present, otherwise default to normalized arc length [0, 1]
+            if n_cols >= 4:
+                point_scalars = data[:, 3]
+                point_scalars = np.log10(point_scalars/376)
+                maxval = np.max(np.abs(point_scalars))
+                clim = (-maxval, +maxval)
+            else:
+                point_scalars = np.linspace(0, 1, n_pts)
+                clim = (0,1)
+            # 1. Create base PolyData with attached scalars
+            poly = pv.PolyData(pts)
+            poly.point_data['line_scalars'] = point_scalars
+
+            # Construct smooth spline; PyVista automatically interpolates point_data onto the spline
+            spline_mesh = pv.Spline(pts)
+            spline_mesh.point_data['line_scalars'] = point_scalars
+
+            # Tube filter interpolates point scalars smoothly onto the output surface mesh
+            tube = spline_mesh.tube(radius=tube_radius)
+
+            self._plot.add_mesh(
+                tube, 
+                scalars='line_scalars', 
+                cmap=cmap, 
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+                smooth_shading=True
+            )
+
+            # 2. Add directional glyph arrows along the path
+            if add_arrows and n_pts >= 4:
+                # Subsample points for arrow placement
+                indices = np.linspace(0, n_pts - 2, min(num_arrows, n_pts - 1), dtype=int)
+                arrow_positions = pts[indices]
+
+                # Calculate forward tangent vectors
+                tangents = pts[indices + 1] - arrow_positions
+                norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+                tangents = np.divide(tangents, norms, out=np.zeros_like(tangents), where=norms != 0)
+
+                # Map corresponding custom scalar values to arrows
+                arrow_scalars = point_scalars[indices]
+
+                # Build PolyData & apply vector glyph filter
+                arrow_pd = pv.PolyData(arrow_positions)
+                arrow_pd['tangents'] = tangents
+                arrow_pd['colors'] = arrow_scalars
+
+                glyphs = arrow_pd.glyph(
+                    orient='tangents',
+                    scale=False,
+                    factor=arrow_scale,
+                    geom=pv.Cone(radius=0.4, height=1.0)
+                )
+
+                self._plot.add_mesh(
+                    glyphs, 
+                    scalars='colors', 
+                    cmap=cmap, 
+                    show_scalar_bar=False,
+                    ambient=0.3
+                )

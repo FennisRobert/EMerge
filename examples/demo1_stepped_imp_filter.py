@@ -128,7 +128,7 @@ smith(S11, labels="S11", f=f)
 
 plot_sp(f, [S11, S21], labels=["S11", "S21"], dblim=[-40, 6], logx=True)
 port1, port2 = model.mw.bc.get_port(1), model.mw.bc.get_port(2)
-field = sol.field.find(freq=5.5e9)
+field = sol.field.find(freq=0.9e9)
 model.display.add_object(pcb, opacity=0.1)
 model.display.add_object(polies, opacity=0.5)
 model.display.animate().add_field(
@@ -137,4 +137,8 @@ model.display.animate().add_field(
 )
 model.display.add_portmode(port1, k0=field.k0)
 model.display.add_portmode(port2, k0=field.k0)
+model.display.add_particle_lines(
+    field.trace_poynting_lines(weight_by='EH', n_particles=200, seed_surface=p1, max_steps=200, verbose=True), 
+    tube_radius=0.000025,
+    arrow_scale=0.0001)
 model.display.show()

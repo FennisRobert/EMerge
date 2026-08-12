@@ -2264,9 +2264,23 @@ class SolveRoutine:
             ),
         )
 
-
 class AutomaticRoutine(SolveRoutine):
-    """Defines the Automatic Routine for EMerge."""
+    """Defines the Automatic Routine for EMerge as a Singleton."""
+    
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, *args, **kwargs):
+        # Prevent re-initialization if the singleton instance already exists
+        if getattr(self, "_initialized", False):
+            return
+        
+        super().__init__(*args, **kwargs)
+        self._initialized = True
 
     def pick_solver(
         self, A: np.ndarray, b: np.ndarray, matrix_type: MatrixType, direct: bool = True
@@ -2280,6 +2294,8 @@ class AutomaticRoutine(SolveRoutine):
         Args:
             A (np.ndarray): The Matrix to solve for
             b (np.ndarray): the vector to solve for
+            matrix_type (MatrixType): Type of the matrix (e.g., SPD, HPD)
+            direct (bool): Whether to use a direct solver
 
         Returns:
             Solver: A solver object appropriate for solving the problem.

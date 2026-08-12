@@ -642,7 +642,12 @@ class Microwave3D(GenericPhysics3D):
                 self.bc.LumpedPort(geometry, wpattr.port_number, width=wpattr.width, height=wpattr.height, direction=wpattr.direction)
                 for attr in geometry.properties:
                     logger.info(f'   - {attr}')
-        
+
+            if wpattr := geometry.properties.get(LumpedElementAttribute):
+                self.bc.LumpedElement(geometry, wpattr.impedance_function, width=wpattr.width, height=wpattr.height)
+                for attr in geometry.properties:
+                                    logger.info(f'   - {attr}')
+            
         for geometry in self._state.all3d:
             material = geometry.material
             if material.cond.value > self.assembler.settings.mw_3d_surfimplim and material.name != 'PEC':

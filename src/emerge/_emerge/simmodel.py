@@ -935,7 +935,7 @@ class Simulation:
 
         # 5. Purge the orphans from OCC
         if orphans:
-            logger.info(f' Removing orphans: {orphans}')
+            logger.debug(f' Removing orphans: {orphans}')
             gmsh.model.occ.remove(orphans, recursive=True)
             gmsh.model.occ.synchronize()
 

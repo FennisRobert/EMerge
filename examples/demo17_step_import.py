@@ -16,12 +16,12 @@ mm = 0.001
 Lrod = 70 * mm
 
 # Create simulation container
-sim = em.Simulation("StepImport")
-sim.check_version("3.0.0")
+model = em.Simulation("StepImport")
+model.check_version("3.0.0")
 
 # Set field resolution and frequency sweep
-sim.mw.set_resolution(0.25)
-sim.mw.set_frequency_range(8e9, 10e9, 21)
+model.mw.set_resolution(0.25)
+model.mw.set_frequency_range(8e9, 10e9, 21)
 
 # Define custom dielectric material for the rod. We choose something similar to 3D printing resin.
 RESIN = em.Material(er=2.5, tand=0.00, color="#777777", opacity=1.0)
@@ -43,21 +43,21 @@ air = step.enclose(0.01)
 # and set labels=True to see approximately which geometry is which which label. The same order
 # of numbering is used as as contained in the volumes property.
 if False:  # Set this to True if you want to view this step.
-    sim.commit_geometry()
-    sim.generate_mesh()
-    sim.view(labels=True)
+    model.commit_geometry()
+    model.generate_mesh()
+    model.view(labels=True)
 
 # You can show all face names as well. This becomes quite a mess
 if False:
-    sim.commit_geometry()
-    sim.generate_mesh()
-    sim.view(face_labels=True)
+    model.commit_geometry()
+    model.generate_mesh()
+    model.view(face_labels=True)
 
 # You can also only show the faces of a single geometry
 if False:
-    sim.commit_geometry()
-    sim.generate_mesh()
-    sim.view(selections=air_cutout.all_faces())
+    model.commit_geometry()
+    model.generate_mesh()
+    model.view(selections=air_cutout.all_faces())
 
 # Assign materials to metal flange and dielectric rod.
 flange.set_material(em.lib.PEC)
@@ -69,9 +69,9 @@ air_fin = em.geo.subtract(air, air_cutout).background()
 
 # Commit final geometry and inspect labeled objects and mesh.
 # This will crash if you have the previous if statement turned to True.
-sim.commit_geometry()
-sim.generate_mesh()
-sim.view(labels=True)
+model.commit_geometry()
+model.generate_mesh()
+model.view(labels=True)
 
 # Identify port face. This is the top Z face of the cutout region.
 # These faces are automatically named
@@ -81,17 +81,17 @@ portface = air_fin.face("+z", tool=air_cutout)
 abc = air_fin.exterior_faces(air)
 
 # Visualize selected exterior boundary region with reduced opacity.
-sim.view(selections=[abc], opacity=0.3)
+model.view(selections=[abc], opacity=0.3)
 
 # Define a rectangular waveguide port on the selected face.
-port = sim.mw.bc.RectangularWaveguide(portface, 1)
+port = model.mw.bc.RectangularWaveguide(portface, 1)
 
 # Apply absorbing boundary condition to outer air faces.
 # The abctype 'D' is better at absorbing energy at oblique angles of incidence.
-abc_bc = sim.mw.bc.AbsorbingBoundary(abc, abctype="D")
+abc_bc = model.mw.bc.AbsorbingBoundary(abc, abctype="D")
 
 # Run frequency-domain sweep.
-data = sim.mw.run_sweep()
+data = model.mw.run_sweep()
 
 # Access structured S-parameter grid.
 glob = data.scalar.grid
@@ -120,14 +120,14 @@ plot_ff_polar(
 ffdata = data.field.find(freq=9e9).farfield_3d(abc)
 
 # Add geometry for context in final visualization.
-sim.display.add_objects(*sim.all_geos(), opacity=0.0)
+model.display.add_objects(*model.all_geos(), opacity=0.0)
 
 # Overlay 3D far-field surface and internal field cut for inspection.
-sim.display.add_farfield3d(ffdata, rmax=40 * mm, offset=(0, 0, Lrod + 10 * mm))
-sim.display.animate().add_field(
+model.display.add_farfield3d(ffdata, rmax=40 * mm, offset=(0, 0, Lrod + 10 * mm))
+model.display.animate().add_field(
     data.field.find(freq=9e9).cutplane(1 * mm, x=0).scalar("Ey", "complex"),
     symmetrize=True,
 )
 
 # Launch interactive visualization window.
-sim.display.show()
+model.display.show()

@@ -1263,7 +1263,7 @@ class StripPath:
             else:
                 raise RouteException("Provide either an (x,y) pair or (dx,dy) pair for the move rout instruction")
     
-            self._add_element(StripLine(xnew, ynew, self.end.layer, width, direction))
+            self._add_element(StripLine(xnew, ynew, self.end.z, width, direction))
             return self
     
     def to(

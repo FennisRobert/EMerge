@@ -270,6 +270,59 @@ def tet_mass_stiffness_matrices(
     return dataE, dataB, cscmap
 
 
+def tet_mass_stiffness_matrices_subdom(
+    field: Nedelec2,
+    er: np.ndarray,
+    ur: np.ndarray,
+    domain_tets: np.ndarray,
+    conductor_tets: np.ndarray,
+    cscmap: CSRMapping | None = None,
+) -> tuple[np.ndarray, np.ndarray, CSRMapping]:
+    """Computes the curl-curl Nedelec-2 mass and stiffness matrices
+
+    Args:
+        field (Nedelec2): The Nedelec2 Field object
+        er (np.ndarray): a 3x3xN array with permittivity tensors
+        ur (np.ndarray): a 3x3xN array with permeability tensors
+
+    Returns:
+        tuple[csr_matrix, csr_matrix]: The stiffness and mass matrix.
+    """
+    tets = field.mesh.tets
+    tris = field.mesh.tris
+    edges = field.mesh.edges
+    nodes = field.mesh.nodes
+
+    tet_to_field = field.get_tet_to_field()
+    tet_to_edge = field.mesh.tet_to_edge
+    tet_to_tri = field.mesh.tet_to_tri
+
+    keep = np.zeros((tets.shape[1],), dtype=np.bool_)
+    keep[domain_tets] = 1
+    keep[conductor_tets] = 0
+    tet_assy = np.arange(tets.shape[1])[keep==True]
+
+    dataE, dataB, rows, cols = _matrix_builder(
+        nodes,
+        tets,
+        tris,
+        edges,
+        tet_to_field,
+        tet_to_edge,
+        tet_to_tri,
+        ur,
+        er,
+        tet_assy,
+        field.dofcodes3d,
+    )
+    t1 = time.time()
+    #logger.debug(f' - Assembly speed: {(field.ntets -len(conductor_tets))/(t1-t0):.1f} tets/s')
+
+    if cscmap is None:
+        cscmap = CSCMapping.from_rowcol(rows, cols, field.n_field)
+    return dataE, dataB, cscmap
+
+
 ############################################################
 #           NUMBA ACCELLERATE SUB-MATRIX ASSEMBLY          #
 ############################################################

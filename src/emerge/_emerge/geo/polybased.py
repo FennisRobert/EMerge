@@ -776,6 +776,7 @@ class Curve(GeoEdge):
                  degree: int = 3,
                  weights: list[float] | None = None,
                  knots: list[float] | None = None,
+                 multiplicities: list[float] | None = None,
                  ctype: Literal['Spline','BSpline','Bezier'] = 'Spline',
                  name: str | None = None):
         """Generate a Spline/Bspline or Bezier curve based on a series of points
@@ -809,7 +810,7 @@ class Curve(GeoEdge):
                 weights = []
             if knots is None:
                 knots = []
-            tags = gmsh.model.occ.addBSpline(points, degree=degree, weights=weights, knots=knots)
+            tags = gmsh.model.occ.addBSpline(points, degree=degree, weights=weights, knots=knots, multiplicities=multiplicities)
         else:
             tags = gmsh.model.occ.addBezier(points)
         
@@ -818,9 +819,11 @@ class Curve(GeoEdge):
         super().__init__(tags, name=name)
     
         gmsh.model.occ.synchronize()
-        p1 = gmsh.model.getValue(self.dim, self.tags[0], [0,])
-        p2 = gmsh.model.getValue(self.dim, self.tags[0], [1e-6])
-        self.dstart: tuple[float, float, float] = (p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2])
+        # 2. Compute analytical initial tangent from P1 - P0 (Always exact for Bezier/Splines)
+        dx = float(xpts[1] - xpts[0])
+        dy = float(ypts[1] - ypts[0])
+        dz = float(zpts[1] - zpts[0])
+        self.dstart: tuple[float, float, float] = (dx, dy, dz)  
     
         
     @property
@@ -1009,9 +1012,10 @@ class Curve(GeoEdge):
             GeoVolume: The resultant volume object
         """
         if isinstance(crossection, XYPolygon):
-            if start_tangent is None:
-                start_tangent = self.dstart
-            if x_axis is not None:
+            if start_tangent is not None:
+                cs = _parse_axis(start_tangent).construct_cs(self.p0)
+                surf = crossection.geo(cs)
+            elif x_axis is not None:
                 xax = _parse_axis(x_axis)
                 zax = _parse_axis(self.dstart)
                 yax = zax.cross(xax)
@@ -1019,12 +1023,14 @@ class Curve(GeoEdge):
             else:
                 zax = self.dstart
                 cs = Axis(np.array(zax)).construct_cs(self.p0)
-                surf = crossection.geo(cs)
+            surf = crossection.geo(cs)
         else:
             surf = crossection
         x1, y1, z1, x2, y2, z2 = gmsh.model.occ.getBoundingBox(*surf.dimtags[0])
         diag = ((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)**(0.5)
-        pipetag = gmsh.model.occ.addPipe(surf.dimtags, self.tags[0], 'GuidePlan')
+        gmsh.model.occ.synchronize()
+        gmsh.fltk.run()
+        pipetag = gmsh.model.occ.addPipe(surf.dimtags, self.tags[0], trihedron='GuidePlan')
         self.remove()
         surf.remove()
         volume = GeoVolume(pipetag[0][1], name=name)

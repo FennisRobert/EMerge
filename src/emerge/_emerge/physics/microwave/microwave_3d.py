@@ -1599,6 +1599,82 @@ class Microwave3D(GenericPhysics3D):
         self._completed = True
         return self.data
 
+    def solve_cnosdd(self, frequency: float, domains: list[GeoVolume]) -> MWData:
+        """Conformal, Non-overlapping Schwarz Domain Decomposition solve
+
+        Args:
+            domains (list[GeoVolume]): _description_
+
+        Returns:
+            MWData: _description_
+        """
+
+        # --------------------------------------------------------------------
+        # States
+        # --------------------------------------------------------------------
+
+        self._completed = False
+        self._simstart = time.time()
+        self.solveroutine.symmetry_limit = self._settings.sim_symmetry_limit
+
+        # --------------------------------------------------------------------
+        # Local Variables
+        # --------------------------------------------------------------------
+
+        simulation_jobs: list[SimJob] = []
+        material_set: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        job_counter: int = 1
+        #harddisc_path = str(self._state.modelpath / harddisc_path)
+
+        # --------------------------------------------------------------------
+        # Initialization
+        # --------------------------------------------------------------------
+
+        logger.info(
+            f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
+        )
+        self._initialize_field()
+        self._initialize_bc_data()
+
+        # --------------------------------------------------------------------
+        # Checks
+        # --------------------------------------------------------------------
+
+        self._check_meshed()
+        self._check_physics()
+        
+        
+        if self.basis is None:
+            raise SimulationError(
+                "Cannot proceed, the simulation basis class is undefined."
+            )
+        
+        # --------------------------------------------------------------------
+        # Material Assignments
+        # --------------------------------------------------------------------
+
+        logger.debug("Resolving material assingments.")
+        self._generate_material_assignment()
+
+        # --------------------------------------------------------------------
+        # Port BC prepratation
+        # --------------------------------------------------------------------
+
+        all_ports = self.bc.oftype(PortBC)
+        for port in all_ports:
+            port.active = False
+
+        
+        # I am not sure if this is supposed to be there
+        self._compute_modes(frequency)
+
+        from .assembly.cnosdd_assembler import CNOSDDAssembler
+
+        assembler = CNOSDDAssembler(self._settings)
+
+        data = assembler.assemble_freq_matrix(self.basis, self.mat_assy, self.bc.boundary_conditions, frequency, domains)
+        return self.data
+    
     def run_adaptive_sweep(
         self,
         parallel: bool = False,

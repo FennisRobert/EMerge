@@ -1202,6 +1202,46 @@ class StripPath:
         self.via(ground_layer, radius, False, reverse=reverse)
         return self
 
+    def move(self,
+             dx: float | None = None,
+             dy: float | None = None,
+             x: float | None = None,
+             y: float | None = None,
+             direction: tuple[float, float] | None = None,
+             width: float | None = None) -> StripPath:
+        """Move the routing cursur to any new desired location
+
+        Args:
+            dx (float | None, optional): A horizontal displacement. Defaults to None.
+            dy (float | None, optional): A vertical displacement. Defaults to None.
+            x (float | None, optional): The new x-coordinate. Defaults to None.
+            y (float | None, optional): The new y-coordinate. Defaults to None.
+            direction (tuple[float, float] | None, optional): The new direction. Defaults to None.
+            width (float | None, optional): The new width. Defaults to None.
+
+        Returns:
+            StripPath: _description_
+        """
+        if width is None:
+            width = self.end.width
+
+        if direction is None:
+            direction = self.end.direction
+        else:
+            direction = np.array(direction)
+
+        if x is not None and y is not None:
+            xnew = x
+            ynew = x
+        elif dx is not None and dy is not None:
+            xnew = self.end.x + dx
+            ynew = self.end.y + dy
+        else:
+            raise RouteException("Provide either an (x,y) pair or (dx,dy) pair for the move rout instruction")
+
+        self._add_element(StripLine(xnew, ynew, self.end.layer, width, direction))
+        return self
+    
     def jump(
         self,
         dx: float | None = None,

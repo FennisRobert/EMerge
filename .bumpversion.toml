@@ -29,126 +29,19 @@ values = ["b", "rc"]
 [tool.bumpversion.parts.num]
 independent = false
 
-# --- Files that track the full Beta version (pyproject & init) ---
+# --- 1. Files tracking the FULL version (including beta) ---
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
+search = "version = \"{current_version}\""
+replace = "version = \"{new_version}\""
 
 [[tool.bumpversion.files]]
 filename = "src/emerge/__init__.py"
+search = "__version__ = \"{current_version}\""
+replace = "__version__ = \"{new_version}\""
 
-
-# --- Files that track only the base stable version (e.g. 3.0.0 instead of 3.0.0b1) ---
+# --- 2. Demo files tracking ONLY the BASE stable version ---
 [[tool.bumpversion.files]]
-filename = "examples/demo0_parallel_plate.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo1_stepped_imp_filter.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo2_combline_filter.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo3_coupled_line_filter.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo4_patch_antenna.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo5_revolve.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo6_striplines_with_vias.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo7_periodic_cells.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo8_waveguide_bpf_synthesis.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo9_dielectric_resonator.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo10_sgh.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo11_lumped_element_filter.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo12_mode_alignment.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo13_helix_antenna.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo14_boundary_selection.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo15_strip_slotline_transition.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo16_differential_common_mode.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo17_step_import.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo18_plotting_and_visualization.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo19_vivaldi_antenna.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo20_optimization.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo21_inverted_F_antenna.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
-
-[[tool.bumpversion.files]]
-filename = "examples/demo22_RCS.py"
-search = "{major}.{minor}.{patch}"
-replace = "{major}.{minor}.{patch}"
+glob = "examples/demo*.py"
+search = "model.check_version(\"{current_major}.{current_minor}.{current_patch}\")"
+replace = "model.check_version(\"{new_major}.{new_minor}.{new_patch}\")"

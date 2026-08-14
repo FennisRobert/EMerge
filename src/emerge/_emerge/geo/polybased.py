@@ -995,6 +995,7 @@ class Curve(GeoEdge):
              max_mesh_size: float | None = None,
              start_tangent: Axis | tuple[float, float, float] | np.ndarray | None = None,
              x_axis: Axis | tuple[float, float, float] | np.ndarray | None = None,
+             trihedron: Literal["DiscreteTrihedron", "CorrectedFrenet", "Fixed", "Frenet", "ConstantNormal", "Darboux", "GuideAC", "GuidePlan", "GuideACWithContact", "GuidePlanWithContact"] = "GuidePlan",
              name: str = 'PipedVolume') -> GeoVolume:
         """Extrudes a surface or XYPolygon object along the given curve
 
@@ -1029,7 +1030,7 @@ class Curve(GeoEdge):
         x1, y1, z1, x2, y2, z2 = gmsh.model.occ.getBoundingBox(*surf.dimtags[0])
         diag = ((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)**(0.5)
         gmsh.model.occ.synchronize()
-        pipetag = gmsh.model.occ.addPipe(surf.dimtags, self.tags[0], trihedron='GuidePlan')
+        pipetag = gmsh.model.occ.addPipe(surf.dimtags, self.tags[0], trihedron=trihedron)
         self.remove()
         surf.remove()
         volume = GeoVolume(pipetag[0][1], name=name)

@@ -37,7 +37,7 @@ version_update.txt
 
 manual_scripts/
 dev/
-
+help/
 *.EMResults
 *.emff
 

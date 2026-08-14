@@ -43,5 +43,5 @@ replace = "__version__ = \"{new_version}\""
 # --- 2. Demo files tracking ONLY the BASE stable version ---
 [[tool.bumpversion.files]]
 glob = "examples/demo*.py"
-search = "model.check_version(\"{current_major}.{current_minor}.{current_patch}\")"
-replace = "model.check_version(\"{new_major}.{new_minor}.{new_patch}\")"
+search = ".check_version(\"{current_major}.{current_minor}.{current_patch}\")"
+replace = ".check_version(\"{new_major}.{new_minor}.{new_patch}\")"

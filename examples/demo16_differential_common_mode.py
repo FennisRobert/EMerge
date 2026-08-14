@@ -11,7 +11,7 @@ from emerge.plot import plot_sp
 mm = 0.001  # meter units helper: 1 mm
 
 model = em.Simulation('DiffCommon')  # simulation container
-model.check_version('2.8.4') # Checks version compatibility.
+model.check_version('2.8.5') # Checks version compatibility.
 
 # PCB stack: 1 mm substrate, RO3003 dielectric, 0.05 mm copper thickness, thick traces enabled
 pcb = em.geo.PCBNew(1, mm, material=em.lib.DIEL_RO3003, trace_thickness=0.05*mm, thick_traces=True)

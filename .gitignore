@@ -42,7 +42,6 @@ help/
 *.EMResults
 *.emff
 
-tests/
 trial_scripts/
 wheelhouse/
 benchmarks/

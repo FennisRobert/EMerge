@@ -60,7 +60,7 @@ dev = [
     "emsutil",
     "pytest>=9.0.2",
     "scikit-umfpack>=0.4.2",
-    "twine>=6.2.0",
+    "twine>=7.0.0",
 ]
 
 [tool.uv]

@@ -34,7 +34,7 @@ warnings.filterwarnings(
 
 import os
 
-__version__ = "3.0.0b1"
+__version__ = "3.0.0a1"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")

@@ -36,7 +36,7 @@ wgb = 10.16*mm
 L = 50*mm
 
 model = em.Simulation('BoundarySelectionDemo')
-model.check_version("2.8.3") # Checks version compatibility.
+model.check_version("2.8.4") # Checks version compatibility.
 
 # first lets define a WR90 waveguide
 wg_box = em.geo.Box(L, wga, wgb, position=(-L, -wga/2, -wgb/2))

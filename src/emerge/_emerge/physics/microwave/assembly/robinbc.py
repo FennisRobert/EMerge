@@ -30,34 +30,34 @@ import functools
 
 #
 # Toggle this to True when you want to use standard Python breakpoints
-DEBUG_MODE = False
+# DEBUG_MODE = False
 
 
-def njit(*args, **kwargs):
-    """
-    Drop-in replacement for numba.njit.
-    If DEBUG_MODE is True, it turns into a transparent 'do-nothing' wrapper.
-    If DEBUG_MODE is False, it forwards everything to the real Numba compiler.
-    """
-    if DEBUG_MODE:
-        # Case A: Used without parentheses -> @njit
-        if len(args) == 1 and callable(args[0]):
-            return args[0]
+# def njit(*args, **kwargs):
+#     """
+#     Drop-in replacement for numba.njit.
+#     If DEBUG_MODE is True, it turns into a transparent 'do-nothing' wrapper.
+#     If DEBUG_MODE is False, it forwards everything to the real Numba compiler.
+#     """
+#     if DEBUG_MODE:
+#         # Case A: Used without parentheses -> @njit
+#         if len(args) == 1 and callable(args[0]):
+#             return args[0]
 
-        # Case B: Used with signatures/kwargs -> @njit(cache=True)
-        def decorator(func):
-            @functools.wraps(func)
-            def wrapper(*func_args, **func_kwargs):
-                return func(*func_args, **func_kwargs)
+#         # Case B: Used with signatures/kwargs -> @njit(cache=True)
+#         def decorator(func):
+#             @functools.wraps(func)
+#             def wrapper(*func_args, **func_kwargs):
+#                 return func(*func_args, **func_kwargs)
 
-            return wrapper
+#             return wrapper
 
-        return decorator
-    else:
-        # Import Numba lazily only when debugging is turned off
-        import numba
+#         return decorator
+#     else:
+#         # Import Numba lazily only when debugging is turned off
+#         import numba
 
-        return numba.njit(*args, **kwargs)
+#         return numba.njit(*args, **kwargs)
 
 
 @njit(cache=True, fastmath=True, nogil=True)
@@ -206,10 +206,10 @@ def construct_local_vertices(glob_vertices):
 ############################################################
 # fmt: off
 DPTS = np.array([
-    [-0.56250000000000000, 0.52083333333333337, 0.52083333333333337, 0.52083333333333337],  # weights
-    [0.33333333333333331, 0.59999999999999998, 0.20000000000000001, 0.20000000000000001],  # L1
-    [0.33333333333333331, 0.20000000000000001, 0.59999999999999998, 0.20000000000000001],  # L2
-    [0.33333333333333343, 0.20000000000000001, 0.20000000000000007, 0.60000000000000009],  # L3
+    [0.10995174365532200, 0.10995174365532200, 0.10995174365532200, 0.22338158967801100, 0.22338158967801100, 0.22338158967801100],  # weights
+    [0.81684757298045896, 0.09157621350977101, 0.09157621350977101, 0.10810301816807000, 0.44594849091596500, 0.44594849091596500],  # L1
+    [0.09157621350977101, 0.81684757298045896, 0.09157621350977101, 0.44594849091596500, 0.10810301816807000, 0.44594849091596500],  # L2
+    [0.09157621350977004, 0.09157621350977008, 0.81684757298045807, 0.44594849091596500, 0.44594849091596500, 0.10810301816807000],  # L3
 ], dtype=np.float64)
 # fmt: on
 

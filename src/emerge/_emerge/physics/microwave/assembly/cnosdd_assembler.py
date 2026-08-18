@@ -45,6 +45,7 @@ from loguru import logger
 from ..simjob import SimJob
 from ....const import EPS0, C0
 import time
+from .dd_tools import generate_reduction_matrix
 _PBC_DSMAX = 1e-15
 
 ############################################################
@@ -424,13 +425,54 @@ class CNOSDDAssembler:
 
         # We now have the sharing faces
         # Time for subdomain assemblies
+
+        # First we construct the reduction matrices Rs for the domains
+        R_sub: dict[int, csc_matrix] = dict()
         A_sub: dict[int, csc_matrix] = dict()
+        D_s_set: dict[int, np.ndarray] = dict()
+        D_all = np.arange(field.n_field)
+
         for i,dom in domains.items():
             tets = domain_tets[i]
             Evec, Bvec, cscmap = tet_mass_stiffness_matrices_subdom(field, er, ur, tets, conductor_tets, None)
+
+            D_s = np.sort(np.unique(field.tet_to_field[:,tets]))
+            D_s_set[i] = D_s
+            R_sub[i] = generate_reduction_matrix(D_all, D_s)
+            logger.debug(f' - Rs={i}.shape = {R_sub[i].shape}')
             A_sub[i] = cscmap.to_csc(Evec - Bvec *(K0**2))[tets,:][:,tets]
 
         for i, mat in A_sub.items():
             logger.debug(f' - Domain {i} A.shape: {mat.shape}')
 
-        
+        # Now we generate the further reduction matrix from Ωs to Γis
+        print(intf_2_tags)
+        print(domain_links)
+        D_g: dict[int, np.ndarray] = dict()
+        R_sg: dict[int, dict[int, csc_matrix]] = {i: dict() for i in range(n_domains)}
+
+        for i_itf in range(n_interfaces):
+            tri_ids = intf_2_tags[id2if[i_itf]]
+            itf_dof = np.sort(np.unique(field.tri_to_field[:,tri_ids]))
+            D_g[i_itf] = itf_dof
+
+        for i_dom, adj_doms in domain_links.items():
+            for i_dom_2 in adj_doms:
+                itf_tuple = (min(i_dom, i_dom_2), max(i_dom, i_dom_2))
+                itf_index = if2id[itf_tuple]
+                R_sg[i_dom][itf_index] = generate_reduction_matrix(D_s_set[i_dom], D_g[itf_index])
+
+                logger.debug(f' - RM {i_dom}({itf_index}) has shape {R_sg[i_dom][itf_index].shape}')
+
+        # Next we create the information exchage vectors gij
+
+        gijs: dict[tuple[int,int], np.ndarray] = dict()
+        for i_intf in range(n_interfaces):
+            i1, i2 = id2if[i_intf]
+            gijs[(i1,i2)] = np.zeros_like(D_g[i_intf], dtype=np.complex128)
+            gijs[(i2,i1)] = np.zeros_like(D_g[i_intf], dtype=np.complex128)
+
+        for key,value in gijs.items():
+            print(f'g_{key[0]},{key[1]} = {value.shape}')
+
+        # now we start doing the full BC Assembly routine, PEC and RObin

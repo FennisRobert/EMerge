@@ -510,7 +510,7 @@ class CNOSDDAssembler:
             # to other domains.
             # Any triangle on our robin boundary condition boundary should for now at most be inside one domain
             # So we may pick any degree of freedom and just test if its inside some domain
-            samp;l
+            sample_dof = 9
     def _get_robin_mat(self, bc: RobinBC) -> csc_matrix:
         
         from .robinbc import assemble_robin_bc, assemble_robin_bc_bvec

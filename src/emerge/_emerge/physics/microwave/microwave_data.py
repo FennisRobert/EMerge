@@ -503,6 +503,12 @@ class MWField(Saveable):
         self._Texcite: np.ndarray = 1.0
         self._silent: bool = False
 
+        # Ports embedded via embed_external_component are marked inactive
+        # here rather than removed -- the port list, _Sp, and _Texcite
+        # always keep their original full size, so port labels are
+        # permanent and never need renumbering or remapping.
+        self._active_ports: set[int | float] | None = None
+
         self._bstags = None
         self._bssurf = None
 
@@ -626,6 +632,12 @@ class MWField(Saveable):
             number (int): The port number to excite
             coefficient (complex): The port excitation. Defaults to 1.0 + 0.0j
         """
+        if self._active_ports is not None and number not in self._active_ports:
+            raise KeyError(
+                f"Port {number} has been embedded via embed_external_component "
+                f"and can no longer be excited directly. Active ports: "
+                f"{sorted(self._active_ports)}."
+            )
         self.excitation = {key: 0.0 for key in self._fields.keys()}
         self.excitation[number] = excitation
 
@@ -1239,48 +1251,83 @@ class MWField(Saveable):
 
         return EHFieldFF(E, H, T, P, Ptot, freq=self.freq)
 
-    def embed_external_component(self, touchstone_file: str, port_indices: list[int]) -> None:
-        """Embed an external component based on S-parameter data in this model by connecting
-        a given set of port numbers using an N-port S-parameter file.
+    def embed_external_component(
+        self, touchstone_file: str, port_indices: list[int | float]
+    ) -> None:
+        """Embed an external N-port network (given as a Touchstone file) onto a
+        subset of this field's ports.
+
+        This does NOT remove ports -- all port_modes/fields remain present
+        at their original size forever. Ports are marked inactive in
+        `_active_ports` instead of removed, and both `_Sp` and `_Texcite`
+        keep their original full shape. This means port numbers never
+        change and never need to be remembered/remapped -- calling this
+        multiple times with different, still-active port numbers just
+        works, and each call correctly folds in the effect of any prior
+        embedding.
 
         Args:
             touchstone_file (str): The filename of the touchstone file to import
-            port_indices (list[int]): A list of port indices of the simualtion model to connect the touchstone file to.
-
-        Returns:
-            MWScalarNdim: _description_
+            port_indices (list[int | float]): The port numbers (smat_index) of
+                this field to connect the touchstone file to. Must all
+                currently be active (not already embedded by a previous call).
         """
         from ....read import TouchstoneData
 
+        Nports_total = len(self.port_modes)
+        portmap = {p.smat_index: i for i, p in enumerate(self.port_modes)}
+
+        if self._active_ports is None:
+            self._active_ports = set(portmap.keys())
+        if not isinstance(self._Texcite, np.ndarray):
+            self._Texcite = np.eye(Nports_total, dtype=np.complex128)
+
+        missing = [p for p in port_indices if p not in self._active_ports]
+        if missing:
+            raise KeyError(
+                f"Port(s) {missing} are not available (already embedded, or "
+                f"don't exist). Active ports: {sorted(self._active_ports)}"
+            )
+        if len(set(port_indices)) != len(port_indices):
+            raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
+
         td = TouchstoneData(touchstone_file)
-        fem_s_matrix = self._Sp
-        S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
-        port_indices = [ind-1 for ind in port_indices]
-        all_ports = np.arange(fem_s_matrix.shape[1])
-        n_ports = np.setdiff1d(all_ports, port_indices)
-        
-        # 2. Partition the block matrix
-        # S_nn, S_nm, S_mn, S_mm
-        S_nn = fem_s_matrix[n_ports][:, n_ports]
-        S_nm = fem_s_matrix[n_ports][:, port_indices]
-        S_mn = fem_s_matrix[port_indices][:, n_ports]
-        S_mm = fem_s_matrix[port_indices][:, port_indices]
-        
-        # 3. Compute the reduction: S_red = S_nn + S_nm @ S_ext @ inv(I - S_mm @ S_ext) @ S_mn
-        # Use np.linalg.solve for stability instead of direct inv
-        N = len(n_ports)
-        M = len(port_indices)
-        I_n = np.eye(N)
-        I_m = np.eye(M)
-        # Pre-compute the coupling term: S_ext * (I - S_mm * S_ext)^-1 * S_mn
-        coupling = S_ext @ np.linalg.inv(I_m - S_mm @ S_ext) @ S_mn
-        zero_nm = np.zeros((N, M))
-        zero_mn = np.zeros((M, N))
-        self._Texcite = np.block([
-            [I_n,      zero_nm],
-            [coupling, zero_mn]
-        ]).squeeze()
-        
+        S_ext = td.interp_S(self.freq)  # (M, M) at this field's single frequency
+
+        m_pos = [portmap[p] for p in port_indices]
+        n_labels = sorted(self._active_ports - set(port_indices), key=lambda l: portmap[l])
+        n_pos = [portmap[l] for l in n_labels]
+
+        S_nn = self._Sp[np.ix_(n_pos, n_pos)]
+        S_nm = self._Sp[np.ix_(n_pos, m_pos)]
+        S_mn = self._Sp[np.ix_(m_pos, n_pos)]
+        S_mm = self._Sp[np.ix_(m_pos, m_pos)]
+
+        I_m = np.eye(len(m_pos), dtype=np.complex128)
+        term = np.linalg.inv(I_m - S_mm @ S_ext)
+        coupling = S_ext @ term @ S_mn  # (M, N)
+
+        # Fold the embedding into the effective S among still-active ports,
+        # so a SUBSEQUENT embedding call sees the correct effective network.
+        self._Sp[np.ix_(n_pos, n_pos)] = S_nn + S_nm @ coupling
+        # Mark embedded ports as no longer meaningful.
+        self._Sp[m_pos, :] = np.nan
+        self._Sp[:, m_pos] = np.nan
+
+        # Excitation transform stays a fixed NxN throughout -- no resizing
+        # needed since dimensions never change.
+        local_T = np.zeros((Nports_total, Nports_total), dtype=np.complex128)
+        local_T[np.ix_(n_pos, n_pos)] = np.eye(len(n_pos))
+        local_T[np.ix_(m_pos, n_pos)] = coupling
+        self._Texcite = self._Texcite @ local_T
+
+        self._active_ports -= set(port_indices)
+
+        logger.info(
+            f"Embedded {touchstone_file!r} on ports {port_indices}. "
+            f"Active ports remaining: {sorted(self._active_ports)}"
+        )
+
     def farfield(
         self,
         theta: np.ndarray,
@@ -1862,6 +1909,12 @@ class MWScalarNdim(Saveable):
         self._portnumbers: list[int | float] = []
         self._dense_frequencies: np.ndarray = None
 
+        # Ports embedded via embed_external_component are marked inactive
+        # here rather than removed -- Sp, _portmap and _portnumbers always
+        # keep their original full size, so port labels/positions are
+        # permanent and never need renumbering or remapping.
+        self._active_ports: set[int | float] | None = None
+
     def renormalize(self, Z0ref: np.ndarray | float | complex) -> MWScalarNdim:
         if isinstance(Z0ref, (float, complex, int)):
             Z0ref = np.ones_like(self.Z0) * Z0ref
@@ -1887,6 +1940,9 @@ class MWScalarNdim(Saveable):
         newndim._portmap = self._portmap
         newndim._portnumbers = self._portnumbers
         newndim._dense_frequencies = self._dense_frequencies
+        newndim._active_ports = (
+            set(self._active_ports) if self._active_ports is not None else None
+        )
         return newndim
 
     def dense_f(
@@ -1939,19 +1995,23 @@ class MWScalarNdim(Saveable):
         """
         if p1 == p2:
             raise ValueError("p1 and p2 must be different port numbers")
+        if p1 not in self._portmap or p2 not in self._portmap:
+            raise KeyError(
+                f"Port(s) {p1}, {p2} not found. Available ports: "
+                f"{sorted(self._portmap)}"
+            )
 
         F, N, _ = self.Sp.shape
-        p1 = p1 - 1
-        p2 = p2 - 1
-
-        if not (0 <= p1 < N and 0 <= p2 < N):
-            raise IndexError(f"Ports {p1 + 1} or {p2 + 1} are out of range {N}")
+        # Resolve via the port map instead of assuming array position == port
+        # number - 1, so this stays correct even after embed_external_component
+        # has marked some ports inactive.
+        ii = self._portmap[p1]
+        jj = self._portmap[p2]
 
         Sout = self.Sp.copy()
         if Z0renorm is not None:
             Sout = renormalise_s(Sout, Z0renorm, self.Z0)
 
-        ii, jj = p1, p2
         idx = np.ones(N, dtype=np.bool)
         idx[[ii, jj]] = False
         others = np.nonzero(idx)[0]
@@ -1976,63 +2036,89 @@ class MWScalarNdim(Saveable):
 
         return self
 
-    def embed_external_component(self, touchstone_file: str, port_indices: list[int]) -> MWScalarNdim:
-        # 1. Load the external component
+    def embed_external_component(
+        self, touchstone_file: str, port_indices: list[int]
+    ) -> "MWScalarNdim":
+        """Embed an external N-port network (given as a Touchstone file) onto
+        a subset of this dataset's ports.
+
+        This does NOT remove ports -- `Sp`, `_portmap`, and `_portnumbers`
+        keep their original full size forever. Eliminated ports are marked
+        inactive (their rows/cols in `Sp` become NaN) instead of being
+        deleted. This means port labels and array positions are permanent
+        for the lifetime of the object: calling this repeatedly with
+        different, still-active port numbers just works, with no
+        renumbering, remapping, or caller-side bookkeeping required, and
+        each call correctly folds in the effect of any prior embedding.
+
+        Args:
+            touchstone_file (str): The filename of the touchstone file to import
+            port_indices (list[int]): The port numbers of this dataset to
+                connect the touchstone file to.
+
+        Returns:
+            MWScalarNdim: self, with the embedded ports marked inactive.
+        """
         from ....read import TouchstoneData
 
+        if self._active_ports is None:
+            self._active_ports = set(self._portnumbers)
+
+        missing = [p for p in port_indices if p not in self._active_ports]
+        if missing:
+            raise KeyError(
+                f"Port(s) {missing} are not available (already embedded, or "
+                f"don't exist). Active ports: {sorted(self._active_ports)}"
+            )
+        if len(set(port_indices)) != len(port_indices):
+            raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
+
         td = TouchstoneData(touchstone_file)
-        fem_s_matrix = self.Smat
         S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
-        port_indices = [ind-1 for ind in port_indices]
-        n_freq = fem_s_matrix.shape[0]
-        all_ports = np.arange(fem_s_matrix.shape[1])
-        n_ports = np.setdiff1d(all_ports, port_indices)
-        
-        # 2. Partition the block matrix
-        # S_nn, S_nm, S_mn, S_mm
-        S_nn = fem_s_matrix[:, n_ports][:, :, n_ports]
-        S_nm = fem_s_matrix[:, n_ports][:, :, port_indices]
-        S_mn = fem_s_matrix[:, port_indices][:, :, n_ports]
-        S_mm = fem_s_matrix[:, port_indices][:, :, port_indices]
-        
-        # 3. Compute the reduction: S_red = S_nn + S_nm @ S_ext @ inv(I - S_mm @ S_ext) @ S_mn
-        # Use np.linalg.solve for stability instead of direct inv
-        I = np.eye(len(port_indices))
-        
+
+        m_pos = [self._portmap[p] for p in port_indices]
+        n_labels = sorted(
+            self._active_ports - set(port_indices), key=lambda l: self._portmap[l]
+        )
+        n_pos = [self._portmap[l] for l in n_labels]
+
+        S_nn = self.Sp[:, n_pos][:, :, n_pos]
+        S_nm = self.Sp[:, n_pos][:, :, m_pos]
+        S_mn = self.Sp[:, m_pos][:, :, n_pos]
+        S_mm = self.Sp[:, m_pos][:, :, m_pos]
+
+        n_freq = self.Sp.shape[0]
+        I = np.eye(len(m_pos))
         S_red = np.zeros_like(S_nn)
         for i in range(n_freq):
-            # Term = (I - S_mm * S_ext)^-1
             term = np.linalg.inv(I - S_mm[i] @ S_ext[i])
             S_red[i] = S_nn[i] + S_nm[i] @ S_ext[i] @ term @ S_mn[i]
 
-        new_ndim = MWScalarNdim()
-        new_ndim.freq = self.freq
-        new_ndim.k0 = self.k0
-        new_ndim.Sp  = S_red
-        new_ndim.Q = None
-        new_ndim.beta = self.beta[:,n_ports]
-        new_ndim.Z0 = self.Z0[:,n_ports]
-        new_ndim._portmap = self._portmap
-        new_ndim._portnumbers = self._portnumbers
-        return new_ndim
-        
+        # Fold the embedding into the effective S among still-active ports,
+        # so a SUBSEQUENT embedding call sees the correct effective network.
+        self.Sp[np.ix_(range(n_freq), n_pos, n_pos)] = S_red
+        # Mark eliminated ports as no longer meaningful.
+        self.Sp[:, m_pos, :] = np.nan
+        self.Sp[:, :, m_pos] = np.nan
+
+        self._active_ports -= set(port_indices)
+
+        logger.info(
+            f"Embedded {touchstone_file!r} on ports {port_indices}. "
+            f"Active ports remaining: {sorted(self._active_ports)}"
+        )
+        return self
+
     @property
     def Smat(self) -> np.ndarray:
         """Returns the full S-matrix
 
         Returns:
-            np.ndarray: The S-matrix with shape (nF, nP, nP)
+            np.ndarray: The S-matrix with shape (nF, nP, nP). Includes all
+                original ports; ports eliminated by embed_external_component
+                are NaN.
         """
-        Nports = len(self._portmap)
-        nfreq = self.freq.shape[0]
-
-        Smat = np.zeros((nfreq, Nports, Nports), dtype=np.complex128)
-
-        for i in self._portnumbers:
-            for j in self._portnumbers:
-                Smat[:, i - 1, j - 1] = self.S(i, j)
-
-        return Smat
+        return self.Sp
 
     def emmodel(
         self, f_sample: np.ndarray | None = None
@@ -2131,7 +2217,9 @@ class MWScalarNdim(Saveable):
             inc_real (bool, optional): Wether allow for a real pole. Defaults to False.
 
         Returns:
-            np.ndarray: The (Nf,Np,Np) S-parameter matrix
+            np.ndarray: The (Nf,Np,Np) S-parameter matrix. Entries for
+                ports eliminated by embed_external_component are NaN
+                (they are not vector-fit since their data is NaN).
         """
         if frequencies is None:
             if self._dense_frequencies is None:
@@ -2144,14 +2232,15 @@ class MWScalarNdim(Saveable):
         Nports = len(self._portmap)
         nfreq = frequencies.shape[0]
 
-        Smat = np.zeros((nfreq, Nports, Nports), dtype=np.complex128)
+        Smat = np.full((nfreq, Nports, Nports), np.nan, dtype=np.complex128)
+        active = self._active_ports if self._active_ports is not None else set(self._portnumbers)
 
-        for i in self._portnumbers:
-            for j in self._portnumbers:
+        for i in active:
+            for j in active:
                 S = self.model_S(
                     i, j, frequencies, Npoles=Npoles, inc_real=inc_real, _warn=_warn
                 )
-                Smat[:, i - 1, j - 1] = S
+                Smat[:, self._portmap[i], self._portmap[j]] = S
         return Smat
 
     def export_touchstone(
@@ -2165,8 +2254,9 @@ class MWScalarNdim(Saveable):
     ):
         """Export the S-parameter data to a touchstone file
 
-        This function assumes that all ports are numbered in sequence 1,2,3,4... etc with
-        no missing ports. Otherwise it crashes. Will be update/improved soon with more features.
+        Only ports still active (not eliminated via embed_external_component)
+        are exported -- a Touchstone file can't represent internal/embedded
+        ports.
 
         Additionally, one may provide a reference impedance. If this argument is provided, a port impedance renormalization
         will be performed to that common impedance.
@@ -2181,24 +2271,20 @@ class MWScalarNdim(Saveable):
         """
 
         logger.info(f"Exporting S-data to {filename}")
-        Nports = len(self._portmap)
+
+        active = self._active_ports if self._active_ports is not None else set(self._portnumbers)
+        active_ports = sorted(active, key=lambda p: self._portmap[p])
+        active_pos = [self._portmap[p] for p in active_ports]
 
         if dense_freq is None:
             freqs = self.freq
-            Smat = np.zeros((len(freqs), Nports, Nports), dtype=np.complex128)
-
-            for i in range(1, Nports + 1):
-                for j in range(1, Nports + 1):
-                    S = self.S(i, j)
-                    Smat[:, i - 1, j - 1] = S
+            Smat = self.Sp[:, active_pos][:, :, active_pos]
         else:
             freqs = dense_freq
-            Smat = np.zeros((len(freqs), Nports, Nports), dtype=np.complex128)
+            full_dense = self.model_Smat(dense_freq)
+            Smat = full_dense[:, active_pos][:, :, active_pos]
 
-            for i in range(1, Nports + 1):
-                for j in range(1, Nports + 1):
-                    S = self.model_S(i, j, dense_freq)
-                    Smat[:, i - 1, j - 1] = S
+        Z0_active = self.Z0[:, active_pos]
 
         self.save_smatrix(
             filename,
@@ -2208,6 +2294,7 @@ class MWScalarNdim(Saveable):
             Z0ref=Z0ref,
             custom_comments=custom_comments,
             funit=funit,
+            Z0_override=Z0_active,
         )
 
     def save_smatrix(
@@ -2219,6 +2306,7 @@ class MWScalarNdim(Saveable):
         format: Literal["RI", "MA", "DB"] = "RI",
         custom_comments: list[str] | None = None,
         funit: Literal["Hz", "KHz", "MHz", "GHz"] = "GHz",
+        Z0_override: np.ndarray | None = None,
     ) -> None:
         """Save an S-parameter matrix to a touchstone file.
 
@@ -2232,11 +2320,14 @@ class MWScalarNdim(Saveable):
             format (Literal["RI","MA",'DB], optional): The S-parameter format. Defaults to 'RI'.
             custom_comments : list[str], optional. List of custom comment strings to add to the touchstone file header.
                                                     Each string will be prefixed with "! " automatically.
+            Z0_override (np.ndarray | optional): Reference impedance array
+                matching Smatrix's port axis, for when it's a subset of the
+                full self.Z0 (e.g. active ports only). Defaults to self.Z0.
         """
         from .touchstone import generate_touchstone
 
         if Z0ref is not None:
-            Z0s = self.Z0
+            Z0s = Z0_override if Z0_override is not None else self.Z0
             logger.debug(f"Renormalizing impedances {Z0s}Ω to {Z0ref}Ω")
             # This can be the case if the S-matrix data is interpolated with vectorfitting
             nz, nport = Z0s.shape

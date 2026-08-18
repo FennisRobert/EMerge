@@ -331,7 +331,13 @@ class CNOSDDAssembler:
 
         self._surf_imp_conductivity_limit: float = 1e4
 
-    
+
+        self.assy_field: Nedelec2 = None
+        self.assy_bcs: list[BoundaryCondition] = None
+        self.assy_freq: float = None
+        self.assy_pecdof: list[int] = []
+        self.assy_port_vectors: dict[int | float, np.ndarray] = None
+
     def assemble_freq_matrix(
         self,
         field: Nedelec2,
@@ -341,16 +347,15 @@ class CNOSDDAssembler:
         domains: list[GeoVolume | DomainSelection]
     ) -> SimJob:
         
+        self.assy_field = field
+        self.assy_bcs = bcs
+        self.assy_freq = frequency
         
         logger.debug(f'Running DD Assembly for frequency = {_format_freq(frequency)}')
 
         # We import these Numba compiled function here because they may not always be needed so compilation is postponed until they
         # are actually used.
         from .curlcurl import tet_mass_stiffness_matrices_subdom
-        from .robinbc import assemble_robin_bc, assemble_robin_bc_bvec
-        from ....mth.pairing import pair_coordinates
-        from .periodicbc import gen_periodic_matrix
-        from .robin_abc_order2 import abc_order_2_matrix
 
         W0 = 2 * np.pi * frequency
         K0 = W0 / C0
@@ -446,8 +451,6 @@ class CNOSDDAssembler:
             logger.debug(f' - Domain {i} A.shape: {mat.shape}')
 
         # Now we generate the further reduction matrix from Ωs to Γis
-        print(intf_2_tags)
-        print(domain_links)
         D_g: dict[int, np.ndarray] = dict()
         R_sg: dict[int, dict[int, csc_matrix]] = {i: dict() for i in range(n_domains)}
 
@@ -489,8 +492,95 @@ class CNOSDDAssembler:
         pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         port_bcs: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
-        #periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
+        
+        self.assy_port_vectors = {}
+        for port in sorted(port_bcs, key=lambda x: x.port_number):
+            for mat_index, mode_nr in port._iter_port_numbers():
+                self.assy_port_vectors[mat_index] = np.zeros((self.assy_field.n_field,), dtype=np.complex128)
 
+        # PEC
+        self._get_pec_ids(pec_bcs, conductor_tets)
+        
+        # ROBIN BC of the actual EM problem
+        for bc in robin_bcs:
+            K = self._get_robin_mat(bc)
+            # K is in global coordinates, we now have to figure out in which domain it is
+            # We can make a simple assumption in this case, We know that any domain only has
+            # DD boundaries Γ plus internal boundaries plus external boundaries that are not adjascent
+            # to other domains.
+            # Any triangle on our robin boundary condition boundary should for now at most be inside one domain
+            # So we may pick any degree of freedom and just test if its inside some domain
+            samp;l
+    def _get_robin_mat(self, bc: RobinBC) -> csc_matrix:
+        
+        from .robinbc import assemble_robin_bc, assemble_robin_bc_bvec
+        from .robin_abc_order2 import abc_order_2_matrix
+        
+        
+        ############################################################
+        #                 ROBIN BOUNDARY CONDITIONS                #
+        ############################################################
+        
+        # Robin boundary conditions are all ports, absorbing boundary dconditions and surface impedance etc.
+        field = self.assy_field
+        mesh = field.mesh
+        K0 = 2*np.pi*self.assy_freq/C0
+        
+        NF = field.n_field
+        B_matrix_robin = field.empty_tri_matrix()
+        K = csc_matrix((NF,NF), dtype=np.complex128)
+        logger.trace(f"   - Implementing {bc}")
+        
+        # Get all Robin BC face triangle and edge
+        tri_ids = mesh.get_triangles(bc.tags)
+
+        if isinstance(bc, (SurfaceImpedance, ThinConductor)):
+            dofs = set(field.tri_to_field[:, tri_ids].flatten())
+            self.assy_pecdof = self.assy_pecdof.difference(dofs)
+        
+        # Compute the γ parameter which is a generic scaling factor
+        # used in the Robin boundary condition matrix etries.
+        gamma = bc.get_gamma(K0)
+        logger.trace(f"    - robin bc γ={gamma:.3f}")
+
+        if bc._assemble_matrix:
+            # The assembler adds the contributions to the Bemptry matrix
+            B_matrix_robin = assemble_robin_bc(
+                field, B_matrix_robin, tri_ids, gamma
+            )  # type: ignore
+
+        # The the forcing vector b-entries for excited ports are added.
+        # Don't include ScatteredField boundary conditions.
+        if (
+            bc._include_force
+            and bc.driven
+            and not isinstance(bc, ScatteredField)
+        ):
+            for number, Ufunc in bc._iter_modes(K0):
+                # Assemble and store in the port_vectors dictionary.
+                b_p = assemble_robin_bc_bvec(field, tri_ids, Ufunc)  # type: ignore
+                self.assy_port_vectors[number] += b_p  # type: ignore
+                logger.trace(
+                    f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}"
+                )
+        
+        ## Second order absorbing boundary correction
+        # Second order corrections are needed using gradient terms for improved absorption.
+        # Only used in AbsorbingBoundary conditions of order 2.
+        if bc._isabc:
+            if bc.order == 2:
+                c2 = bc.get_abccorr(K0)
+                logger.debug("    - Implementing second order ABC correction.")
+                mat = abc_order_2_matrix(field, tri_ids, c2)
+                B_matrix_robin += mat
+            
+        # Add the total contribution of B_matrix_robin to K
+        K = K + csc_matrix((B_matrix_robin, (NF, NF)), dtype=np.complex128)
+        return K
+        #add_coo_to_csc(K, B_matrix_robin, field._rows, field._cols)
+        
+
+    def _get_pec_ids(self, pec_bcs: list[PEC], conductor_tets: list[int]) -> list[int]:
         
         ############################################################
         #                      PEC BOUNDARY CONDITIONS             #
@@ -516,8 +606,8 @@ class CNOSDDAssembler:
 
         for itet in conductor_tets:
             ipec += 1
-            pec_ids.extend(field.tet_to_field[:, itet])
-            for tri in field.mesh.tet_to_tri[:, itet]:
+            pec_ids.extend(self.assy_field.tet_to_field[:, itet])
+            for tri in self.assy_field.mesh.tet_to_tri[:, itet]:
                 pec_tris.append(tri)
                 
         if ipec > 0:
@@ -531,21 +621,19 @@ class CNOSDDAssembler:
             if len(pec.tags) == 0:
                 continue
             face_tags = pec.tags
-            tri_ids = mesh.get_triangles(face_tags)
-            edge_ids = list(mesh.tri_to_edge[:, tri_ids].flatten())
+            tri_ids = self.assy_field.mesh.get_triangles(face_tags)
+            edge_ids = list(self.assy_field.mesh.tri_to_edge[:, tri_ids].flatten())
 
             # Set both edge and triangle PEC field degree of freedoms to zero by
             # adding it to the pec_ids list.
             for ii in edge_ids:
-                eids = field.edge_to_field[:, ii]
+                eids = self.assy_field.edge_to_field[:, ii]
                 pec_ids.extend(list(eids))
 
             for ii in tri_ids:
-                tids = field.tri_to_field[:, ii]
+                tids = self.assy_field.tri_to_field[:, ii]
                 pec_ids.extend(list(tids))
 
             pec_tris.extend(tri_ids)
 
-        pec_ids: set[int] = set(pec_ids)
-
-        
+        self.assy_pecdof: set[int] = set(pec_ids)

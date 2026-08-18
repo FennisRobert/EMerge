@@ -76,7 +76,7 @@ rpatch.set_material(em.lib.PEC)
 dielectric.set_material(em.Material(3.38, color="EMERGE-DIEL", opacity=0.9))
 
 # Mesh resolution: fraction of wavelength
-model.mw.set_resolution(0.1)
+model.mw.set_resolution(0.2)
 
 # Frequency sweep across the resonance
 model.mw.set_frequency_range(f1, f2, 7)
@@ -86,9 +86,9 @@ model.commit_geometry()
 
 # --- Mesh refinement settings --------------------------------------------
 # Finer boundary mesh on patch edges for accuracy
-model.mesher.set_boundary_size(rpatch, 0.5 * mm)
+model.mesher.set_boundary_size(rpatch, 2 * mm)
 # Refined mesh on port face for excitation accuracy
-model.mesher.set_face_size(port, 0.5 * mm)
+model.mesher.set_face_size(port, 1 * mm)
 
 # --- Generate mesh and preview ------------------------------------------
 model.generate_mesh()  # build the finite-element mesh

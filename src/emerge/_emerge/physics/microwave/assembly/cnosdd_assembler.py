@@ -475,4 +475,77 @@ class CNOSDDAssembler:
         for key,value in gijs.items():
             print(f'g_{key[0]},{key[1]} = {value.shape}')
 
-        # now we start doing the full BC Assembly routine, PEC and RObin
+        # now we start doing the full BC Assembly routine, PEC and Robin BC
+
+
+        ############################################################
+        #                      BOUNDARY CONDITION PREP             #
+        ############################################################
+
+        # ISOLATE BOUNDARY CONDITIONS TO ASSEMBLE
+        thin_conductor_bcs: list[ThinConductor] = [
+            bc for bc in bcs if isinstance(bc, ThinConductor)
+        ]
+        pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
+        robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
+        port_bcs: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
+        #periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
+
+        
+        ############################################################
+        #                      PEC BOUNDARY CONDITIONS             #
+        ############################################################
+        
+        logger.debug(" - Implementing PEC Boundary Conditions.")
+
+        # pec_ids is a list of degree of freedom indices that are 0 because
+        # the E-field there is 0. For pec_ids these are references to the
+        # degree of freedom, for the pec_tris these are references to the
+        # triangle index. This is needed for Adaptive mesh refinement error estimates.
+
+        pec_ids: list[int] = []
+        pec_tris: list[int] = []
+        # non_pec_ids: list[int] = []  # PEC DoF that aren't actually PEC
+
+        # Conductivity above al imit, consider it all PEC
+        ipec = 0
+
+        # Volumetric PEC. Thus tets which are all PEC need to have all the
+        # field indices of degrees of freedom of that tetrahedron be set to 0.
+        # No E-field inside the TET
+
+        for itet in conductor_tets:
+            ipec += 1
+            pec_ids.extend(field.tet_to_field[:, itet])
+            for tri in field.mesh.tet_to_tri[:, itet]:
+                pec_tris.append(tri)
+                
+        if ipec > 0:
+            logger.trace(
+                f" - Extended PEC with {ipec} tets with a conductivity > {self.settings.mw_3d_peclim}."
+            )
+
+        # Apply PEC boundary conditions
+        for pec in pec_bcs:
+            logger.trace(f" - Implementing: {pec}")
+            if len(pec.tags) == 0:
+                continue
+            face_tags = pec.tags
+            tri_ids = mesh.get_triangles(face_tags)
+            edge_ids = list(mesh.tri_to_edge[:, tri_ids].flatten())
+
+            # Set both edge and triangle PEC field degree of freedoms to zero by
+            # adding it to the pec_ids list.
+            for ii in edge_ids:
+                eids = field.edge_to_field[:, ii]
+                pec_ids.extend(list(eids))
+
+            for ii in tri_ids:
+                tids = field.tri_to_field[:, ii]
+                pec_ids.extend(list(tids))
+
+            pec_tris.extend(tri_ids)
+
+        pec_ids: set[int] = set(pec_ids)
+
+        

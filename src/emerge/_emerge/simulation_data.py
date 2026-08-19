@@ -22,6 +22,7 @@ from loguru import logger
 from typing import TypeVar, Generic, Any, List, Union, Dict, Generator
 from collections import defaultdict
 from .file import Saveable
+from .solver import SolveReport
 
 T = TypeVar("T")
 M = TypeVar("M")
@@ -150,6 +151,7 @@ class DataEntry(Saveable):
     def __init__(self, variables: dict[str, float]):
         self.vars: dict[str, float] = variables
         self.data: dict[str, Any] = dict()
+        self.reports: list[SolveReport] = []
 
     def is_non_empty(self) -> bool:
         return len(self.data) > 0
@@ -193,6 +195,8 @@ class DataEntry(Saveable):
     def __setitem__(self, key: str, value: Any) -> None:
         self.data[key] = value
 
+    def set_reports(self, reports: list[SolveReport]) -> None:
+        self.reports = reports
 
 class DataContainer(Saveable):
     """The DataContainer class is a generalized class to store data for a set of parameter sweeps"""
@@ -249,9 +253,8 @@ class DataContainer(Saveable):
         self.entries.append(entry)
         return entry
 
-    def iterate(self) -> Generator[tuple[dict[str, float], dict[str, Any]], None, None]:
-        for entry in self.entries:
-            yield entry.vars, entry.data
+    def iterate(self) -> Generator[DataEntry, None, None]:
+        yield from self.entries
 
     @property
     def first(self) -> DataEntry:

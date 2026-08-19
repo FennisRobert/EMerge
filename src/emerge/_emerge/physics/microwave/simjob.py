@@ -195,3 +195,17 @@ class SimJob:
         if not os.listdir(self.relative_path):
             logger.trace(f'   removing directory "{self.relative_path}"')
             os.rmdir(self.relative_path)
+
+class CNOSDDSimJob(SimJob):
+    """Adapts already-solved CNOSDD per-port field vectors to the SimJob
+    interface _post_process expects. The fields are already fully resolved
+    in memory by the time this is constructed, so the solve/cache machinery
+    inherited from SimJob (A, b_vectors, store_if_needed, etc.) is unused --
+    only .freq and ._solutions_dict are ever read by _post_process.
+    """
+
+    def load_solutions(self) -> None:
+        pass  # _solutions_dict is populated directly by solve_cnosdd
+
+    def clear_solutions(self) -> None:
+        pass  # kept in memory -- nothing on disk to release

@@ -372,7 +372,7 @@ class MWData(Saveable):
         return self
 
     def setreport(self, report, **vars):
-        self.sim.new(**vars)["report"] = report
+        self.sim.new(**vars).set_reports(report)
 
     def export_farfields(
         self,

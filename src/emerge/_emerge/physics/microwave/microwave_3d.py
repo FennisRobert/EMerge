@@ -15,7 +15,7 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-# Last Cleanup: 2026-03-04
+# Last Cleanup: 2026-08-19 (deduplication pass)
 from ..._global import _GlobalHandler
 from ...mesher import Mesher
 from ...mesh3d import Mesh3D
@@ -41,7 +41,7 @@ from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePortIH, UserDefined
 from .microwave_data import MWData
 from .assembly.assembler import Assembler
 from .port_functions import compute_avg_power_flux, compute_port_power_flux
-from .simjob import SimJob
+from .simjob import SimJob, CNOSDDSimJob
 
 from emsutil import Material
 from concurrent.futures import ThreadPoolExecutor
@@ -61,6 +61,64 @@ class SimulationError(Exception):
     pass
 
 
+############################################################
+#                        COCG SOLVER                       #
+############################################################
+from scipy.sparse.linalg import gmres, lgmres, gcrotmk, bicgstab, tfqmr, qmr
+
+SolverName = Literal['gmres', 'lgmres', 'gcrotmk', 'bicgstab', 'tfqmr', 'qmr']
+
+
+############################################################
+#                      KRYLOV SOLVERS                     #
+############################################################
+
+def _solve_krylov(
+    op,
+    c: np.ndarray,
+    solver: SolverName = 'gmres',
+    x0: np.ndarray | None = None,
+    rtol: float = 1e-8,
+    maxiter: int = 200,
+    restart: int = 30,
+    logger_=logger,
+):
+    iters = {'n': 0}
+
+    def cb(res):
+        iters['n'] += 1
+        if isinstance(res, np.ndarray):
+            logger_.debug(f' - {solver} iter {iters["n"]}: |x_k| = {np.linalg.norm(res):.6e} (not a residual)')
+        else:
+            logger_.debug(f' - {solver} iter {iters["n"]}: residual = {res:.6e}')
+    t0 = time.time()
+
+    if solver == 'gmres':
+        result = gmres(op, c, x0=x0, restart=restart, maxiter=maxiter,
+                        rtol=rtol, callback=cb, callback_type='pr_norm')
+    elif solver == 'lgmres':
+        result = lgmres(op, c, x0=x0, maxiter=maxiter, rtol=rtol, callback=cb)
+    elif solver == 'gcrotmk':
+        result = gcrotmk(op, c, x0=x0, maxiter=maxiter, rtol=rtol, callback=cb)
+    elif solver == 'bicgstab':
+        result = bicgstab(op, c, x0=x0, maxiter=maxiter, rtol=rtol, callback=cb)
+    elif solver == 'tfqmr':
+        result = tfqmr(op, c, x0=x0, maxiter=maxiter, rtol=rtol, callback=cb)
+    elif solver == 'qmr':
+        from scipy.sparse.linalg import LinearOperator
+        qmr_op = LinearOperator(op.shape, matvec=op.matvec, rmatvec=op.matvec, dtype=op.dtype)
+        result = qmr(qmr_op, c, x0=x0, maxiter=maxiter, rtol=rtol, callback=cb)
+    else:
+        raise ValueError(f"Unknown solver: {solver!r}")
+
+    elapsed = time.time() - t0
+    x, info = result
+    logger_.info(
+        f'{solver}: {iters["n"]} iterations, {elapsed:.3f}s total '
+        f'({1000 * elapsed / max(iters["n"], 1):.2f}ms/iter), info={info}'
+    )
+
+    return x, info, elapsed
 ############################################################
 #                 MULTI PROCESSING FUNCTION                #
 ############################################################
@@ -340,10 +398,10 @@ class Microwave3D(GenericPhysics3D):
 
         self.frequencies: list[float] = []
         self.current_frequency = 0
-        
+
         self.dofset: DoFSet = ElementSpace.SECOND_MIXED_VOLAKIS.get_set()
         self.dofset_em: DoFSet = ElementSpace.SECOND_MIXED_SAVAGE.get_set()
-        
+
         self.resolution: float = (
             0.33  # Resolution of the mesh as the fraction of the wavelength
         )
@@ -362,7 +420,7 @@ class Microwave3D(GenericPhysics3D):
         self.cache_matrices: bool = True
 
         self.mat_assy: MaterialAssignment | None = None
-        
+
         ## States
         self._default_bcs_initialized: bool = False
         self._bc_data_initialized = False
@@ -411,9 +469,9 @@ class Microwave3D(GenericPhysics3D):
             logger.info('Reset boundary condition states.')
             for bc in self.bc.oftype(ModalPort):
                 bc.reset()
-        
+
         self.mat_assy = None
-        
+
         self.basis: FEMBasis = None
         self.solveroutine.reset()
         self.assembler.cached_matrices = None
@@ -440,17 +498,17 @@ class Microwave3D(GenericPhysics3D):
     #                            SETTERS                       #
     ############################################################
 
-    def set_basis_space(self, 
-                    element_order: Literal[1,2] = 2, 
-                    complete: bool = False, 
+    def set_basis_space(self,
+                    element_order: Literal[1,2] = 2,
+                    complete: bool = False,
                     elementspace: ElementSpace | None = None,
                     dof_set: DoFSet | None = None) -> None:
         """Define the finite element basis order or element space.
-        
+
         Choices for order that are supported are:
          1 - First order
          2 - Second order (Anders and Volakis by default)
-        
+
         Complete:
          False - Use Mixed Order basis functions. 20 total. Best for most applications
          True - Use a Complete Order basis functions. 30 total. Slower but better for models with strong
@@ -461,7 +519,7 @@ class Microwave3D(GenericPhysics3D):
             element_order (Literal[1,2]): The order of basis functions
             complete (bool, optional): If complete over mixed set of basis function is to be used. Defaults to False.
             elementspace (ElementSpace | None, optional): Manually specify the ElementSpace. Defaults to None.
-            dof_set (DoFSet | None, optional): A user defined DoF set. 
+            dof_set (DoFSet | None, optional): A user defined DoF set.
         """
         if dof_set is not None:
             self.dofset = dof_set
@@ -469,7 +527,7 @@ class Microwave3D(GenericPhysics3D):
         if elementspace is not None:
             self.dofset = elementspace.get_set()
             return
-        
+
         if element_order == 1:
             if complete:
                 self.dofset = ElementSpace.FIRST_ORDER_COMPLETE.get_set()
@@ -480,7 +538,7 @@ class Microwave3D(GenericPhysics3D):
                 self.dofset = ElementSpace.SECOND_COMPLETE_VOLAKIS.get_set()
             else:
                 self.dofset = ElementSpace.SECOND_MIXED_VOLAKIS.get_set()
-        
+
     def set_frequency(self, frequency: float | list[float] | np.ndarray) -> None:
         """Define the frequencies for the frequency sweep
 
@@ -584,13 +642,31 @@ class Microwave3D(GenericPhysics3D):
 
         return freq_groups
 
+    def _check_frequency_sanity(self) -> None:
+        """Warns about frequency lists that look like unit mistakes or that
+        may cause slow simulations. Shared by every solve entry point that
+        iterates self.frequencies.
+        """
+        if len(self.frequencies) > 200:
+            _GlobalHandler.active().debugcollector.add_report(
+                f"More than 200 frequency points are detected ({len(self.frequencies)}). This may cause slow simulations. Consider using Vector Fitting to subsample S-parameters."
+            )
+        if min(self.frequencies) < 1e6:
+            _GlobalHandler.active().debugcollector.add_report(
+                f"A frequency smaller than 1MHz has been detected ({min(self.frequencies)} Hz). Perhaps you forgot to include usints like 1e6 for MHz etc."
+            )
+        if max(self.frequencies) > 1e12:
+            _GlobalHandler.active().debugcollector.add_report(
+                f"A frequency greater than THz has been detected ({min(self.frequencies)} Hz). Perhaps you double counted frequency units like twice 1e6 for MHz etc."
+            )
+
     def _autogenerate_bcs(self) -> None:
         """Initializes the boundary conditions to set PEC as all exterior boundaries."""
         if self._default_bcs_initialized:
             return
-        
+
         logger.info("  Generating default boundary conditions.")
-        
+
         # These tags are all faces that actually terminate the simulation domain.
         external_tags = self.mesher.domain_boundary_face_tags
 
@@ -599,7 +675,7 @@ class Microwave3D(GenericPhysics3D):
 
         if len(external_tags) > 0:
             self.bc.no_overwrite().PEC(FaceSelection(external_tags))
-        
+
         if self.mesher.periodic_cell is not None:
             self.mesher.periodic_cell.generate_bcs()
             for bc in self.mesher.periodic_cell.bcs:
@@ -607,7 +683,7 @@ class Microwave3D(GenericPhysics3D):
 
         # Assign SurfaceImpedance to all conducting volume_boundaries
         material_map = defaultdict(set)
-        
+
         for geometry in self._state.all2d:
 
             # Thin Condutor from PCB Traces
@@ -618,7 +694,7 @@ class Microwave3D(GenericPhysics3D):
             if geometry.properties.get_attr(Material, 'cond.value', default=0.0) > self.assembler.settings.mw_3d_surfimplim:
                 surface_roughness = geometry.properties.get_value(SurfaceRoughness, 0.0)
                 thickness = geometry.properties.get_value(FiniteThickness, 1.0)
-                
+
                 tags_ext = [tag for tag in geometry.tags if tag in external_tags]
                 tags_int = [tag for tag in geometry.tags if tag not in external_tags]
 
@@ -637,7 +713,7 @@ class Microwave3D(GenericPhysics3D):
                 self.bc.ModalPort(geometry, wpattr.port_number, modetype=wpattr.mode_type)
                 for attr in geometry.properties:
                     logger.info(f'   - {attr}')
-            
+
             if wpattr := geometry.properties.get(LumpedPortAttribute):
                 self.bc.LumpedPort(geometry, wpattr.port_number, width=wpattr.width, height=wpattr.height, direction=wpattr.direction)
                 for attr in geometry.properties:
@@ -647,7 +723,7 @@ class Microwave3D(GenericPhysics3D):
                 self.bc.LumpedElement(geometry, wpattr.impedance_function, width=wpattr.width, height=wpattr.height)
                 for attr in geometry.properties:
                                     logger.info(f'   - {attr}')
-            
+
         for geometry in self._state.all3d:
             material = geometry.material
             if material.cond.value > self.assembler.settings.mw_3d_surfimplim and material.name != 'PEC':
@@ -668,7 +744,7 @@ class Microwave3D(GenericPhysics3D):
         """Initializes auxilliary required boundary condition information before running simulations."""
         if not self._bc_data_initialized:
             logger.debug("(Microwave) Initializing boundary condition data")
-            
+
             self._autogenerate_bcs()
             # Removes non-assigned boundary conditions.
             # This happens for example if the initial boundary PEC gets overwritten.
@@ -685,40 +761,52 @@ class Microwave3D(GenericPhysics3D):
                 logger.debug("Processing thin conductors")
                 self.basis.partition_dof([x.tags for x in thin_conductor_bcs])
                 self.basis._partitioned = True
-            
+
             self._bc_data_initialized = True
-        
+
     def _check_meshed(self) -> None:
         """Checks if a mesh is generated"""
         if not self.mesh.defined:
             raise SimulationError("Mesh is not defined. Call generate_mesh() first!")
 
-    def _check_physics(self) -> None:
+    def _check_physics(self, check_excitation: bool = True, check_port_placement: bool = True) -> None:
         """Executes a physics check before a simulation can be run.
+
+        Each check can be toggled independently so callers can pick the
+        subset that applies to them, like items on a menu -- e.g. eigenmode
+        analyses have no driven excitation to validate.
+
+        Args:
+            check_excitation (bool, optional): Verify at least one BC is
+                excited and that ports are individually well-formed. Defaults
+                to True.
+            check_port_placement (bool, optional): Verify lumped ports sit
+                strictly inside the domain and non-lumped ports sit strictly
+                on the exterior boundary. Defaults to True.
 
         Raises:
            BoundaryConditionError: If any boundary condition is not setup correctly
 
         """
-        self.bc._is_excited()
-        self.bc._check_ports()
+        if check_excitation:
+            self.bc._is_excited()
+            self.bc._check_ports()
 
-        # Check if lumped ports are inside the domain
-        exterior_tags = set(self.mesher.domain_boundary_face_tags)
-        for lumped_port in self.bc.oftype(LumpedPort):
-            if not set(lumped_port.selection.tags).isdisjoint(exterior_tags):
-                _GlobalHandler.active().debugcollector.add_report(
-                    f"Lumped port {lumped_port} is assigned to face tags that are part of the exterior boundary. Lumped ports must be strictly inside the domain. Otherwise unexpected behavior may occur."
-                )
+        if check_port_placement:
+            exterior_tags = set(self.mesher.domain_boundary_face_tags)
+            for lumped_port in self.bc.oftype(LumpedPort):
+                if not set(lumped_port.selection.tags).isdisjoint(exterior_tags):
+                    _GlobalHandler.active().debugcollector.add_report(
+                        f"Lumped port {lumped_port} is assigned to face tags that are part of the exterior boundary. Lumped ports must be strictly inside the domain. Otherwise unexpected behavior may occur."
+                    )
 
-        # Check if all ports are on the exterior
-        for port in self.bc.oftype(PortBC):
-            if isinstance(port, LumpedPort):
-                continue
-            if not set(port.selection.tags).issubset(exterior_tags):
-                _GlobalHandler.active().debugcollector.add_report(
-                    f"Port {port} is partially not on the exterior boundary of the simulation domain. This may cause unexpected behavior. Ports should be strictly part of the exterior boundary."
-                )
+            for port in self.bc.oftype(PortBC):
+                if isinstance(port, LumpedPort):
+                    continue
+                if not set(port.selection.tags).issubset(exterior_tags):
+                    _GlobalHandler.active().debugcollector.add_report(
+                        f"Port {port} is partially not on the exterior boundary of the simulation domain. This may cause unexpected behavior. Ports should be strictly part of the exterior boundary."
+                    )
 
     def _define_lumped_port_integration_points(self, port: LumpedPort) -> None:
         """Sets the integration points on Lumped Port objects for voltage integration
@@ -879,6 +967,146 @@ class Microwave3D(GenericPhysics3D):
             bc._check_mode_betas()
 
     ############################################################
+    #             SHARED JOB DISPATCH / ORCHESTRATION          #
+    ############################################################
+
+    def _dispatch_jobs(
+        self,
+        jobs: list[SimJob],
+        parallel: bool,
+        multi_processing: bool,
+        n_workers: int,
+    ) -> list[SimJob]:
+        """Runs a batch of already-assembled SimJobs, choosing between
+        single-threaded, multi-threaded, and multi-process dispatch. This is
+        the shared core of run_sweep / run_scattered's group-solve step.
+        """
+        def run_job_single(job: SimJob) -> SimJob:
+            A, bmat, ids, aux = job.get_Ab()
+            solution, report = self.solveroutine.solve(
+                A, bmat, ids, matrix_type=job.mtype, id=job.id
+            )
+            report.add(**aux)
+            job.submit_solution(solution, report)
+            return job
+
+        if not parallel:
+            logger.info(f"Starting single threaded solve of {len(jobs)} jobs.")
+            return [run_job_single(job) for job in jobs]
+
+        if not multi_processing:
+            thread_local = threading.local()
+
+            def get_routine() -> SolveRoutine:
+                if not hasattr(thread_local, "routine"):
+                    worker_nr = int(threading.current_thread().name.split("_")[1]) + 1
+                    thread_local.routine = self.solveroutine.duplicate()._configure_routine(
+                        "MT", thread_nr=worker_nr
+                    )
+                return thread_local.routine
+
+            def run_job(job: SimJob) -> SimJob:
+                routine = get_routine()
+                A, bmat, ids, aux = job.get_Ab()
+                solution, report = routine.solve(
+                    A, bmat, ids, matrix_type=job.mtype, id=job.id
+                )
+                report.add(**aux)
+                job.submit_solution(solution, report)
+                return job
+
+            logger.info(
+                f"Starting distributed solve of {len(jobs)} jobs with {n_workers} threads."
+            )
+            with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="WKR") as executor:
+                results = list(executor.map(run_job, jobs))
+            thread_local.__dict__.clear()
+            return results
+
+        if not _called_from_main_function():
+            raise SimulationError(
+                "Multiprocess support must be launched from your "
+                "if __name__ == '__main__' guard in the top-level script."
+            )
+        logger.info(
+            f"Starting distributed solve of {len(jobs)} jobs with {n_workers} processes in parallel"
+        )
+        with mp.Pool(processes=n_workers) as pool:
+            return pool.map(run_job_multi, jobs)
+
+    def _run_frequency_domain(
+        self,
+        assemble_fn: Callable,
+        parallel: bool,
+        n_workers: int,
+        harddisc_path: str,
+        frequency_groups: int,
+        cache_harddisk: bool,
+        multi_processing: bool,
+        automatic_modal_analysis: bool,
+    ) -> tuple[list[SimJob], list[tuple[np.ndarray, np.ndarray, np.ndarray]]]:
+        """Shared assemble-then-solve loop used by run_sweep and run_scattered.
+
+        assemble_fn is a bound assembler method (assemble_freq_matrix or
+        assemble_scattering_matrix), called as:
+            assemble_fn(self.basis, self.mat_assy, self.bc.boundary_conditions,
+                        freq, cache_matrices=self.cache_matrices)
+
+        Frequencies are grouped (per frequency_groups) so only one group's
+        worth of matrices is held in memory at a time; each group is
+        assembled, then solved via _dispatch_jobs, before moving to the next.
+        """
+        simulation_jobs: list[SimJob] = []
+        material_set: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        job_counter = 1
+
+        freq_groups = self._get_frequency_groups(frequency_groups)
+        for i, group in enumerate(freq_groups):
+            group_GHz = [f"{f / 1e9:.3f}GHz" for f in group]
+            logger.trace(f"Frequency group ({i}): {group_GHz}")
+
+        # I am not sure if this is supposed to be there
+        self._compute_modes(sum(self.frequencies) / len(self.frequencies))
+
+        for i_group, fgroup in enumerate(freq_groups):
+            logger.info(f"Precomputing group {i_group}.")
+            jobs = []
+
+            for freq in fgroup:
+                logger.debug(f"Simulation frequency = {_format_freq(freq)}")
+
+                if automatic_modal_analysis:
+                    self._compute_modes(freq)
+
+                job, mats = assemble_fn(
+                    self.basis,
+                    self.mat_assy,
+                    self.bc.boundary_conditions,
+                    freq,
+                    cache_matrices=self.cache_matrices,
+                )
+                if cache_harddisk:
+                    job.store_if_needed(harddisc_path)
+
+                job.id = job_counter
+                job_counter += 1
+                jobs.append(job)
+                material_set.append(mats)
+
+            group_results = self._dispatch_jobs(jobs, parallel, multi_processing, n_workers)
+            simulation_jobs.extend(group_results)
+
+        return simulation_jobs, material_set
+
+    def _log_sim_reports(self) -> None:
+        """Trace-logs every stored solve report. Shared tail of run_sweep /
+        run_scattered / _run_adaptive_mesh."""
+        for dataentry in self.data.sim.iterate():
+            logger.trace(f"Sim variable: {dataentry.vars}")
+            for item in dataentry.reports:
+                item.logprint(logger.trace)
+
+    ############################################################
     #                   MAIN SIMULATION FUNCTIONS              #
     ############################################################
 
@@ -944,7 +1172,7 @@ class Microwave3D(GenericPhysics3D):
         # Materials is now a list of materials and in the materials themselves
         # They know what values are assigned to which index. This is not uniform
         # because coordinate dependent material properties/materials are possible.
-        
+
         # Er, Tand, ur, and conductivity parameters are always 3 by 3 full
         # material property tensors per tetrahedron.
         # They are assumed constant within each tetrahedron.
@@ -965,7 +1193,6 @@ class Microwave3D(GenericPhysics3D):
             urtet = mat.ur(freq, urtet, centers, ids)
             tandtet = mat.tand(freq, tandtet, centers, ids)
             condtet = mat.cond(freq, condtet, centers, ids)
-
 
         # Compute the complex dielectric constant with the loss tangent.
         ertet = ertet * (1 - 1j * tandtet)
@@ -1138,7 +1365,7 @@ class Microwave3D(GenericPhysics3D):
                 mode_type = "TM"
             else:
                 mode_type = "TEM"
-                
+
             logger.debug(f".. Mode type = {mode_type}")
 
             # Figure out if TE, TM, or TEM mode
@@ -1305,44 +1532,13 @@ class Microwave3D(GenericPhysics3D):
         Returns:
             MWSimData: The dataset.
         """
-        # --------------------------------------------------------------------
-        # States
-        # --------------------------------------------------------------------
-
         self._completed = False
         self._simstart = time.time()
         self.solveroutine.symmetry_limit = self._settings.sim_symmetry_limit
 
-        # --------------------------------------------------------------------
-        # Local Variables
-        # --------------------------------------------------------------------
-
-        simulation_jobs: list[SimJob] = []
-        material_set: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        job_counter: int = 1
         harddisc_path = str(self._state.modelpath / harddisc_path)
 
-        ############################################################
-        #                          FREQUENCY CHECK                 #
-        ############################################################
-
-        # Safety tests
-        if len(self.frequencies) > 200:
-            _GlobalHandler.active().debugcollector.add_report(
-                f"More than 200 frequency points are detected ({len(self.frequencies)}). This may cause slow simulations. Consider using Vector Fitting to subsample S-parameters."
-            )
-        if min(self.frequencies) < 1e6:
-            _GlobalHandler.active().debugcollector.add_report(
-                f"A frequency smaller than 1MHz has been detected ({min(self.frequencies)} Hz). Perhaps you forgot to include usints like 1e6 for MHz etc."
-            )
-        if max(self.frequencies) > 1e12:
-            _GlobalHandler.active().debugcollector.add_report(
-                f"A frequency greater than THz has been detected ({min(self.frequencies)} Hz). Perhaps you double counted frequency units like twice 1e6 for MHz etc."
-            )
-
-        # --------------------------------------------------------------------
-        # Initialization
-        # --------------------------------------------------------------------
+        self._check_frequency_sanity()
 
         logger.info(
             f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
@@ -1350,14 +1546,9 @@ class Microwave3D(GenericPhysics3D):
         self._initialize_field()
         self._initialize_bc_data()
 
-        # --------------------------------------------------------------------
-        # Checks
-        # --------------------------------------------------------------------
-
         self._check_meshed()
         self._check_physics()
-        
-        
+
         if self.basis is None:
             raise SimulationError(
                 "Cannot proceed, the simulation basis class is undefined."
@@ -1366,269 +1557,60 @@ class Microwave3D(GenericPhysics3D):
         if self._settings.check_ram:
             _check_ram(self.mesh.n_tets, n_workers, parallel)
 
-        # --------------------------------------------------------------------
-        # Material Assignments
-        # --------------------------------------------------------------------
-
         logger.debug("Resolving material assingments.")
         self._generate_material_assignment()
 
-        # --------------------------------------------------------------------
-        # Port BC prepratation
-        # --------------------------------------------------------------------
-
-        all_ports = self.bc.oftype(PortBC)
-        for port in all_ports:
-            port.active = False
-
-        # --------------------------------------------------------------------
-        # Initializing solve functions
-        # --------------------------------------------------------------------
-
-        thread_local = None
-
-        if parallel:
-            # Thread-local storage for per-thread resources
-            thread_local = threading.local()
-
-        def get_routine() -> SolveRoutine:
-            if not hasattr(thread_local, "routine"):
-                worker_nr = int(threading.current_thread().name.split("_")[1]) + 1
-                thread_local.routine = self.solveroutine.duplicate()._configure_routine(
-                    "MT", thread_nr=worker_nr
-                )
-            return thread_local.routine
-
-        # Multi processing solves first need a SolveRoutine object to execute the solve.
-        def run_job(job: SimJob) -> SimJob:
-            routine = get_routine()
-            A, bmat, ids, aux = job.get_Ab()
-            solution, report = routine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id
-            )
-            report.add(**aux)
-            job.submit_solution(solution, report)
-            return job
-
-        # Single threaded does not need this routine as the class's own routine can be used.
-        def run_job_single(job: SimJob) -> SimJob:
-            A, bmat, ids, aux = job.get_Ab()
-            solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id
-            )
-            report.add(**aux)
-            job.submit_solution(solution, report)
-            return job
-
-        # --------------------------------------------------------------------
-        # Grouping solve frequencies
-        # --------------------------------------------------------------------
-
-        # Frequency groups are the groups of frequencie that are assembled and then solved
-        # Less assembled problems reduces RAM usage.
-        freq_groups = self._get_frequency_groups(frequency_groups)
-
-        for i, group in enumerate(freq_groups):
-            group_GHz = [f"{f / 1e9:.3f}GHz" for f in group]
-            logger.trace(f"Frequency group ({i}): {group_GHz}")
-
-        # I am not sure if this is supposed to be there
-        self._compute_modes(sum(self.frequencies) / len(self.frequencies))
-
-        # --------------------------------------------------------------------
-        # Single Threaded Solve
-        # --------------------------------------------------------------------
-
-        if not parallel:
-            for i_group, fgroup in enumerate(freq_groups):
-                logger.info(f"Precomputing group {i_group}.")
-                jobs = []
-
-                ## Assemble jobs
-                # for each frequency in the frequency group
-                for ifreq, freq in enumerate(fgroup):
-                    logger.debug(f"Simulation frequency = {_format_freq(freq)}")
-
-                    # Execute a new modal analysis if needed (only in cases where the propagation constant can't be predicted.)
-                    if automatic_modal_analysis:
-                        self._compute_modes(freq)
-
-                    # Assemble the FEM problem
-                    job, mats = self.assembler.assemble_freq_matrix(
-                        self.basis,
-                        self.mat_assy,
-                        self.bc.boundary_conditions,
-                        freq,
-                        cache_matrices=self.cache_matrices,
-                    )
-                    # Cache to the harddrive if needed.
-                    if cache_harddisk:
-                        job.store_if_needed(harddisc_path)
-
-                    job.id = job_counter
-                    job_counter += 1
-                    jobs.append(job)
-                    material_set.append(mats)
-                # Finally solve the problems for each frequency individually.
-                logger.info(f"Starting single threaded solve of {len(jobs)} jobs.")
-                group_results = [run_job_single(job) for job in jobs]
-                simulation_jobs.extend(group_results)
-
-        # --------------------------------------------------------------------
-        # Multi-Threaded Solve
-        # --------------------------------------------------------------------
-
-        elif not multi_processing:
-            with ThreadPoolExecutor(
-                max_workers=n_workers, thread_name_prefix="WKR"
-            ) as executor:
-                # ITERATE OVER FREQUENCIES
-                for i_group, fgroup in enumerate(freq_groups):
-                    logger.info(f"Precomputing group {i_group}.")
-                    jobs = []
-                    ## Assemble jobs
-                    for freq in fgroup:
-                        logger.debug(f"Simulation frequency = {_format_freq(freq)}")
-                        # Compute new port modes if needed.
-                        if automatic_modal_analysis:
-                            self._compute_modes(freq)
-
-                        # Assemble the problem Ax=b
-                        job, mats = self.assembler.assemble_freq_matrix(
-                            self.basis,
-                            self.mat_assy,
-                            self.bc.boundary_conditions,
-                            freq,
-                            cache_matrices=self.cache_matrices,
-                        )
-                        # Cache to the harddrive if needed
-                        if cache_harddisk:
-                            job.store_if_needed(harddisc_path)
-
-                        job.id = job_counter
-                        job_counter += 1
-                        jobs.append(job)
-                        material_set.append(mats)
-
-                    # Solve all problems using the executor.
-                    logger.info(
-                        f"Starting distributed solve of {len(jobs)} jobs with {n_workers} threads."
-                    )
-                    group_results = list(executor.map(run_job, jobs))
-                    simulation_jobs.extend(group_results)
-                executor.shutdown()
-
-        # --------------------------------------------------------------------
-        # Multi-Processing Solve
-        # --------------------------------------------------------------------
-
-        else:
-            # Check for entry point protection
-            if not _called_from_main_function():
-                raise SimulationError(
-                    "Multiprocess support must be launched from your "
-                    "if __name__ == '__main__' guard in the top-level script."
-                )
-            # Start parallel pool
-            with mp.Pool(processes=n_workers) as pool:
-                for i_group, fgroup in enumerate(freq_groups):
-                    logger.debug(f"Precomputing group {i_group}.")
-                    jobs = []
-                    # Assemble jobs
-                    for freq in fgroup:
-                        logger.debug(f"Simulation frequency = {_format_freq(freq)}")
-                        # Execute modal analysis if needed
-                        if automatic_modal_analysis:
-                            self._compute_modes(freq)
-
-                        # Assemble the problem Ax=b
-                        job, mats = self.assembler.assemble_freq_matrix(
-                            self.basis,
-                            self.mat_assy,
-                            self.bc.boundary_conditions,
-                            freq,
-                            cache_matrices=self.cache_matrices,
-                        )
-
-                        # Cache to the harddrive if needed
-                        if cache_harddisk:
-                            job.store_if_needed(harddisc_path)
-
-                        job.id = job_counter
-                        job_counter += 1
-                        jobs.append(job)
-                        material_set.append(mats)
-
-                    logger.info(
-                        f"Starting distributed solve of {len(jobs)} jobs "
-                        f"with {n_workers} processes in parallel"
-                    )
-                    # Distribute taks
-                    group_results = pool.map(run_job_multi, jobs)
-                    simulation_jobs.extend(group_results)
-
-        # --------------------------------------------------------------------
-        # Cleanup
-        # --------------------------------------------------------------------
-
-        if parallel:
-            thread_local.__dict__.clear()
+        simulation_jobs, material_set = self._run_frequency_domain(
+            self.assembler.assemble_freq_matrix,
+            parallel,
+            n_workers,
+            harddisc_path,
+            frequency_groups,
+            cache_harddisk,
+            multi_processing,
+            automatic_modal_analysis,
+        )
 
         if _reset_solvers:
             self.solveroutine.reset()
 
         logger.info("Solving complete")
 
-        # --------------------------------------------------------------------
-        # Writing solve reports
-        # --------------------------------------------------------------------
-
         for freq, job in zip(self.frequencies, simulation_jobs):
             self.data.setreport(job.reports, freq=freq, **self._params)
-
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
-                item.logprint(logger.trace)
-
-        # --------------------------------------------------------------------
-        # Post Processing
-        # --------------------------------------------------------------------
+        self._log_sim_reports()
 
         self._post_process(simulation_jobs, material_set)
         self._completed = True
         return self.data
 
-    def solve_cnosdd(self, frequency: float, domains: list[GeoVolume]) -> MWData:
+    def solve_cnosdd(
+        self,
+        frequency: float,
+        domains: list[GeoVolume],
+        ports: list[int | float] | None = None,
+        solver: SolverName = 'gmres',
+    ) -> MWData:
         """Conformal, Non-overlapping Schwarz Domain Decomposition solve
 
         Args:
-            domains (list[GeoVolume]): _description_
+            frequency (float): The simulation frequency.
+            domains (list[GeoVolume]): The domain partition.
+            ports (list[int | float] | None, optional): Which driven ports'
+                smat_index values to excite and solve for. Each requested port
+                costs one full DD/GMRES solve (subdomain factorizations are
+                reused across ports, but the Krylov solve itself is not).
+                Defaults to None, meaning every driven port -- equivalent to a
+                full port sweep, so pass an explicit subset to avoid that cost
+                during DD development/testing.
 
         Returns:
             MWData: _description_
         """
 
-        # --------------------------------------------------------------------
-        # States
-        # --------------------------------------------------------------------
-
         self._completed = False
         self._simstart = time.time()
         self.solveroutine.symmetry_limit = self._settings.sim_symmetry_limit
-
-        # --------------------------------------------------------------------
-        # Local Variables
-        # --------------------------------------------------------------------
-
-        simulation_jobs: list[SimJob] = []
-        material_set: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        job_counter: int = 1
-        #harddisc_path = str(self._state.modelpath / harddisc_path)
-
-        # --------------------------------------------------------------------
-        # Initialization
-        # --------------------------------------------------------------------
 
         logger.info(
             f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
@@ -1636,45 +1618,201 @@ class Microwave3D(GenericPhysics3D):
         self._initialize_field()
         self._initialize_bc_data()
 
-        # --------------------------------------------------------------------
-        # Checks
-        # --------------------------------------------------------------------
-
         self._check_meshed()
         self._check_physics()
-        
-        
+
         if self.basis is None:
             raise SimulationError(
                 "Cannot proceed, the simulation basis class is undefined."
             )
-        
-        # --------------------------------------------------------------------
-        # Material Assignments
-        # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
         self._generate_material_assignment()
-
-        # --------------------------------------------------------------------
-        # Port BC prepratation
-        # --------------------------------------------------------------------
 
         all_ports = self.bc.oftype(PortBC)
         for port in all_ports:
             port.active = False
 
-        
         # I am not sure if this is supposed to be there
         self._compute_modes(frequency)
 
+        driven = [(p, i, m) for p, i, m in self.bc.iter_port_modes() if p.driven]
+        if ports is not None:
+            driven = [(p, i, m) for p, i, m in driven if i in ports]
+        if not driven:
+            raise SimulationError(
+                "solve_cnosdd: no driven ports match the requested `ports` selection."
+            )
+
         from .assembly.cnosdd_assembler import CNOSDDAssembler
+        from scipy.sparse.linalg import LinearOperator, gmres
 
         assembler = CNOSDDAssembler(self._settings)
 
-        data = assembler.assemble_freq_matrix(self.basis, self.mat_assy, self.bc.boundary_conditions, frequency, domains)
+        cnosdata, er, ur, cond = assembler.assemble_freq_matrix(
+            self.basis, self.mat_assy, self.bc.boundary_conditions, frequency, domains
+        )
+
+        logger.info('Starting domain decomposition routine.')
+
+        from ...solver_dd import Factorization
+
+        As = [cnosdata.get_matrix(i) for i in range(cnosdata.n_doms)]
+        Zs = [cnosdata.get_zmat(i) for i in range(cnosdata.n_intf)]
+
+        facts: list[Factorization] = []
+        for i, Amat in enumerate(As):
+            logger.info(f'Factorizing submatrix A{i}')
+            F = Factorization()
+            F.factorize(Amat, None)
+            facts.append(F)
+
+        Rm_cache: dict[tuple[int, int], object] = {}
+        for idom in range(cnosdata.n_doms):
+            for id2 in cnosdata.domlink[idom]:
+                i_itf = cnosdata.itfmap[(idom, id2)]
+                Rm_cache[(idom, id2)] = cnosdata.get_Rm(idom, i_itf)
+
+        keys = list(cnosdata.gs.keys())
+        sizes = [cnosdata.get_g(key).shape[0] for key in keys]
+        offsets = np.cumsum([0] + sizes)
+        n_total = offsets[-1]
+
+        def pack(gdict: dict) -> np.ndarray:
+            z = np.zeros(n_total, dtype=np.complex128)
+            for key, o0, o1 in zip(keys, offsets[:-1], offsets[1:]):
+                z[o0:o1] = gdict[key]
+            return z
+
+        def unpack(z: np.ndarray) -> dict:
+            return {key: z[o0:o1] for key, o0, o1 in zip(keys, offsets[:-1], offsets[1:])}
+
+        def sweep(g_local: dict, bs: list[np.ndarray], include_b: bool) -> dict:
+            g_out = {}
+            for idom in range(cnosdata.n_doms):
+                bsolve = bs[idom].copy() if include_b else np.zeros_like(bs[idom])
+
+                for id2 in cnosdata.domlink[idom]:
+                    Rm = Rm_cache[(idom, id2)]
+                    bsolve = bsolve + Rm.T @ g_local[(idom, id2)]
+
+                xsolve, _ = facts[idom].solve(bsolve)
+
+                for id2 in cnosdata.domlink[idom]:
+                    Rm = Rm_cache[(idom, id2)]
+                    i_itf = cnosdata.itfmap[(idom, id2)]
+                    g_out[(id2, idom)] = -g_local[(idom, id2)] + 2 * Zs[i_itf] * (Rm @ xsolve)
+
+            return g_out
+
+        g0 = {key: np.zeros_like(cnosdata.get_g(key)) for key in keys}
+
+        solutions: dict[int | float, np.ndarray] = {}
+
+        for active_port, smat_index, mode_nr in driven:
+            logger.info(f'DD solve for port smat_index={smat_index}')
+            bs = [cnosdata.get_b(smat_index, i) for i in range(cnosdata.n_doms)]
+
+            c_dict = sweep(g0, bs, include_b=True)
+            c = pack(c_dict)
+
+            def matvec(z: np.ndarray, bs=bs) -> np.ndarray:
+                g_local = unpack(z)
+                Mg = sweep(g_local, bs, include_b=False)
+                return z - pack(Mg)
+
+            op = LinearOperator((n_total, n_total), matvec=matvec, dtype=np.complex128)
+
+            iteration_counter = {'n': 0}
+            total_solve_time = 0.0
+            g_star, info, solve_time = _solve_krylov(
+                op, c,
+                solver=solver,
+                rtol=1e-8,
+                maxiter=200,
+                restart=30,
+            )
+            logger.info(f'Total DD Krylov solve time across {len(driven)} port(s): {total_solve_time:.3f}s')
+
+            if info != 0:
+                logger.warning(f'GMRES did not fully converge for port {smat_index} (info={info}).')
+            else:
+                logger.info(f'GMRES converged in {iteration_counter["n"]} iterations for port {smat_index}.')
+
+            gs = unpack(g_star)
+
+            xsolves: list[np.ndarray] = []
+            for idom in range(cnosdata.n_doms):
+                bsolve = bs[idom].copy()
+                for id2 in cnosdata.domlink[idom]:
+                    Rm = Rm_cache[(idom, id2)]
+                    bsolve = bsolve + Rm.T @ gs[(idom, id2)]
+                xsolve, _ = facts[idom].solve(bsolve)
+                xsolves.append(xsolve)
+
+            x_global = np.zeros(cnosdata.dof_all.shape[0], dtype=np.complex128)
+            dof_count = np.zeros(cnosdata.dof_all.shape[0], dtype=np.complex128)
+
+            for idom in range(cnosdata.n_doms):
+                local_full = np.zeros(cnosdata.Rsd[idom].shape[0], dtype=np.complex128)
+                local_full[cnosdata.dof_solve_dom[idom]] = xsolves[idom]
+                x_global += cnosdata.Rsd[idom].T @ local_full
+
+                local_mask = np.zeros(cnosdata.Rsd[idom].shape[0], dtype=np.complex128)
+                local_mask[cnosdata.dof_solve_dom[idom]] = 1.0
+                dof_count += cnosdata.Rsd[idom].T @ local_mask
+
+            dof_count[dof_count == 0] = 1.0
+            x_global = x_global / dof_count
+
+            solutions[smat_index] = x_global
+
+        job = CNOSDDSimJob(A=None, b_vectors=None, freq=frequency, symmetric=True)
+        job.freq = frequency
+        job._solutions_dict = solutions
+
+        self.data.setreport(job.reports, freq=frequency, **self._params)
+        self._log_sim_reports()
+
+        self._post_process([job], [(er, ur, cond)], excited_smat_indices=list(solutions.keys()))
+        self._completed = True
         return self.data
-    
+
+    def _store_cnosdd_solution(
+        self,
+        x_global: np.ndarray,
+        frequency: float,
+        materials: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    ) -> None:
+        """Stores a single CNOSDD solve result as one MWScalar + MWField entry.
+
+        Uses the _mode_field storage path (same as eigenmode()) rather than the
+        _fields/port_modes/excitation machinery, since CNOSDD currently produces
+        one fixed field vector with no per-port recombination needed.
+        """
+        if self.basis is None:
+            raise SimulationError("Cannot store CNOSDD solution: basis is undefined.")
+
+        k0 = 2 * np.pi * frequency / C0
+
+        scalardata = self.data.scalar.new(freq=frequency, **self._params)
+        scalardata.k0 = k0
+        scalardata.freq = frequency
+
+        fielddata = self.data.field.new(freq=frequency, **self._params)
+        fielddata.freq = frequency
+        fielddata.basis = self.basis
+        fielddata._mode_field = x_global   # <-- bypasses _fields/excitation entirely
+
+        if materials is not None:
+            er, ur, cond = materials
+            fielddata._der = np.squeeze(er[0, 0, :])
+            fielddata._dur = np.squeeze(ur[0, 0, :])
+            fielddata._dsig = np.squeeze(cond[0, 0, :])
+
+        self._state.set_modified()
+        logger.info(f"Stored CNOSDD solution at {_format_freq(frequency)}.")
+
     def run_adaptive_sweep(
         self,
         parallel: bool = False,
@@ -1806,6 +1944,7 @@ class Microwave3D(GenericPhysics3D):
         frequency_groups: int = -1,
         multi_processing: bool = False,
         automatic_modal_analysis: bool = True,
+        _reset_solvers: bool = True,
     ) -> MWData:
         """Executes a Scattered field simulation
 
@@ -1831,36 +1970,19 @@ class Microwave3D(GenericPhysics3D):
         Returns:
             MWSimData: The dataset.
         """
-
-        # --------------------------------------------------------------------
-        # States
-        # --------------------------------------------------------------------
-
         self._completed = False
         self._simstart = time.time()
         self.solveroutine.symmetry_limit = self._settings.sim_symmetry_limit
 
-        # --------------------------------------------------------------------
-        # Local Variables
-        # --------------------------------------------------------------------
+        harddisc_path = str(self._state.modelpath / harddisc_path)
 
-        results: list[SimJob] = []
-        material_set: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        job_counter: int = 1
-
-        # --------------------------------------------------------------------
-        # Initialization
-        # --------------------------------------------------------------------
+        self._check_frequency_sanity()
 
         logger.info(
             f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
         )
         self._initialize_field()
         self._initialize_bc_data()
-
-        # --------------------------------------------------------------------
-        # Checks
-        # --------------------------------------------------------------------
 
         self._check_meshed()
         self._check_physics()
@@ -1872,201 +1994,28 @@ class Microwave3D(GenericPhysics3D):
         if self._settings.check_ram:
             _check_ram(self.mesh.n_tets, n_workers, parallel)
 
-        # --------------------------------------------------------------------
-        # Material Assignments
-        # --------------------------------------------------------------------
-
         logger.debug("Resolving material assingments.")
         self._generate_material_assignment()
 
-        # --------------------------------------------------------------------
-        # Initializing solve functions
-        # --------------------------------------------------------------------
+        results, material_set = self._run_frequency_domain(
+            self.assembler.assemble_scattering_matrix,
+            parallel,
+            n_workers,
+            harddisc_path,
+            frequency_groups,
+            cache_harddisk,
+            multi_processing,
+            automatic_modal_analysis,
+        )
 
-        thread_local = None
-
-        if parallel:
-            # Thread-local storage for per-thread resources
-            thread_local = threading.local()
-
-        def get_routine() -> SolveRoutine:
-            if not hasattr(thread_local, "routine"):
-                worker_nr = int(threading.current_thread().name.split("_")[1]) + 1
-                thread_local.routine = self.solveroutine.duplicate()._configure_routine(
-                    "MT", thread_nr=worker_nr
-                )
-            return thread_local.routine
-
-        def run_job(job: SimJob) -> SimJob:
-            routine = get_routine()
-            A, bmat, ids, aux = job.get_Ab()
-            solution, report = routine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id
-            )
-            report.add(**aux)
-            job.submit_solution(solution, report)
-            return job
-
-        def run_job_single(job: SimJob) -> SimJob:
-            A, bmat, ids, aux = job.get_Ab()
-            solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id
-            )
-            report.add(**aux)
-            job.submit_solution(solution, report)
-            return job
-
-        # --------------------------------------------------------------------
-        # Grouping solve frequencies
-        # --------------------------------------------------------------------
-
-        freq_groups = self._get_frequency_groups(frequency_groups)
-        for i, group in enumerate(freq_groups):
-            group_GHz = [f"{f / 1e9:.3f}GHz" for f in group]
-            logger.trace(f"Frequency group ({i}): {group_GHz}")
-
-        # I am not sure if this is supposed to be there
-        self._compute_modes(sum(self.frequencies) / len(self.frequencies))
-
-        # --------------------------------------------------------------------
-        # Single Threaded Solve
-        # --------------------------------------------------------------------
-
-        if not parallel:
-            for i_group, fgroup in enumerate(freq_groups):
-                logger.info(f"Precomputing group {i_group}.")
-                jobs = []
-                ## Assemble jobs
-                for ifreq, freq in enumerate(fgroup):
-                    logger.debug(f"Simulation frequency = {_format_freq(freq)}")
-                    if automatic_modal_analysis:
-                        self._compute_modes(freq)
-                    job, mats = self.assembler.assemble_scattering_matrix(
-                        self.basis,
-                        self.mat_assy,
-                        self.bc.boundary_conditions,
-                        freq,
-                        cache_matrices=self.cache_matrices,
-                    )
-                    if cache_harddisk:
-                        job.store_if_needed(harddisc_path)
-                    job.id = job_counter
-                    job_counter += 1
-                    jobs.append(job)
-                    material_set.append(mats)
-
-                logger.info(f"Starting single threaded solve of {len(jobs)} jobs.")
-                group_results = [run_job_single(job) for job in jobs]
-                results.extend(group_results)
-
-        # --------------------------------------------------------------------
-        # Multi-Threaded Solve
-        # --------------------------------------------------------------------
-
-        elif not multi_processing:
-            with ThreadPoolExecutor(
-                max_workers=n_workers, thread_name_prefix="WKR"
-            ) as executor:
-                # ITERATE OVER FREQUENCIES
-                for i_group, fgroup in enumerate(freq_groups):
-                    logger.info(f"Precomputing group {i_group}.")
-                    jobs = []
-                    ## Assemble jobs
-                    for freq in fgroup:
-                        logger.debug(f"Simulation frequency = {_format_freq(freq)}")
-                        if automatic_modal_analysis:
-                            self._compute_modes(freq)
-                        job, mats = self.assembler.assemble_scattering_matrix(
-                            self.basis,
-                            self.mat_assy,
-                            self.bc.boundary_conditions,
-                            freq,
-                            cache_matrices=self.cache_matrices,
-                        )
-                        if cache_harddisk:
-                            job.store_if_needed(harddisc_path)
-                        job.id = job_counter
-                        job_counter += 1
-                        jobs.append(job)
-                        material_set.append(mats)
-
-                    logger.info(
-                        f"Starting distributed solve of {len(jobs)} jobs with {n_workers} threads."
-                    )
-                    group_results = list(executor.map(run_job, jobs))
-                    results.extend(group_results)
-                executor.shutdown()
-
-        # --------------------------------------------------------------------
-        # Multi-Processing Solve
-        # --------------------------------------------------------------------
-
-        else:
-            # Check for entry point protection
-            if not _called_from_main_function():
-                raise SimulationError(
-                    "Multiprocess support must be launched from your "
-                    "if __name__ == '__main__' guard in the top-level script."
-                )
-            # Start parallel pool
-            with mp.Pool(processes=n_workers) as pool:
-                for i_group, fgroup in enumerate(freq_groups):
-                    logger.debug(f"Precomputing group {i_group}.")
-                    jobs = []
-                    # Assemble jobs
-                    for freq in fgroup:
-                        logger.debug(f"Simulation frequency = {_format_freq(freq)}")
-                        if automatic_modal_analysis:
-                            self._compute_modes(freq)
-
-                        job, mats = self.assembler.assemble_scattering_matrix(
-                            self.basis,
-                            self.mat_assy,
-                            self.bc.boundary_conditions,
-                            freq,
-                            cache_matrices=self.cache_matrices,
-                        )
-
-                        if cache_harddisk:
-                            job.store_if_needed(harddisc_path)
-                        job.id = job_counter
-                        job_counter += 1
-                        jobs.append(job)
-                        material_set.append(mats)
-
-                    logger.info(
-                        f"Starting distributed solve of {len(jobs)} jobs "
-                        f"with {n_workers} processes in parallel"
-                    )
-                    # Distribute taks
-                    group_results = pool.map(run_job_multi, jobs)
-                    results.extend(group_results)
-
-        # --------------------------------------------------------------------
-        # Cleanup
-        # --------------------------------------------------------------------
-
-        if parallel:
-            thread_local.__dict__.clear()
-        self.solveroutine.reset()
+        if _reset_solvers:
+            self.solveroutine.reset()
 
         logger.info("Solving complete")
 
-        # --------------------------------------------------------------------
-        # Writing solve reports
-        # --------------------------------------------------------------------
-
         for freq, job in zip(self.frequencies, results):
             self.data.setreport(job.reports, freq=freq, **self._params)
-
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
-                item.logprint(logger.trace)
-
-        # --------------------------------------------------------------------
-        # Post Processing
-        # --------------------------------------------------------------------
+        self._log_sim_reports()
 
         self._post_process_scatter(results, material_set)
         self._completed = True
@@ -2095,6 +2044,11 @@ class Microwave3D(GenericPhysics3D):
 
         Returns:
             MWSimData: The dataset.
+
+        Note: this intentionally never sets self._completed. That flag means
+        "a simulation actually finished" and gates whether saved files may be
+        overwritten -- AMR refinement passes don't count as a finished
+        simulation.
         """
 
         self._simstart = time.time()
@@ -2107,7 +2061,7 @@ class Microwave3D(GenericPhysics3D):
         # --------------------------------------------------------------------
         # Initialization
         # --------------------------------------------------------------------
-        
+
         logger.info(
             f"Starting AMR Solve (#tets = {self.mesh.n_tets:,})"
         )
@@ -2130,17 +2084,8 @@ class Microwave3D(GenericPhysics3D):
             _check_ram(self.mesh.n_tets, 1, False)
 
         self._generate_material_assignment()
-        
+
         logger.debug("Initializing single frequency settings.")
-
-        #### Port settings
-        all_ports = self.bc.oftype(PortBC)
-
-        ##### FOR PORT SWEEP SET ALL ACTIVE TO FALSE. THIS SHOULD BE FIXED LATER
-        ### COMPUTE WHICH TETS ARE CONNECTED TO PORT INDICES
-
-        for port in all_ports:
-            port.active = False
 
         def run_job_single(job: SimJob):
             A, bmat, ids, aux = job.get_Ab()
@@ -2175,11 +2120,7 @@ class Microwave3D(GenericPhysics3D):
         logger.info("Solving complete")
 
         self.data.setreport(job.reports, freq=frequency, **self._params)
-
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
-                item.logprint(logger.trace)
+        self._log_sim_reports()
 
         self.solveroutine.reset()
         ### Compute S-parameters and return
@@ -2211,12 +2152,12 @@ class Microwave3D(GenericPhysics3D):
         """
 
         self._simstart = time.time()
-        
+
 
         # --------------------------------------------------------------------
         # Initialization
         # --------------------------------------------------------------------
-        
+
         logger.info(
             f"Starting frequency domain simulation (#tets = {self.mesh.n_tets:,})"
         )
@@ -2239,7 +2180,7 @@ class Microwave3D(GenericPhysics3D):
         # --------------------------------------------------------------------
         # Matrix Assembly
         # --------------------------------------------------------------------
-        
+
         logger.info(
             f"Pre-assembling matrices of {len(self.frequencies)} frequency points."
         )
@@ -2311,7 +2252,7 @@ class Microwave3D(GenericPhysics3D):
             if isinstance(active_port, (LumpedPort,UserDefinedPort) ):
                 p_constants[smat_index] = 1.0
                 continue
-            
+
 
             inward_normal = self.mesh.inward_normal(active_port.tags)
 
@@ -2336,18 +2277,46 @@ class Microwave3D(GenericPhysics3D):
             logger.debug(f"Port {active_port} power = {power:.4f} [W]")
         return p_constants
 
+    @staticmethod
+    def _average_material_tensor(tensor: np.ndarray) -> np.ndarray:
+        """Trace/3 average of a (3,3,N) material tensor -> (N,) scalar.
+        Shared by _post_process / _post_process_scatter.
+        """
+        return (tensor[0, 0, :] + tensor[1, 1, :] + tensor[2, 2, :]) / 3
+
+    def _materials_to_tris(
+        self, er: np.ndarray, ur: np.ndarray, cond: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Broadcasts per-tet material tensors onto the mesh's triangles via
+        tri_to_tet. Shared by _post_process / _post_process_scatter.
+        """
+        tet_of_tri = self.mesh.tri_to_tet[0, :]
+        ertri = er[:, :, tet_of_tri]
+        urtri = ur[:, :, tet_of_tri]
+        condtri = cond[0, 0, tet_of_tri]
+        return ertri, urtri, condtri
+
     def _post_process(
         self,
         results: list[SimJob],
         materials: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        excited_smat_indices: list[int | float] | None = None,
     ):
         """Compute the S-parameters after Frequency sweep
 
         Args:
             results (list[SimJob]): The set of simulation results
-            er (np.ndarray): The domain εᵣ
-            ur (np.ndarray): The domain μᵣ
-            cond (np.ndarray): The domain conductivity
+            materials: per-job (er, ur, cond) tensors
+            excited_smat_indices (list[int|float] | None, optional): If given,
+                restricts S-parameter column computation to these smat_index
+                values instead of every driven port. Ports outside this set keep
+                their init_sp-initialized zero column -- i.e. "not yet solved",
+                not "physically zero". Reciprocity/energy/single-value
+                corrections (mw_recip_sp / mw_cap_sp_col / mw_cap_sp_single) mix
+                solved and unsolved columns when this is a strict subset, so
+                those corrections should generally stay off for a partial solve.
+                Defaults to None (process every driven port, matching prior
+                behavior).
         """
 
         if self.basis is None:
@@ -2368,22 +2337,15 @@ class Microwave3D(GenericPhysics3D):
         col_corr = self._settings.mw_cap_sp_col
         recip_corr = self._settings.mw_recip_sp
 
-        ertri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
-        urtri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
-        condtri = np.zeros((self.mesh.n_tris,), dtype=np.complex128)
-
         for job, mats in zip(results, materials):
             job.load_solutions()
             freq = job.freq
             er, ur, cond = mats
 
-            er_scal = (er[0, 0, :] + er[1, 1, :] + er[2, 2, :]) / 3
-            ur_scal = (ur[0, 0, :] + ur[1, 1, :] + ur[2, 2, :]) / 3
-            cond_scal = (cond[0, 0, :] + cond[1, 1, :] + cond[2, 2, :]) / 3
-
-            ertri[:, :, :] = er[:, :, self.mesh.tri_to_tet[0, :]]
-            urtri[:, :, :] = ur[:, :, self.mesh.tri_to_tet[0, :]]
-            condtri[:] = cond[0, 0, self.mesh.tri_to_tet[0, :]]
+            er_scal = self._average_material_tensor(er)
+            ur_scal = self._average_material_tensor(ur)
+            cond_scal = self._average_material_tensor(cond)
+            ertri, urtri, condtri = self._materials_to_tris(er, ur, cond)
 
             k0 = 2 * np.pi * freq / 299792458
 
@@ -2400,9 +2362,10 @@ class Microwave3D(GenericPhysics3D):
 
             logger.info(f"Post Processing simulation frequency = {freq / 1e9:.3f} GHz")
 
-            # Recording port information
             for active_port, smat_index_j, mode_nr_j in self.bc.iter_port_modes():
                 if not active_port.driven:
+                    continue
+                if excited_smat_indices is not None and smat_index_j not in excited_smat_indices:
                     continue
 
                 port_tets = self.mesh.get_face_tets(active_port.tags)
@@ -2428,11 +2391,9 @@ class Microwave3D(GenericPhysics3D):
                 )
 
                 solution = job._solutions_dict[smat_index_j]
-
                 fielddata._fields = job._solutions_dict
                 fielddata.basis = self.basis
 
-                # Passive ports
                 for passive_port, smat_index_i, mode_nr_i in self.bc.iter_port_modes():
                     if smat_index_i == smat_index_j:
                         active = True
@@ -2474,18 +2435,15 @@ class Microwave3D(GenericPhysics3D):
 
             N = scalardata.Sp.shape[1]
 
-            # Enforce reciprocity
             if recip_corr:
                 scalardata.Sp = (scalardata.Sp + scalardata.Sp.T) / 2
 
-            # Enforce energy conservation
             if col_corr:
                 for j in range(N):
                     scalardata.Sp[:, j] = scalardata.Sp[:, j] / max(
                         1.0, np.sum(np.abs(scalardata.Sp[:, j]) ** 2)
                     )
 
-            # Enforce S-parameter limit to 1.0
             if single_corr:
                 for i, j in product(range(N), range(N)):
                     scalardata.Sp[i, j] = scalardata.Sp[i, j] / max(
@@ -2526,10 +2484,6 @@ class Microwave3D(GenericPhysics3D):
             )
         logger.info("Post processing Scattered Field solutions")
 
-        ertri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
-        urtri = np.zeros((3, 3, self.mesh.n_tris), dtype=np.complex128)
-        condtri = np.zeros((self.mesh.n_tris,), dtype=np.complex128)
-
         scatter_bc: ScatteredField = self.bc.oftype(ScatteredField)[0]
 
         for job, mats in zip(results, materials):
@@ -2537,13 +2491,9 @@ class Microwave3D(GenericPhysics3D):
             freq = job.freq
             er, ur, cond = mats
 
-            er_scal = (er[0, 0, :] + er[1, 1, :] + er[2, 2, :]) / 3
-            ur_scal = (ur[0, 0, :] + ur[1, 1, :] + ur[2, 2, :]) / 3
-            cond_scal = (cond[0, 0, :] + cond[1, 1, :] + cond[2, 2, :]) / 3
-
-            ertri[:, :, :] = er[:, :, self.mesh.tri_to_tet[0, :]]
-            urtri[:, :, :] = ur[:, :, self.mesh.tri_to_tet[0, :]]
-            condtri[:] = cond[0, 0, self.mesh.tri_to_tet[0, :]]
+            er_scal = self._average_material_tensor(er)
+            ur_scal = self._average_material_tensor(ur)
+            cond_scal = self._average_material_tensor(cond)
 
             k0 = 2 * np.pi * freq / 299792458
 
@@ -2562,10 +2512,8 @@ class Microwave3D(GenericPhysics3D):
             logger.info(f"Post Processing simulation frequency = {freq / 1e9:.3f} GHz")
 
             # Recording port information
-            i = 1
             for bf in scatter_bc._iter_fields(k0):
                 fielddata.add_field_properties(bf)
-                i += 1
 
             fielddata.set_field_vector()
             job.clear_solutions()
@@ -2671,4 +2619,3 @@ class Microwave3D(GenericPhysics3D):
         """DEPRICATED VERSION: Use run_sweep() instead."""
         logger.warning("This function is depricated. Please use run_sweep() instead")
         return self.run_sweep(*args, **kwargs)
-

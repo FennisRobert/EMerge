@@ -259,9 +259,9 @@ class HeatConduction3D(GenericPhysics3D):
 
         self.data.setreport(job.reports, **self._params)
 
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
+        for dataentry in self.data.sim.iterate():
+            logger.trace(f"Sim variable: {dataentry.vars}")
+            for item in dataentry.reports:
                 item.logprint(logger.trace)
 
         # --------------------------------------------------------------------
@@ -543,9 +543,9 @@ class HeatConduction3D(GenericPhysics3D):
 
         self.data.setreport(job.reports, **self._params)
 
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
+        for dataentry in self.data.sim.iterate():
+            logger.trace(f"Sim variable: {dataentry.vars}")
+            for item in dataentry.reports:
                 item.logprint(logger.trace)
 
         self._post_process(job, material_set)

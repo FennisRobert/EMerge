@@ -32,7 +32,7 @@ box = em.geo.Box(20 * mm, 20 * mm, 50 * mm, position=(-10 * mm, -10 * mm, 0))
 
 # As the box is all we need, we will say that we stop with our modelling so we can proceed
 model.commit_geometry()
-model.check_version("2.8.5")
+model.check_version("2.8.6")
 
 # Before we can generate the mesh we have to set a simulation frequency (range)
 model.mw.set_frequency(10e9)

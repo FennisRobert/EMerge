@@ -473,7 +473,7 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.0a6"
+version = "3.0.0a7"
 source = { editable = "." }
 dependencies = [
     { name = "emsutil" },

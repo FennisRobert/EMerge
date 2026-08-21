@@ -3,12 +3,12 @@ allow-direct-references = true
 
 [project]
 name = "emerge"
-version = "3.0.0a4"
+version = "3.0.0a6"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"
 dependencies = [
-    "gmsh>=4.13.0, <4.15",
+    "gmsh>=4.13.0, <=5.0",
     "joblib>=1.5.1",
     "loguru>=0.7.3",
     "matplotlib>=3.8.0",

@@ -114,6 +114,10 @@ pip install emerge[cudss]
 ```
 *Limitations: * Cupy is currently only supporting 32 bit integer address so large EM problems cannot be correctly solved currently. This is not something I can do anything about.*
 
+## Install GMSH Version 5.0.0 MacOS
+```bash
+pip install https://gmsh.info/python-packages-dev/gmsh/gmsh-5.0.0.dev1-py2.py3-none-macosx_12_0_arm64.whl --force-reinstall
+```
 ## Required libraries
 
 To run this FEM library you need the following libraries

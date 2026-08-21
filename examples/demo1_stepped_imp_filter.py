@@ -35,7 +35,7 @@ model.check_version("3.0.0")  # Checks version compatibility.
 # supply it with a thickness, the desired air-box height, the units at which we supply
 # the dimensions and the PCB material.
 
-layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3)
+layouter = em.geo.PCB(th, unit=mil, material=pcbmat, layers=3)
 
 # We will route our PCB using the "method chaining" syntax. First we call the .new() method
 # to start a new trace. This will returna StripPath object on which we may call methods that
@@ -89,7 +89,6 @@ model.mesher.set_face_size(p1, 1 * mm)
 model.mesher.set_face_size(p2, 1 * mm)
 
 # Finally we generate our mesh and view it
-
 model.generate_mesh()
 model.view(bc=True)
 
@@ -137,8 +136,4 @@ model.display.animate().add_field(
 )
 model.display.add_portmode(port1, k0=field.k0)
 model.display.add_portmode(port2, k0=field.k0)
-model.display.add_particle_lines(
-    field.trace_poynting_lines(weight_by='EH', n_particles=200, seed_surface=p1, max_steps=200, verbose=True), 
-    tube_radius=0.000025,
-    arrow_scale=0.0001)
 model.display.show()

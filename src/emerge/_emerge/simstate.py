@@ -260,7 +260,7 @@ class SimState:
             list[np.ndarray]: _description_
         """
         if not self.mesh.defined:
-            points = gmsh.model.get_boundary(dimtags, recursive=True)
+            points = gmsh.model.get_boundary(dimtags, recursive=True, oriented=False)
             coordinates = [gmsh.model.getValue(*p, []) for p in points]
             return coordinates
         points = []

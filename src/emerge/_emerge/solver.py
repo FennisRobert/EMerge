@@ -1439,7 +1439,7 @@ class SmartARPACK_BMA(EigSolver):
     def add_mode(
         self, eigen_value: complex, eigen_vector: np.ndarray, energy: float
     ) -> None:
-        logger.trace(
+        logger.debug(
             f"  Considering new eigenmode with value {eigen_value} and energy {energy:.4f}"
         )
         if self.n_found_modes == 0:
@@ -1512,11 +1512,11 @@ class SmartARPACK_BMA(EigSolver):
                 curl_energy = np.real(eigen_mode.conj() @ (A @ eigen_mode))
                 total_energy = np.real(eigen_mode.conj() @ (B @ eigen_mode))
                 ratio = abs(curl_energy / (total_energy + 1e-15))
-                logger.trace(
+                logger.debug(
                     f"Ratio = {ratio:.6f}, Energy = {energy:.4f}, value = {(sign * eigen_value) ** 0.5}, curl_energy = {curl_energy}, total_energy = {total_energy}"
                 )
 
-                if ratio > ratio_limit and energy > self.energy_limit:
+                if ratio > ratio_limit and energy > self.energy_limit and total_energy > 0.1:
                     self.add_mode(eigen_value, eigen_mode, energy)
 
                 # Break if you found enough valid modes.

@@ -243,6 +243,7 @@ class ModalPort(PortBC, Saveable):
         if len(self.available_modes) == 0:
             return None
         else:
+            print(self.available_modes)
             return self.get_modes(k0)[0].neff
 
     @property
@@ -266,7 +267,9 @@ class ModalPort(PortBC, Saveable):
         self.voltage_integration_line.append(Line.from_points(c1, c2, N))
 
     def reset(self) -> None:
-        self.available_modes: dict[float, list[PortMode]] = defaultdict(list)
+        self._last_k0 = None
+        self._first_k0 = None
+        self.available_modes: dict[float, list[PortMode]] = dict()
         self.initialized: bool = False
         self.plus_terminal: list[tuple[int, int]] = []
         self.minus_terminal: list[tuple[int, int]] = []
@@ -493,7 +496,7 @@ class ModalPort(PortBC, Saveable):
 
     def clear_modes(self) -> None:
         """Clear all port mode data"""
-        self.available_modes = defaultdict(list)
+        self.available_modes = dict()
         self.initialized = False
 
     def try_add_mode(
@@ -523,7 +526,11 @@ class ModalPort(PortBC, Saveable):
             logger.debug(f"Ignoring mode due to a low mode energy: {mode.energy}")
             return None
 
-        self.available_modes[k0].append(mode)
+        if k0 not in self.available_modes:
+            self.available_modes[k0] = [mode]
+        else:
+            self.available_modes[k0].append(mode)
+
         self.initialized = True
 
         self._last_k0 = k0
@@ -655,7 +662,7 @@ class WavePortIH(ModalPort, Saveable):
         self.alignment_vectors: list[Axis] = []
 
         self.selected_mode: int = 0
-        self.available_modes: dict[float, list[PortMode]] = defaultdict(list)
+        self.available_modes: dict[float, list[PortMode]] = dict()
         self.port_modes: dict[int | float, tuple[complex, ...]] = dict()
         self.forced_modetype = "TEM"
         for i in range(1, number_of_modes + 1):

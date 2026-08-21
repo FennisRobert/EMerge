@@ -76,6 +76,47 @@ class VersionError(Exception):
     pass
 
 
+def install_refined_mesh(volume_dim, volume_tag, node_ids_global, steiner, tetra_out,
+                          old_element_tags):
+    """
+    node_ids_global : (n_orig,) global gmsh node tags corresponding to local_nodes
+                       columns [0 .. n_orig-1] (i.e. the return value of tet_to_node's
+                       node-index output, or your global_to_local inverse).
+    steiner         : flat (3*n_new,) new point coordinates from refineTetrahedra.
+    tetra_out       : flat, 1-based, 4-per-tet connectivity from refineTetrahedra
+                       (confirmed convention -- subtract 1 before use).
+    old_element_tags: global gmsh element tags of the 95 original flagged tets,
+                       to be removed and replaced by the refined set.
+    """
+    steiner = np.asarray(steiner, dtype=np.float64)
+    tetra_out = np.asarray(tetra_out, dtype=np.int64)
+    n_new = steiner.size // 3
+    n_orig = node_ids_global.shape[0]
+
+    # 1. Register the new (Steiner) nodes on the volume with fresh global tags.
+    if n_new:
+        max_node_tag = gmsh.model.mesh.getMaxNodeTag()
+        new_global_tags = np.arange(max_node_tag + 1, max_node_tag + 1 + n_new, dtype=np.int64)
+        gmsh.model.mesh.addNodes(volume_dim, volume_tag, new_global_tags.tolist(), steiner.tolist())
+    else:
+        new_global_tags = np.empty(0, dtype=np.int64)
+
+    # 2. Local index space is [node_ids_global ++ new_global_tags], confirmed
+    #    1-based on both ends -- subtract 1, then look up global tags.
+    combined_global = np.concatenate([node_ids_global, new_global_tags])
+    tetra_out_0based = tetra_out - 1
+    tet_node_tags = combined_global[tetra_out_0based]  # flat, global node tags
+
+    # 3. Remove the original (now-superseded) tets before adding the refined set.
+    gmsh.model.mesh.removeElements(volume_dim, volume_tag, old_element_tags.tolist())
+
+    # 4. Add the refined tets with fresh element tags.
+    n_tets = tet_node_tags.size // 4
+    max_elem_tag = gmsh.model.mesh.getMaxElementTag()
+    new_elem_tags = np.arange(max_elem_tag + 1, max_elem_tag + 1 + n_tets, dtype=np.int64)
+    gmsh.model.mesh.addElementsByType(volume_tag, 4, new_elem_tags.tolist(), tet_node_tags.tolist())
+
+    return new_global_tags, new_elem_tags
 ############################################################
 #                 BASE 3D SIMULATION MODEL                 #
 ############################################################
@@ -161,6 +202,7 @@ class Simulation:
         self.hc: HeatConduction3D = HeatConduction3D(
             self.state, self.mesher, self.settings
         )
+        self._geo_scale_factor: float = 1.0
 
         self._mw_active: bool = True
         self._hc_active: bool = False
@@ -181,8 +223,9 @@ class Simulation:
     #                       PRIVATE FUNCTIONS                  #
     ############################################################
 
-    def _reset_mesh(self) -> None:
-        gmsh.model.mesh.clear()
+    def _reset_mesh(self, reset_gmsh: bool = True) -> None:
+        if reset_gmsh:
+            gmsh.model.mesh.clear()
         self.mw.reset(_reset_bc=False)
         self.state.reset_mesh()
 
@@ -343,10 +386,55 @@ class Simulation:
         self.mesher.submit_objects(self.state.current_geo_state)
         self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
 
+    def _apply_size_scaling(self) -> None:
+        """Applies size scaling factor
+
+
+        Returns:
+            _type_: _description_
+
+        Yields:
+            _type_: _description_
+        """
+        if self._geo_scale_factor == 1.0:
+            return
+        logger.info(f'Applying global size scaling with factor: {self._geo_scale_factor}')
+        # Apply scale factor
+        
+        s = 1/self._geo_scale_factor
+        scale_down_matrix = [
+            s,   0.0, 0.0, 0.0,
+            0.0, s,   0.0, 0.0,
+            0.0, 0.0, s,   0.0,
+            0.0, 0.0, 0.0, 1.0
+        ]
+        # Apply to all nodes in the mesh
+        gmsh.model.mesh.affineTransform(scale_down_matrix)
+
+        for geo in self.all_geos():
+            geo._apply_size_scaling(self._geo_scale_factor)
+        
     ############################################################
     #                       PUBLIC FUNCTIONS                  #
     ############################################################
 
+    def set_scale_factor(self, scale_factor: float) -> None:
+        """Define the scaling factor at which modelling occurs relative to the actual size.
+        The physical mesh will be descaled with 1/factor after meshing.
+
+        For example, if you want to model some object 1000x larger than it really is, the scale factor becomes 1000
+        
+        This can be used when modelling tiny structures like bond wires which may trip up GMSH and OpenCASCADE
+
+        Args:
+            scale_factor (float): _description_
+        """
+        self._geo_scale_factor = scale_factor
+        self.mesher._scale = scale_factor
+        msg = """Applying a global scaling is an experimental feature that may break EMerge features.
+        If you run into issues, please contact me through robertfennis@emerge-software.com so that I can resolve any issues."""
+        logger.warning(msg)
+        
     def ping(self, message: str, channel: str) -> None:
         """Send a message to a ntfy app channel. Messages are public. Pick a channel name that only you would guess."""
         import urllib.request
@@ -905,7 +993,7 @@ class Simulation:
         gmsh.model.occ.synchronize()
 
         logger.info("GMSH Meshing complete!")
-        self.mesh._pre_update(self.mesher._get_periodic_bcs())
+        self.mesh._pre_update(self.mesher._get_periodic_bcs(), 1/self._geo_scale_factor)
         self.mesh.exterior_face_tags = self.mesher.domain_boundary_face_tags
         self.mesh._quick_mesh = True
         logger.trace(" (3) Mesh routine complete")
@@ -988,7 +1076,7 @@ class Simulation:
             # Validity check
             x1, y1, z1, x2, y2, z2 = gmsh.model.getBoundingBox(-1, -1)
             bb_volume = (x2 - x1) * (y2 - y1) * (z2 - z1)
-            wl = 299792458 / self.mw.frequencies[-1]
+            wl = self._geo_scale_factor * 299792458 / self.mw.frequencies[-1]
             Nelem = int(5 * bb_volume / (wl**3))
 
             if Nelem > 100_000 and DEFAULT_SETTINGS.size_check:
@@ -1025,8 +1113,10 @@ class Simulation:
             print(_GMSH_ERROR_TEXT)
             raise
 
+        self._apply_size_scaling()
+        
         logger.info("GMSH Meshing complete!")
-        self.mesh._pre_update(self.mesher._get_periodic_bcs())
+        self.mesh._pre_update(self.mesher._get_periodic_bcs(), 1/self._geo_scale_factor)
         if self.settings.safe_mode:
             self.mesh.diagnose()
 
@@ -1137,102 +1227,6 @@ class Simulation:
     #                   ADAPTIVE MESH REFINEMENT              #
     ############################################################
 
-    @staticmethod
-    def guess_R(P: float, last_ratio: float = 1.0) -> float:
-        # Coefficients for the refinement ratio calculation.
-
-        a0 = 0.5
-        c0 = 0.85
-        x0 = 12
-        q0 = (1 - a0) * 2 / np.pi
-        b0 = np.tan((c0 - a0) / q0) / x0
-        q0 = (0.8 - a0) * 2 / np.pi
-
-        ratio = a0 + np.arctan(b0 * P) * q0
-        if last_ratio > 1.0:
-            ratio = ratio / 0.9
-        if last_ratio < 1.0:
-            ratio = ratio * 0.9
-
-        return ratio
-
-    @staticmethod
-    def compute_ratio(
-        ratios: np.ndarray, percentages: np.ndarray, P_target: float
-    ) -> float:
-        """
-        Strategy:
-        - n=0: use guess_R(P_target, throttle=1.0)
-        - n=1: use guess_R with throttle 0.5 if last P < target, else 2.0 if last P > 2*target,
-                else keep the same R (already acceptable)
-        - n=2: fit P = a1*(1/R) + a0 and solve for R; fallback to through-origin model if needed
-
-        Returns R_guess in (0, 1].
-        """
-        ratios = np.asarray(ratios, dtype=float)
-        percentages = np.asarray(percentages, dtype=float)
-
-        # Clean
-        n = ratios.size
-
-        # --------------------------------------------------------------------------
-        # N=1 Case
-        # --------------------------------------------------------------------------
-
-        if n == 1:
-            last_ratio = float(ratios[-1])
-            last_percentage = float(percentages[-1])
-
-            if P_target <= last_percentage <= 2.0 * P_target:
-                # Already acceptable
-                return last_ratio * ((1.5 * P_target) / last_percentage) ** 0.2
-
-            if last_percentage > P_target * 2.0:
-                return last_ratio / 0.8
-            else:
-                return last_ratio * 0.8
-
-        # --------------------------------------------------------------------------
-        # N>1 Case
-        # --------------------------------------------------------------------------
-
-        P_target = P_target * 1.5
-        refine_multiplier = 1.0 / ratios
-        change_percentage = percentages
-
-        line = np.polynomial.Polynomial.fit(refine_multiplier, change_percentage, deg=1)
-        b, a = line.convert().coef
-
-        # Use the full linear model only if it gives a sensible result
-        use_origin_model = False
-        if a < 0:
-            logger.debug("Negative growth correlation, reverting to origin model")
-            use_origin_model = True
-        else:
-            mult_target = (P_target - b) / a
-            if mult_target < 1.0:  # R > 1 makes no sense; model is extrapolating badly
-                logger.debug(
-                    "Linear model extrapolates beyond valid range, reverting to origin model"
-                )
-                use_origin_model = True
-            else:
-                Rnew = 1.0 / mult_target
-
-        if use_origin_model:
-            # Through-origin fit: P = a * (1/R), so R = a / P_target
-            a_origin = np.dot(refine_multiplier, change_percentage) / np.dot(
-                refine_multiplier, refine_multiplier
-            )
-            if a_origin > 0:
-                Rnew = a_origin / P_target
-            else:
-                # Last resort: scale last ratio
-                last_ratio = float(ratios[-1])
-                last_percentage = float(percentages[-1])
-                Rnew = last_ratio * (P_target / last_percentage)
-
-        return float(np.clip(Rnew, 0.05, 1.0))  # 0.05 floor, not 1e-6
-
     def adaptive_mesh_refinement(
         self,
         max_steps: int = 6,
@@ -1240,279 +1234,183 @@ class Simulation:
         convergence: float = 0.02,
         magnitude_convergence: float = 2.0,
         phase_convergence: float = 180,
-        max_tets: int = 1e6,
-        refinement_ratio: float = 0.60,
-        growth_rate: float = 1.6,
-        minimum_refinement_percentage: float = 20.0,
-        error_field_inclusion_percentage: float = 50.0,
+        max_tets: int = 1_000_000,
+        order: float = 3.0,
+        theta: float = 0.7,
         minimum_steps: int = 1,
-        frequency: float | list[float] = None,
-        ensure_mesh_growth: bool = False,
+        frequency: float | list[float] | None = None,
         show_mesh: bool = False,
     ) -> SimulationDataset:
-        """A beta-version of adaptive mesh refinement.
-
-        Convergence Criteria:
-            (1): max(abs(S[n]-S[n-1]))
-            (2): max(abs(abs(S[n]) - abs(S[n-1])))
-            (3): max(angle(S[n]/S[n-1])) * 180/π
-
-        Args:
-            max_steps (int, optional): The maximum number of refinement steps. Defaults to 6.
-            min_refined_passes (int, optional): The minimum number of refined passes. Defaults to 1.
-            convergence (float, optional): The S-paramerter convergence (1). Defaults to 0.02.
-            magnitude_convergence (float, optional): The S-parameter magnitude convergence (2). Defaults to 2.0.
-            phase_convergence (float, optional): The S-parameter Phase convergence (3). Defaults to 180.
-            refinement_ratio (float, optional): The size reduction of mesh elements by original length. Defaults to 0.60.
-            growth_rate (float, optional): The mesh size growth rate. Defaults to 1.6.
-            minimum_refinement_percentage (float, optional): (DEPRICATED) The minimum mesh size increase . Defaults to 15.0.
-            error_field_inclusion_percentage (float, optional): A percentage of tet elements to be included for refinement. Defaults to 5.0.
-            minimum_steps (int, optional): The minimum number of adaptive steps to execute. Defaults to 1.
-            frequency (float, optional): The refinement frequency. Defaults to None.
-            ensure_mesh_growth (boo, optional): If the mesh generation should restart to ensure that the mesh growth per iteration is met. Defaults to False.
-            show_mesh (bool, optional): If the intermediate meshes should be shown (freezes simulation). Defaults to False
-
-        Returns:
-            SimulationDataset: _description_
+        """Adaptive mesh refinement via full remesh-from-scratch, driven by a
+        single native gmsh background size field per pass.
+    
+        SIZE PREDICTION: equidistribution formula --
+    
+            h_new = h_current * (error_target / error_current) ** (1/order)
+    
+        SIZE DELIVERY: self.mesher.set_error_size_field() installs a NodeData
+        view on a frozen auxiliary model, registered into self.mesher.mesh_fields
+        alongside every other size source. IMPORTANT: h_new from the
+        equidistribution formula is per-TET; set_error_size_field needs
+        per-NODE data. The scatter step below (minimum over each node's
+        incident tets) is required -- skipping it doesn't crash (gmsh silently
+        accepts a too-long values array, since n_tets > n_nodes is the normal
+        case for a tet mesh) but produces a field that fails to interpolate
+        anywhere, which looks exactly like "no refinement happening" with no
+        error to point at.
         """
-        from .physics.microwave.adaptive_mesh import (
-            select_refinement_indices,
-            reduce_point_set,
-            compute_convergence,
-            tet_to_node,
-        )
-
+        from .physics.microwave.adaptive_mesh import compute_convergence
+    
         max_freq = np.max(self.mw.frequencies)
-
-        if frequency is not None:
-            sim_freqs = frequency
-            if isinstance(sim_freqs, float):
-                sim_freqs = [sim_freqs]
-        else:
-            sim_freqs = [max_freq]
-
-        S_matrices: list[list[np.ndarray]] = []
-
-        last_n_tets: int = self.mesh.n_tets
-        logger.info(f"Initial mesh has {last_n_tets} tetrahedra")
-
-        passed = 0
-
-        self.state.stash()
-
+        sim_freqs = frequency if frequency is not None else [max_freq]
+        if isinstance(sim_freqs, float):
+            sim_freqs = [sim_freqs]
         NF = len(sim_freqs)
+    
+        S_matrices: list[list[np.ndarray]] = []
+        logger.info(f"Initial mesh has {self.mesh.n_tets} tetrahedra")
+        passed = 0
+        self.state.stash()
+    
+        logger.info("Starting adaptive mesh refinement (full remesh, background field).")
+    
+        self._cleanup_entities()
 
-        original_ratio = refinement_ratio
-        logger.info("Stating adaptive mesh refinement process...")
-        self.mesher._amrobj.reset()
+        previous_tet_count = self.mesh.n_tets
         for step in range(1, max_steps + 1):
             self.data.sim.new(iter_step=step)
-
-            datas = []
-            fields = []
-            Smats = []
-
+    
+            fields, Smats = [], []
             logger.debug("Running frequency simulation.")
             for sf in sim_freqs:
                 data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
-                datas.append(data)
                 fields.append(data.field[-1])
                 Smats.append(data.scalar[-1].Sp)
-
             S_matrices.append(Smats)
-
+    
+            # -------------------------------------------------------------------
+            # Convergence check
+            # -------------------------------------------------------------------
             if step > minimum_steps:
-                S0s = S_matrices[-2]
-                S1s = S_matrices[-1]
-
-                max_complx = 0
-                max_mag = 0
-                max_phase = 0
-
+                S0s, S1s = S_matrices[-2], S_matrices[-1]
+                max_complx = max_mag = max_phase = 0.0
                 for i in range(NF):
-                    conv_complex, conv_mag, conv_phase = compute_convergence(
-                        S0s[i], S1s[i]
-                    )
+                    conv_complex, conv_mag, conv_phase = compute_convergence(S0s[i], S1s[i])
                     max_complx = max(max_complx, conv_complex)
                     max_mag = max(max_mag, conv_mag)
                     max_phase = max(max_phase, conv_phase)
-
+    
                 logger.info(
                     f"Pass {step}: Convergence = {max_complx:.3f}, Mag = {max_mag:.3f}, Phase = {max_phase:.1f} deg"
                 )
-
-                if (
-                    max_complx <= convergence
-                    and max_phase < phase_convergence
-                    and max_mag < magnitude_convergence
-                ):
+    
+                if max_complx <= convergence and max_phase < phase_convergence and max_mag < magnitude_convergence:
                     logger.info(f"Pass {step}: Mesh refinement passed!")
                     passed += 1
                 else:
                     passed = 0
-
+    
             if passed >= min_refined_passes and step > minimum_steps:
-                logger.info(
-                    f"Adaptive mesh refinement successfull with {self.mesh.n_tets} tetrahedra."
-                )
+                logger.info(f"Adaptive mesh refinement successful with {self.mesh.n_tets} tetrahedra.")
                 break
-
-            # ------------------------------------------------------------------------------------------
-            # Error estimate computation
-            # ------------------------------------------------------------------------------------------
-
+    
+            # -------------------------------------------------------------------
+            # Error + current size per tet
+            # -------------------------------------------------------------------
             errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
-            logger.debug(
-                f"Computing error estimates for {self.mesh.n_tets} tetrahedra."
-            )
+            h_current_per_freq = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
             for i in range(NF):
-                error, lengths = fields[i]._solution_quality(solve_ids)
+                error, h_current = fields[i]._solution_quality(solve_ids)
                 errors[:, i] = error
-            error = np.max(errors, axis=1)
-
-            # ------------------------------------------------------------------------------------------
-            # Finding refinement coordinates
-            # ------------------------------------------------------------------------------------------
-
-            logger.debug("Selecting refinement indices.")
-            refine_tet_ids = select_refinement_indices(
-                error, error_field_inclusion_percentage / 100.0
-            )
-            refine_tet_ids = refine_tet_ids[::-1]
-
-            logger.info(
-                f" - Tet refinement percentage = {(refine_tet_ids.shape[0] / self.mesh.n_tets) * 100:.1f} %"
-            )
-            # F1 = (arctan(5*(x-0.5))+pi/2)/pi from 0 to 1
-            # refinement_ratio = (np.arctan(5*(refinement_ratio-0.5))+np.pi/2)/np.pi
-            refinement_ratio = 0.5 * original_ratio + 0.5 * refinement_ratio
-
-            included = np.zeros((self.mesh.n_tets,), dtype=np.bool_)
-            included[refine_tet_ids] = True
+                h_current_per_freq[:, i] = h_current
+            error_current = np.max(errors, axis=1)
+            h_current = h_current_per_freq[:, 0]
 
             logger.debug(
-                f"Number of refined tetrahedron ids = {refine_tet_ids.shape[0]}"
+                f"h_current: min={h_current.min():.3e}, max={h_current.max():.3e}, "
+                f"NaN={np.isnan(h_current).sum()}, zero={(h_current == 0).sum()}"
             )
-            # Convert the refined tetrahedra to refined nodes
-            coords, sizes = tet_to_node(
-                self.mesh.nodes, self.mesh.tets, lengths, included
+            logger.debug(
+                f"error_current: min={error_current.min():.3e}, max={error_current.max():.3e}, "
+                f"NaN={np.isnan(error_current).sum()}, zero={(error_current == 0).sum()}"
             )
-            logger.debug(f"Number of refinement vertex ids = {coords.shape[1]}")
-            self.mesher._amrobj.add_refinement_points(
-                coords, sizes, refinement_ratio * np.ones_like(sizes)
-            )
+    
+            # -------------------------------------------------------------------
+            # Equidistribution size prediction, per TET.
+            # -------------------------------------------------------------------
+            n_tets = self.mesh.n_tets
+            total_sq_error = np.sum(error_current**2)
+            error_target = np.sqrt(theta * total_sq_error / n_tets)
+    
+            ratio = error_target / np.maximum(error_current, 1e-300)
+            h_new = h_current * ratio ** (1.0 / order)
 
-            # Try to reduce the point set if there are more than 500 points.
-            if self.mesher._amrobj.npts >= 500 and False:
-                new_ids = reduce_point_set(
-                    self.mesher._amrobj._amr_coords,
-                    growth_rate,
-                    self.mesher._amrobj._amr_sizes,
-                    refinement_ratio,
-                    0.20,
-                )
-                nremoved = self.mesher._amrobj.npts - len(new_ids)
-                logger.info(
-                    f"    Pass {step}: Added {len(sizes) - nremoved} new refinement points with ratio {refinement_ratio}."
-                )
-                self.mesher._amrobj.reduce_set(new_ids)
-
-            logger.debug(f"    Initial refinement ratio: {refinement_ratio}")
-
-            # Fixed refinement
-            self._reset_mesh()
-            self.mesher._amrobj.set_refinement_function(growth_rate, 2.0)
-            self.generate_mesh(True)
-
-            # Growth percentage
-            percentage = (self.mesh.n_tets / last_n_tets - 1) * 100
+            h_new = np.clip(h_new, 0.7 * h_current, h_current * 1.5)
+    
+            ratio_applied = h_new / h_current
             logger.info(
-                f"    Pass {step}: New mesh has {self.mesh.n_tets} (+{percentage:.1f}%) tetrahedra."
+                f" - h_new range: min={float(h_new.min())*1000:.4f}mm, "
+                f"max={float(h_new.max())*1000:.4f}mm "
+                f"(theta={theta}, order={order})"
             )
-
-            # #Mesh refinement loop. Only escapes if the mesh refined a certain set percentage.
-            counter = 0
-            refinement_ratios = []
-            refinement_percentages = []
-
-            while ensure_mesh_growth:
-                counter += 1
-                if counter == 10:
-                    logger.warning(
-                        "    More than 10 attempts at reaching the target refinement. Continuing with current."
-                    )
-                    break
-
-                counter += 1
-
-                # Regenerate the mesh
-                self._reset_mesh()
-                self.mesher._amrobj.set_refinement_function(growth_rate, 2.0)
-                self.generate_mesh(True)
-
-                # Growth percentage
-                percentage = (self.mesh.n_tets / last_n_tets - 1) * 100
-                logger.info(
-                    f"    Pass {step}: New mesh has {self.mesh.n_tets} (+{percentage:.1f}%) tetrahedra."
-                )
-
-                # Update the lists
-                refinement_ratios.append(refinement_ratio)
-                refinement_percentages.append(percentage)
-
-                if len(refinement_percentages) >= 2:
-                    if (
-                        abs(refinement_percentages[-2] - refinement_percentages[-1])
-                        == 0.0
-                    ):
-                        logger.warning(
-                            "No refinement realized, decreasing refinment ratio."
-                        )
-                        refinement_ratio = refinement_ratio * 0.5
-                        self.mesher._amrobj.set_ratio(refinement_ratio)
-                        continue
-
-                if percentage < minimum_refinement_percentage or percentage > (
-                    minimum_refinement_percentage * 2
-                ):
-                    refinement_ratio = self.compute_ratio(
-                        refinement_ratios,
-                        refinement_percentages,
-                        minimum_refinement_percentage,
-                    )
-                    logger.info(
-                        f"    Refinement target not reached! New ratio = {refinement_ratio:.3f}"
-                    )
-
-                    if refinement_ratio >= 0.9:
-                        logger.warning(
-                            "Refinement ratio pushed above 0.9... continuing with current percentage."
-                        )
-                        break
-                    self.mesher._amrobj.set_ratio(refinement_ratio)
-                    continue
-
-                break
-
-            last_n_tets = self.mesh.n_tets
+            logger.info(
+                f" - applied ratio range: min={float(ratio_applied.min()):.3f}, "
+                f"max={float(ratio_applied.max()):.3f}"
+            )
+    
+            # -------------------------------------------------------------------
+            # Scatter per-TET h_new onto NODES (minimum over incident tets) --
+            # set_error_size_field needs per-node data, not per-tet.
+            # -------------------------------------------------------------------
+            nodes = np.asarray(self.mesh.nodes, dtype=np.float64)  # (3, N)
+            tets = np.asarray(self.mesh.tets, dtype=np.int64)      # (4, M)
+    
+            size_at_node = np.full(nodes.shape[1], np.inf, dtype=np.float64)
+            for corner in range(4):
+                np.minimum.at(size_at_node, tets[corner, :], h_new)
+    
+            if np.isinf(size_at_node).any():
+                # Shouldn't happen (every node belongs to at least one tet), but
+                # gmsh needs finite values regardless.
+                size_at_node[np.isinf(size_at_node)] = h_current.max()
+    
+            logger.info(
+                f" - size_at_node range: min={float(size_at_node.min())*1000:.4f}mm, "
+                f"max={float(size_at_node.max())*1000:.4f}mm"
+            )
+    
+            # -------------------------------------------------------------------
+            # Install via the Mesher's own size-field convention, then let the
+            # NORMAL remesh pipeline handle everything else.
+            # -------------------------------------------------------------------
+            self.mesher.clear_error_size_field()
+            self.mesher.set_error_size_field(nodes, tets, size_at_node)
+    
+            self._reset_mesh()
+            self.generate_mesh(regenerate=True)
+    
+            logger.info(f"    Pass {step}: New mesh has {self.mesh.n_tets} tetrahedra (Δ={(self.mesh.n_tets/previous_tet_count-1)*100:.1f}%)")
+            previous_tet_count = self.mesh.n_tets
             if show_mesh:
                 self.view(plot_mesh=True, volume_mesh=True)
-
-            if last_n_tets > max_tets:
+    
+            if self.mesh.n_tets > max_tets:
                 logger.warning(
-                    f"Aborting refinement because the number of tets exceeds the maximum: {last_n_tets}>{max_tets}"
+                    f"Aborting refinement because the number of tets exceeds the maximum: {self.mesh.n_tets}>{max_tets}"
                 )
                 break
+    
+        self.mesher.clear_error_size_field()
+    
         if passed < min_refined_passes:
             logger.warning("Adaptive mesh refinement did not converge!")
-
+    
         if show_mesh:
             self.view(plot_mesh=True, volume_mesh=True)
+    
         old = self.state.reload()
         self.state.store_geometry_data()
-
         return old
-
 
 class SimulationBeta(Simulation):
     def __post_init__(self):

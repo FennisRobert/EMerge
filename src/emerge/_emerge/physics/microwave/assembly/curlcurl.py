@@ -358,10 +358,10 @@ def ned2_tet_stiff_mass(tet_vertices, local_edge_map, local_tri_map, Ms, Mm, dof
 
     aas, bbs, ccs, dds, V = tet_coefficients(txs, tys, tzs)
     coeff = np.empty((4, 4), dtype=np.float64)
-    coeff[0, :] = aas / (6 * V)
-    coeff[1, :] = bbs / (6 * V)
-    coeff[2, :] = ccs / (6 * V)
-    coeff[3, :] = dds / (6 * V)
+    coeff[0, :] = aas / (6*V)
+    coeff[1, :] = bbs / (6*V)
+    coeff[2, :] = ccs / (6*V)
+    coeff[3, :] = dds / (6*V)
 
     WEIGHTS = DPTS[0, :]
     DPTS1 = DPTS[1, :]

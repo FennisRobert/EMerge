@@ -2463,7 +2463,7 @@ class PCB:
     def compile_paths(
         self, 
         merge: bool = False, 
-        fragment: bool = True
+        fragment: bool = False
     ) -> list[GeoPolygon] | GeoSurface | GeoVolume:
         """Compiles the striplines and returns a list of polygons or asingle one.
 

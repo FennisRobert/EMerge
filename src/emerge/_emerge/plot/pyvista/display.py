@@ -404,7 +404,6 @@ class PVDisplay(EMergeDisplay):
                 else:
                     points.append(self._mesh.dimtag_to_center[(dim, tag)])
                 labels.append(label_text)
-
             self._plot.add_point_labels(
                 points,
                 labels,
@@ -739,3 +738,153 @@ class PVDisplay(EMergeDisplay):
                     show_scalar_bar=False,
                     ambient=0.3
                 )
+
+    def add_solution_error(
+        self,
+        error_value: np.ndarray,
+        tet_ids: np.ndarray | None = None,
+        mode: Literal["volume", "points", "surface"] = "volume",
+        cmap: str | None = None,
+        log_scale: bool = True,
+        opacity: float | str = "linear",
+        show_scalar_bar: bool = True,
+        clim: tuple[float, float] | None = None,
+        scalar_name: str = "Error",
+        point_size_range: tuple[float, float] | None = None,
+    ) -> None:
+        """Displays a per-tetrahedron error indicator.
+ 
+        Intended for visualizing the output of the adaptive mesh refinement
+        error estimator (compute_error_estimate) -- either the full-domain
+        error field, or just the tets that got flagged for refinement.
+ 
+        Args:
+            error_value (np.ndarray): Error values, one per tetrahedron. If
+                tet_ids is None, this must have length self._mesh.n_tets and
+                is assumed to be given in the same order as self._mesh.tets.
+                If tet_ids is provided, error_value must have the same
+                length as tet_ids, and only those tetrahedra are used.
+            tet_ids (np.ndarray | None, optional): The tetrahedron indices
+                to plot (e.g. the output of select_refinement_indices).
+                Defaults to None (use all tetrahedra).
+            mode ("volume", "points", "surface", optional): How to render.
+                "volume" does true volumetric rendering with transparency,
+                so interior tets are actually visible through the exterior
+                -- this is almost always what you want for an error plot,
+                since a plain opaque solid ("surface") only ever shows you
+                the outer boundary tets. "points" instead draws one sphere
+                per tet at its centroid, sized AND colored by error, which
+                avoids any transparency/occlusion ambiguity at the cost of
+                losing the continuous solid shape. Defaults to "volume".
+            cmap (str | None, optional): Colormap name. Defaults to the
+                theme's default amplitude colormap.
+            log_scale (bool, optional): If True, colors on a log scale --
+                error estimates commonly span many orders of magnitude and
+                a linear scale usually washes out everything except the
+                single worst tet. Defaults to True.
+            opacity (float | str, optional): For mode="volume", this is
+                pyvista's opacity TRANSFER FUNCTION (e.g. "linear",
+                "sigmoid", or an array), not a single alpha value -- it
+                controls how strongly each error magnitude is allowed to
+                occlude what's behind it. For "points"/"surface" this is a
+                plain 0-1 opacity. Defaults to "linear".
+            show_scalar_bar (bool, optional): Whether to show the color
+                legend. Defaults to True.
+            clim (tuple[float, float] | None, optional): Manual color
+                limits. Defaults to the data's own min/max.
+            scalar_name (str, optional): Label used for the scalar bar.
+                Defaults to "Error".
+            point_size_range (tuple[float, float] | None, optional): Only
+                used for mode="points". Min/max sphere RADIUS in your
+                model's own length units (not fixed on-screen pixels) --
+                the lowest-error tet gets the smaller sphere, the highest
+                gets the larger. Defaults to roughly 2%/8% of the mesh's
+                overall bounding-box diagonal, so it scales sensibly with
+                model size instead of needing manual tuning per model.
+        """
+        error_value = np.asarray(error_value)
+ 
+        if tet_ids is None:
+            tet_ids = np.arange(self._mesh.n_tets)
+        else:
+            tet_ids = np.asarray(tet_ids)
+ 
+        if error_value.shape[0] != tet_ids.shape[0]:
+            raise ValueError(
+                f"error_value length ({error_value.shape[0]}) must match the "
+                f"number of tetrahedra being plotted ({tet_ids.shape[0]}). "
+                "Pass tet_ids explicitly if error_value only covers a subset "
+                "(e.g. the tets flagged by select_refinement_indices)."
+            )
+ 
+        if cmap is None:
+            cmap = self.set.theme.default_amplitude_cmap
+        else:
+            cmap = self.set.theme.parse_cmap_name(cmap)
+ 
+        if mode == "points":
+            centers = self._mesh.centers[:, tet_ids].T  # (ntets, 3)
+            cloud = pv.PolyData(centers)
+            cloud.point_data[scalar_name] = error_value
+ 
+            if point_size_range is None:
+                bbox = self._mesh.nodes.max(axis=1) - self._mesh.nodes.min(axis=1)
+                diag = float(np.linalg.norm(bbox))
+                point_size_range = (0.02 * diag, 0.08 * diag)
+ 
+            plot_values = (
+                np.log10(error_value + np.finfo(float).eps) if log_scale else error_value
+            )
+            norm = (plot_values - plot_values.min()) / (np.ptp(plot_values) + 1e-30)
+            cloud.point_data["_size"] = (
+                point_size_range[0] + norm * (point_size_range[1] - point_size_range[0])
+            )
+ 
+            glyphs = cloud.glyph(scale="_size", geom=pv.Sphere(radius=1.0), orient=False)
+            actor = self._plot.add_mesh(
+                glyphs,
+                scalars=scalar_name,
+                cmap=cmap,
+                opacity=opacity if isinstance(opacity, (int, float)) else 1.0,
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+            )
+            self._data_sets.append(glyphs)
+            return
+ 
+        # volume / surface modes both need the tet UnstructuredGrid
+        ntets = tet_ids.shape[0]
+        cells = np.zeros((ntets, 5), dtype=np.int64)
+        cells[:, 1:] = self._mesh.tets[:, tet_ids].T
+        cells[:, 0] = 4
+        celltypes = np.full(ntets, fill_value=pv.CellType.TETRA, dtype=np.uint8)
+        points = self._mesh.nodes.copy().T
+ 
+        grid = pv.UnstructuredGrid(cells, celltypes, points)
+        grid.cell_data[scalar_name] = error_value
+ 
+        if mode == "volume":
+            actor = self._plot.add_volume(
+                grid,
+                scalars=scalar_name,
+                cmap=cmap,
+                opacity=opacity,
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+                log_scale=log_scale,  # pyvista's own log-scale handling
+            )
+        else:  # "surface"
+            plot_values = (
+                np.log10(error_value + np.finfo(float).eps) if log_scale else error_value
+            )
+            grid.cell_data[scalar_name] = plot_values
+            actor = self._plot.add_mesh(
+                grid,
+                scalars=scalar_name,
+                cmap=cmap,
+                opacity=opacity if isinstance(opacity, (int, float)) else 1.0,
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+            )
+ 
+        self._data_sets.append(grid)

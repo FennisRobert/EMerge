@@ -174,6 +174,9 @@ class _FacePointer(Saveable):
         self.n = np.array(normal)
         self.n = self.n / np.linalg.norm(self.n)
 
+    def _apply_size_scaling(self, factor: float) -> None:
+        self.o = self.o/factor
+
     def find(
         self,
         dimtags: list[tuple[int, int]],
@@ -422,6 +425,12 @@ class AnchorSet(Saveable):
             return self.__dict__[name]
         raise AttributeError(f"AnchorSet has no attribute {name}")
 
+    def _apply_size_scaling(self, factor: float) -> None:
+        for anch in self._anchors:
+            anch.c0 = anch.c0/factor
+        for anchset in self.tool.values():
+            anchset._apply_size_scaling(factor)
+
     def take_as_tools(self, key: int, other: AnchorSet) -> None:
         self.tool[key] = other
         self.tool.update(other.tool)
@@ -623,6 +632,21 @@ class GeoObject(Saveable):
         """
         return self._base_priority + self._sub_priority / 2
 
+    def _apply_size_scaling(self, factor: float) -> None:
+        """Apply a size scaling to all geometric quantities
+
+        Args:
+            factor (float): The global scaling factor
+        """
+        self.anch._apply_size_scaling(factor)
+
+        for face_pointer in self._face_pointers.values():
+            face_pointer._apply_size_scaling(factor)
+
+        for toolfps in self._tools.values():
+            for face_pointer in toolfps.values():
+                face_pointer._apply_size_scaling(factor)
+        
     def _do_self_destruct(self) -> None:
         if self._self_destruct:
             self.remove()
@@ -1051,7 +1075,17 @@ class GeoVolume(GeoObject):
         self._fill_face_pointers()
         self._autoname()
 
+    def _apply_size_scaling(self, factor: float) -> None:
+        """Apply a size scaling to all geometric quantities
+
+        Args:
+            factor (float): The global scaling factor
+        """
+        super()._apply_size_scaling(factor)
+        self._origins_cache = [(x/factor, y/factor, z/factor) for x,y,z in self._origins_cache]
+                
     def _cache_gmsh(self):
+        print(self)
         self._get_boundary_cache = gmsh.model.get_boundary(self.dimtags, True, False)
         self._normals_cache = [
             gmsh.model.get_normal(t, [0, 0]) for d, t in self._get_boundary_cache
@@ -1341,7 +1375,7 @@ class GeoVolume(GeoObject):
             tags = self._tools[tool._key][name].find(dimtags, origins, normals)
         else:
             tags = self._face_pointers[name].find(dimtags, origins, normals)
-        logger.trace(f"Selected face {tags}.")
+        logger.trace(f" - Face {name} with tool {tool} on {self} resolved in tags: {tags}.")
         return tags
 
 

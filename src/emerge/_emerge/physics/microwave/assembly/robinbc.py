@@ -407,7 +407,7 @@ def ned2_tri_stiff(glob_vertices, gamma, dofcodes):
     c16[:](f8[:, :], i8[:, :], c16[:], i8[:], c16, i8[:]),
     cache=True,
     nogil=True,
-    parallel=True,
+    parallel=False,
 )
 def compute_bc_entries(vertices, tris, Bmat, surf_triangle_indices, gamma, dofcodes):
 

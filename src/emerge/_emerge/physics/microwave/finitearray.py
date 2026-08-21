@@ -221,21 +221,21 @@ class ArrayTiling:
     # Inclusion mask
     # ------------------------------------------------------------------
 
-    def include(self, i: int, j: int) -> "ArrayTiling":
+    def include(self, i: int, j: int) -> ArrayTiling:
         key = (i, j)
         if key not in self._active:
             self._order.append(key)
         self._active[key] = True
         return self
 
-    def exclude(self, i: int, j: int) -> "ArrayTiling":
+    def exclude(self, i: int, j: int) -> ArrayTiling:
         self._active[(i, j)] = False
         return self
 
     def is_active(self, i: int, j: int) -> bool:
         return self._active.get((i, j), False)
 
-    def toggle(self, i: int, j: int) -> "ArrayTiling":
+    def toggle(self, i: int, j: int) -> ArrayTiling:
         if self.is_active(i, j):
             self.exclude(i, j)
         else:
@@ -246,7 +246,7 @@ class ArrayTiling:
     # Region-filling helpers
     # ------------------------------------------------------------------
 
-    def add_rectangle(self, nx: int, ny: int, i0: int = 0, j0: int = 0) -> "ArrayTiling":
+    def add_rectangle(self, nx: int, ny: int, i0: int = 0, j0: int = 0) -> ArrayTiling:
         """Includes every cell in an nx-by-ny block of lattice indices,
         starting at (i0, j0). For a RectCell this is a literal rectangular
         array; for a HexCell it's a parallelogram-shaped block in (i, j)
@@ -259,12 +259,12 @@ class ArrayTiling:
                 self.include(i, j)
         return self
 
-    def add_indices(self, indices: Iterable[CellKey]) -> "ArrayTiling":
+    def add_indices(self, indices: Iterable[CellKey]) -> ArrayTiling:
         for i, j in indices:
             self.include(i, j)
         return self
 
-    def add_mask(self, mask: np.ndarray, i0: int = 0, j0: int = 0) -> "ArrayTiling":
+    def add_mask(self, mask: np.ndarray, i0: int = 0, j0: int = 0) -> ArrayTiling:
         """Includes cells where a 2D boolean array is True. mask[a, b]
         corresponds to lattice cell (i0 + a, j0 + b).
         """
@@ -279,7 +279,7 @@ class ArrayTiling:
         predicate: Callable[[float, float, int, int], bool],
         i_range: range,
         j_range: range,
-    ) -> "ArrayTiling":
+    ) -> ArrayTiling:
         """Includes every cell in the given index ranges for which
         predicate(x, y, i, j) is True, where (x, y) is the cell's physical
         position. This is the general-purpose tool for castellated /
@@ -302,7 +302,7 @@ class ArrayTiling:
     def remove_predicate(
         self,
         predicate: Callable[[float, float, int, int], bool],
-    ) -> "ArrayTiling":
+    ) -> ArrayTiling:
         """Excludes every currently-active cell for which
         predicate(x, y, i, j) is True. Useful for cutting notches/corners
         out of an already-filled region.

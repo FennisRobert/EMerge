@@ -15,7 +15,21 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-# Last Cleanup: 2025-01-01
+# Last Cleanup: 2026-03-XX -- updated for the generic dofcode-driven basis
+# system. Every place that used to slice Etet as
+#   Em1s = Etet[0:6]; Ef1s = Etet[6:10]; Em2s = Etet[10:16]; Ef2s = Etet[16:20]
+# assumed a fixed 20-DOF (6 edge + 4 face, two orders each) Nedelec-2 layout.
+# That assumption no longer holds under the variable-order DoFSet system --
+# these now dispatch per-DOF via dofcodes, exactly like ned2_tet_interp does
+# in nedelec2.py.
+#
+# NOTE: verify this relative import path against where adaptive_mesh.py
+# actually sits versus ccbf.py -- nedelec2.py uses `from ..ccbf import ...`
+# but adaptive_mesh.py may be at a different package depth.
+from ...compiled.ccbf import (
+    _eval_f_3d, _eval_curl_f_3d, _eval_div_f_3d, _eval_curlcurl_f_3d, parse_dofcode
+)
+
 from .microwave_data import MWField
 import numpy as np
 from ...mth.optimized import matmul, calc_inward_normal
@@ -120,6 +134,91 @@ def tet_to_node(nodes, tets, sizes, included):
             j += 1
 
     return coords_out, sizes_out
+
+@njit(
+    types.Tuple((f8[:, :], f8[:], i8[:]))(f8[:, :], i8[:, :], f8[:], b1[:]),
+    nogil=True,
+    cache=True,
+)
+def tet_to_node_new(nodes, tets, sizes, included):
+    """
+    Same as before, plus a third return value: the node index each
+    returned (coord, size) pair belongs to, so callers can scatter the
+    result into a full-length node array without a coordinate lookup.
+
+    Parameters
+    ----------
+    nodes : (3, N) float64
+    tets : (4, M) int64
+    sizes : (M,) float64
+    included : (M,) boolean
+
+    Returns
+    -------
+    coords_out : (3, K) float64
+    sizes_out : (K,) float64
+    indices_out : (K,) int64
+        Node index (0..N-1) each entry of coords_out/sizes_out corresponds to.
+    """
+    N = nodes.shape[1]
+    M = tets.shape[1]
+
+    big = 1e300
+    node_sizes = np.full(N, big)
+    constrained = np.zeros(N, dtype=np.uint8)
+
+    for e in range(M):
+        if included[e]:
+            s = sizes[e]
+            n0 = tets[0, e]
+            n1 = tets[1, e]
+            n2 = tets[2, e]
+            n3 = tets[3, e]
+
+            if constrained[n0] == 0:
+                node_sizes[n0] = s
+                constrained[n0] = 1
+            elif s < node_sizes[n0]:
+                node_sizes[n0] = s
+
+            if constrained[n1] == 0:
+                node_sizes[n1] = s
+                constrained[n1] = 1
+            elif s < node_sizes[n1]:
+                node_sizes[n1] = s
+
+            if constrained[n2] == 0:
+                node_sizes[n2] = s
+                constrained[n2] = 1
+            elif s < node_sizes[n2]:
+                node_sizes[n2] = s
+
+            if constrained[n3] == 0:
+                node_sizes[n3] = s
+                constrained[n3] = 1
+            elif s < node_sizes[n3]:
+                node_sizes[n3] = s
+
+    K = 0
+    for i in range(N):
+        if constrained[i] == 1:
+            K += 1
+
+    coords_out = np.empty((3, K), dtype=nodes.dtype)
+    sizes_out = np.empty(K, dtype=sizes.dtype)
+    indices_out = np.empty(K, dtype=np.int64)
+
+    j = 0
+    for i in range(N):
+        if constrained[i] == 1:
+            coords_out[0, j] = nodes[0, i]
+            coords_out[1, j] = nodes[1, i]
+            coords_out[2, j] = nodes[2, i]
+            sizes_out[j] = node_sizes[i]
+            indices_out[j] = i
+            j += 1
+
+    return coords_out, sizes_out, indices_out
 
 
 @njit(cache=True, nogil=True)
@@ -365,7 +464,7 @@ def local_mapping(vertex_ids, triangle_ids):
     Parameters
     ----------
     vertex_ids   : 1-D int64 array (length 4)
-        Global vertex 0.1005964238ers of one tetrahedron, in *its* order
+        Global vertex numbers of one tetrahedron, in *its* order
         (v0, v1, v2, v3).
 
     triangle_ids : 2-D int64 array (nTri × 3)
@@ -521,377 +620,145 @@ def tet_coefficients(xs, ys, zs):
     return aas, bbs, ccs, dds, V
 
 
-DPTS_2D = np.array(
-    [
-        [0.22338159, 0.22338159, 0.22338159, 0.10995174, 0.10995174, 0.10995174],
-        [0.10810302, 0.44594849, 0.44594849, 0.81684757, 0.09157621, 0.09157621],
-        [0.44594849, 0.44594849, 0.10810302, 0.09157621, 0.09157621, 0.81684757],
-        [0.44594849, 0.10810302, 0.44594849, 0.09157621, 0.81684757, 0.09157621],
-    ],
-    dtype=np.float64,
-)
+DPTS_2D = np.array([
+    [0.10995174365532200, 0.10995174365532200, 0.10995174365532200, 0.22338158967801100, 0.22338158967801100, 0.22338158967801100],  # weights
+    [0.81684757298045896, 0.09157621350977101, 0.09157621350977101, 0.10810301816807000, 0.44594849091596500, 0.44594849091596500],  # L1
+    [0.09157621350977101, 0.81684757298045896, 0.09157621350977101, 0.44594849091596500, 0.10810301816807000, 0.44594849091596500],  # L2
+    [0.09157621350977004, 0.09157621350977008, 0.81684757298045807, 0.44594849091596500, 0.44594849091596500, 0.10810301816807000],  # L3
+], dtype=np.float64)
 
-DPTS_3D = np.array(
-    [
-        [
-            -0.078933,
-            0.04573333,
-            0.04573333,
-            0.04573333,
-            0.04573333,
-            0.14933333,
-            0.14933333,
-            0.14933333,
-            0.14933333,
-            0.14933333,
-            0.14933333,
-        ],
-        [
-            0.25,
-            0.78571429,
-            0.07142857,
-            0.07142857,
-            0.07142857,
-            0.39940358,
-            0.39940358,
-            0.39940358,
-            0.10059642,
-            0.10059642,
-            0.10059642,
-        ],
-        [
-            0.25,
-            0.07142857,
-            0.07142857,
-            0.07142857,
-            0.78571429,
-            0.10059642,
-            0.10059642,
-            0.39940358,
-            0.39940358,
-            0.39940358,
-            0.10059642,
-        ],
-        [
-            0.25,
-            0.07142857,
-            0.07142857,
-            0.78571429,
-            0.07142857,
-            0.39940358,
-            0.10059642,
-            0.10059642,
-            0.39940358,
-            0.10059642,
-            0.39940358,
-        ],
-        [
-            0.25,
-            0.07142857,
-            0.78571429,
-            0.07142857,
-            0.07142857,
-            0.10059642,
-            0.39940358,
-            0.10059642,
-            0.10059642,
-            0.39940358,
-            0.39940358,
-        ],
-    ],
-    dtype=np.float64,
-)
+DPTS_3D = np.array([
+    [-0.07893333333333329982, 0.04573333333333329948, 0.04573333333333329948, 0.04573333333333329948, 0.04573333333333329948, 0.14933333333333329018, 0.14933333333333329018, 0.14933333333333329018, 0.14933333333333329018, 0.14933333333333329018, 0.14933333333333329018],  # weights
+    [0.25000000000000000000, 0.78571428571428569843, 0.07142857142857139685, 0.07142857142857139685, 0.07142857142857139685, 0.10059642383320080428, 0.39940357616679922348, 0.39940357616679922348, 0.39940357616679922348, 0.10059642383320080428, 0.10059642383320080428],  # L1
+    [0.25000000000000000000, 0.07142857142857139685, 0.07142857142857139685, 0.07142857142857139685, 0.78571428571428569843, 0.39940357616679922348, 0.10059642383320080428, 0.39940357616679922348, 0.10059642383320080428, 0.39940357616679922348, 0.10059642383320080428],  # L2
+    [0.25000000000000000000, 0.07142857142857139685, 0.07142857142857139685, 0.78571428571428569843, 0.07142857142857139685, 0.39940357616679922348, 0.39940357616679922348, 0.10059642383320080428, 0.10059642383320080428, 0.10059642383320080428, 0.39940357616679922348],  # L3
+    [0.25000000000000000000, 0.07142857142857150787, 0.78571428571428580945, 0.07142857142857150787, 0.07142857142857150787, 0.10059642383320077652, 0.10059642383320077652, 0.10059642383320074877, 0.39940357616679922348, 0.39940357616679922348, 0.39940357616679922348],  # L4
+], dtype=np.float64)
 
 
-@njit(c16[:, :](f8[:, :], f8[:, :], c16[:], i8[:, :], i8[:, :]), cache=True, nogil=True)
+############################################################
+#   GENERIC, DOFCODE-DRIVEN FIELD / CURL / DIV / CURLCURL   #
+############################################################
+# Replaces the old fixed 6/4/6/4 (Em1s/Ef1s/Em2s/Ef2s) split. Each of these
+# dispatches per-DOF via parse_dofcode + _eval_*_f_3d, exactly like
+# ned2_tet_interp / ned2_tet_interp_curl in nedelec2.py -- so a single tet's
+# DOF layout is read the same way everywhere in the codebase now, instead of
+# this file assuming a fixed order-1 Nedelec-2 layout independently.
+@njit(c16[:, :](f8[:, :], f8[:, :], c16[:], i8[:, :], i8[:, :], i8[:]),
+      cache=True, nogil=True)
 def compute_field(
     coords: np.ndarray,
     vertices: np.ndarray,
     Etet: np.ndarray,
     l_edge_ids: np.ndarray,
     l_tri_ids: np.ndarray,
+    dofcodes: np.ndarray,
 ):
-
-    x = coords[0, :]
-    y = coords[1, :]
-    z = coords[2, :]
     N = coords.shape[1]
-
     xvs = vertices[0, :]
     yvs = vertices[1, :]
     zvs = vertices[2, :]
-
+ 
     a_s, b_s, c_s, d_s, V = tet_coefficients(xvs, yvs, zvs)
-
-    Em1s = Etet[0:6]
-    Ef1s = Etet[6:10]
-    Em2s = Etet[10:16]
-    Ef2s = Etet[16:20]
-
-    Exl = np.zeros_like(x, dtype=np.complex128)
-    Eyl = np.zeros_like(x, dtype=np.complex128)
-    Ezl = np.zeros_like(x, dtype=np.complex128)
-
-    V1 = (6 * V) ** 3
-
-    for ie in range(6):
-        Em1, Em2 = Em1s[ie], Em2s[ie]
-        edgeids = l_edge_ids[:, ie]
-        a1, a2 = a_s[edgeids]
-        b1, b2 = b_s[edgeids]
-        c1, c2 = c_s[edgeids]
-        d1, d2 = d_s[edgeids]
-        x1, x2 = xvs[edgeids]
-        y1, y2 = yvs[edgeids]
-        z1, z2 = zvs[edgeids]
-        F1 = a1 + b1 * x + c1 * y + d1 * z
-        F2 = a2 + b2 * x + c2 * y + d2 * z
-        L = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-        ex = L * (Em1 * F1 + Em2 * F2) * (b1 * F2 - b2 * F1) / V1
-        ey = L * (Em1 * F1 + Em2 * F2) * (c1 * F2 - c2 * F1) / V1
-        ez = L * (Em1 * F1 + Em2 * F2) * (d1 * F2 - d2 * F1) / V1
-
-        Exl += ex
-        Eyl += ey
-        Ezl += ez
-
-    for ie in range(4):
-        Em1, Em2 = Ef1s[ie], Ef2s[ie]
-        triids = l_tri_ids[:, ie]
-        a1, a2, a3 = a_s[triids]
-        b1, b2, b3 = b_s[triids]
-        c1, c2, c3 = c_s[triids]
-        d1, d2, d3 = d_s[triids]
-
-        x1, x2, x3 = xvs[l_tri_ids[:, ie]]
-        y1, y2, y3 = yvs[l_tri_ids[:, ie]]
-        z1, z2, z3 = zvs[l_tri_ids[:, ie]]
-
-        L1 = np.sqrt((x1 - x3) ** 2 + (y1 - y3) ** 2 + (z1 - z3) ** 2)
-        L2 = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-
-        F1 = a1 + b1 * x + c1 * y + d1 * z
-        F2 = a2 + b2 * x + c2 * y + d2 * z
-        F3 = a3 + b3 * x + c3 * y + d3 * z
-
-        Q1 = Em1 * L1 * F2
-        Q2 = Em2 * L2 * F3
-        ex = (-Q1 * (b1 * F3 - b3 * F1) + Q2 * (b1 * F2 - b2 * F1)) / V1
-        ey = (-Q1 * (c1 * F3 - c3 * F1) + Q2 * (c1 * F2 - c2 * F1)) / V1
-        ez = (-Q1 * (d1 * F3 - d3 * F1) + Q2 * (d1 * F2 - d2 * F1)) / V1
-
-        Exl += ex
-        Eyl += ey
-        Ezl += ez
-
+    coeff = np.empty((4, 4), dtype=np.float64)
+    coeff[0, :] = a_s
+    coeff[1, :] = b_s
+    coeff[2, :] = c_s
+    coeff[3, :] = d_s
+ 
+    Exl = np.zeros(N, dtype=np.complex128)
+    Eyl = np.zeros(N, dtype=np.complex128)
+    Ezl = np.zeros(N, dtype=np.complex128)
+ 
+    typearray, indexarray = parse_dofcode(dofcodes)
+    nidof = dofcodes.shape[0]
+ 
+    # Allocated ONCE, reused across the DOF loop -- _eval_f_3d writes into
+    # it in place now (reverted void/in-place convention), matching how
+    # ned2_tet_interp already does this. No per-DOF reallocation.
+    F = np.zeros((3, N), dtype=np.complex128)
+    for idof in range(nidof):
+        i_type = typearray[idof]
+        i_index = indexarray[idof]
+ 
+        if i_type == 0:
+            i1 = l_edge_ids[0, i_index]
+            j1 = l_edge_ids[1, i_index]
+            k1 = 0
+        else:
+            i1 = l_tri_ids[0, i_index]
+            j1 = l_tri_ids[1, i_index]
+            k1 = l_tri_ids[2, i_index]
+ 
+        _eval_f_3d(coeff, coords, i1, j1, k1, dofcodes[idof], F)
+        Exl += F[0, :] * Etet[idof]
+        Eyl += F[1, :] * Etet[idof]
+        Ezl += F[2, :] * Etet[idof]
+ 
     out = np.zeros((3, N), dtype=np.complex128)
     out[0, :] = Exl
     out[1, :] = Eyl
     out[2, :] = Ezl
     return out
-
-
-@njit(c16[:, :](f8[:, :], f8[:, :], c16[:], i8[:, :], i8[:, :]), cache=True, nogil=True)
+ 
+ 
+@njit(c16[:, :](f8[:, :], f8[:, :], c16[:], i8[:, :], i8[:, :], i8[:]),
+      cache=True, nogil=True)
 def compute_curl(
     coords: np.ndarray,
     vertices: np.ndarray,
     Etet: np.ndarray,
     l_edge_ids: np.ndarray,
     l_tri_ids: np.ndarray,
+    dofcodes: np.ndarray,
 ):
-
-    x = coords[0, :]
-    y = coords[1, :]
-    z = coords[2, :]
-
+    N = coords.shape[1]
     xvs = vertices[0, :]
     yvs = vertices[1, :]
     zvs = vertices[2, :]
-
+ 
     a_s, b_s, c_s, d_s, V = tet_coefficients(xvs, yvs, zvs)
-
-    Em1s = Etet[0:6]
-    Ef1s = Etet[6:10]
-    Em2s = Etet[10:16]
-    Ef2s = Etet[16:20]
-
-    Exl = np.zeros((x.shape[0],), dtype=np.complex128)
-    Eyl = np.zeros((x.shape[0],), dtype=np.complex128)
-    Ezl = np.zeros((x.shape[0],), dtype=np.complex128)
-
-    V1 = 216 * V**3
-    V2 = 72 * V**3
-
-    for ie in range(6):
-        Em1, Em2 = Em1s[ie], Em2s[ie]
-        edgeids = l_edge_ids[:, ie]
-        a1, a2 = a_s[edgeids]
-        b1, b2 = b_s[edgeids]
-        c1, c2 = c_s[edgeids]
-        d1, d2 = d_s[edgeids]
-        x1, x2 = xvs[edgeids]
-        y1, y2 = yvs[edgeids]
-        z1, z2 = zvs[edgeids]
-
-        L = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-        C1 = Em1 * a1
-        C2 = Em1 * b1
-        C3 = Em1 * c1
-        C4 = Em1 * c2
-        C5 = Em2 * a2
-        C6 = Em2 * b2
-        C7 = Em2 * c1
-        C8 = Em2 * c2
-        C9 = Em1 * b2
-        C10 = Em2 * b1
-        D1 = c1 * d2
-        D2 = c2 * d1
-        D3 = d1 * d2
-        D4 = d1 * d1
-        D5 = c2 * d2
-        D6 = d2 * d2
-        D7 = b1 * d2
-        D8 = b2 * d1
-        D9 = c1 * d1
-        D10 = b2 * d2
-        D11 = b1 * c2
-        D12 = b2 * c1
-        D13 = c1 * c2
-        D14 = c1 * c1
-        D15 = b2 * c2
-
-        ex = (
-            L
-            * (
-                -C1 * D1
-                + C1 * D2
-                - C2 * D1 * x
-                + C2 * D2 * x
-                - C3 * D1 * y
-                + C3 * D2 * y
-                - C3 * D3 * z
-                + C4 * D4 * z
-                - C5 * D1
-                + C5 * D2
-                - C6 * D1 * x
-                + C6 * D2 * x
-                - C7 * D5 * y
-                - C7 * D6 * z
-                + C8 * D2 * y
-                + C8 * D3 * z
-            )
-            / V2
-        )
-        ey = (
-            L
-            * (
-                C1 * D7
-                - C1 * D8
-                + C2 * D7 * x
-                - C2 * D8 * x
-                + C2 * D1 * y
-                + C2 * D3 * z
-                - C9 * D9 * y
-                - C9 * D4 * z
-                + C5 * D7
-                - C5 * D8
-                + C10 * D10 * x
-                + C10 * D5 * y
-                + C10 * D6 * z
-                - C6 * D8 * x
-                - C6 * D2 * y
-                - C6 * D3 * z
-            )
-            / V2
-        )
-        ez = (
-            L
-            * (
-                -C1 * D11
-                + C1 * D12
-                - C2 * D11 * x
-                + C2 * D12 * x
-                - C2 * D13 * y
-                - C2 * D2 * z
-                + C9 * D14 * y
-                + C9 * D9 * z
-                - C5 * D11
-                + C5 * D12
-                - C10 * D15 * x
-                - C10 * c2 * c2 * y
-                - C10 * D5 * z
-                + C6 * D12 * x
-                + C6 * D13 * y
-                + C6 * D1 * z
-            )
-            / V2
-        )
-        Exl += ex
-        Eyl += ey
-        Ezl += ez
-
-    for ie in range(4):
-        Em1, Em2 = Ef1s[ie], Ef2s[ie]
-        triids = l_tri_ids[:, ie]
-        a1, a2, a3 = a_s[triids]
-        b1, b2, b3 = b_s[triids]
-        c1, c2, c3 = c_s[triids]
-        d1, d2, d3 = d_s[triids]
-
-        x1, x2, x3 = xvs[l_tri_ids[:, ie]]
-        y1, y2, y3 = yvs[l_tri_ids[:, ie]]
-        z1, z2, z3 = zvs[l_tri_ids[:, ie]]
-
-        L1 = np.sqrt((x1 - x3) ** 2 + (y1 - y3) ** 2 + (z1 - z3) ** 2)
-        L2 = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-        F1 = a3 + b3 * x + c3 * y + d3 * z
-        F2 = a1 + b1 * x + c1 * y + d1 * z
-        F3 = a2 + b2 * x + c2 * y + d2 * z
-        N1 = d1 * F1 - d3 * F2
-        N2 = c1 * F1 - c3 * F2
-        N3 = c1 * d3 - c3 * d1
-        N4 = d1 * F3 - d2 * F2
-        N5 = c1 * F3 - c2 * F2
-        D1 = c1 * d2
-        D2 = c2 * d1
-        N6 = D1 - D2
-        N7 = b1 * F1 - b3 * F2
-        N8 = b1 * d3 - b3 * d1
-        N9 = b1 * F3 - b2 * F2
-        D7 = b1 * d2
-        D8 = b2 * d1
-        N10 = D7 - D8
-        D11 = b1 * c2
-        D12 = b2 * c1
-        ex = (
-            Em1 * L1 * (-c2 * N1 + d2 * N2 + 2 * N3 * F3)
-            - Em2 * L2 * (-c3 * N4 + d3 * N5 + 2 * N6 * F1)
-        ) / V1
-        ey = (
-            -Em1 * L1 * (-b2 * N1 + d2 * N7 + 2 * N8 * F3)
-            + Em2 * L2 * (-b3 * N4 + d3 * N9 + 2 * N10 * F1)
-        ) / V1
-        ez = (
-            Em1 * L1 * (-b2 * N2 + c2 * N7 + 2 * (b1 * c3 - b3 * c1) * F3)
-            - Em2 * L2 * (-b3 * N5 + c3 * N9 + 2 * (D11 - D12) * F1)
-        ) / V1
-
-        Exl += ex
-        Eyl += ey
-        Ezl += ez
-
-    out = np.zeros((3, x.shape[0]), dtype=np.complex128)
+    coeff = np.empty((4, 4), dtype=np.float64)
+    coeff[0, :] = a_s
+    coeff[1, :] = b_s
+    coeff[2, :] = c_s
+    coeff[3, :] = d_s
+ 
+    Exl = np.zeros(N, dtype=np.complex128)
+    Eyl = np.zeros(N, dtype=np.complex128)
+    Ezl = np.zeros(N, dtype=np.complex128)
+ 
+    typearray, indexarray = parse_dofcode(dofcodes)
+    nidof = dofcodes.shape[0]
+ 
+    F = np.zeros((3, N), dtype=np.complex128)
+    for idof in range(nidof):
+        i_type = typearray[idof]
+        i_index = indexarray[idof]
+ 
+        if i_type == 0:
+            i1 = l_edge_ids[0, i_index]
+            j1 = l_edge_ids[1, i_index]
+            k1 = 0
+        else:
+            i1 = l_tri_ids[0, i_index]
+            j1 = l_tri_ids[1, i_index]
+            k1 = l_tri_ids[2, i_index]
+ 
+        _eval_curl_f_3d(coeff, coords, i1, j1, k1, dofcodes[idof], F)
+        Exl += F[0, :] * Etet[idof]
+        Eyl += F[1, :] * Etet[idof]
+        Ezl += F[2, :] * Etet[idof]
+ 
+    out = np.zeros((3, N), dtype=np.complex128)
     out[0, :] = Exl
     out[1, :] = Eyl
     out[2, :] = Ezl
     return out
-
-
-@njit(
-    c16[:](f8[:, :], f8[:, :], c16[:], i8[:, :], i8[:, :], c16[:, :]),
-    cache=True,
-    nogil=True,
-)
+ 
+ 
+@njit(c16[:](f8[:, :], f8[:, :], c16[:], i8[:, :], i8[:, :], c16[:, :], i8[:]),
+      cache=True, nogil=True)
 def compute_div(
     coords: np.ndarray,
     vertices: np.ndarray,
@@ -899,460 +766,112 @@ def compute_div(
     l_edge_ids: np.ndarray,
     l_tri_ids: np.ndarray,
     Um: np.ndarray,
+    dofcodes: np.ndarray,
 ):
-
-    uxx, uxy, uxz = Um[0, 0], Um[0, 1], Um[0, 2]
-    uyx, uyy, uyz = Um[1, 0], Um[1, 1], Um[1, 2]
-    uzx, uzy, uzz = Um[2, 0], Um[2, 1], Um[2, 2]
-
-    xs = coords[0, :]
-    ys = coords[1, :]
-    zs = coords[2, :]
-
+    """Isotropic-Um assumption unchanged from before -- see prior notes.
+    Only the internal _eval_div_f_3d calling convention changes here.
+    """
+    N = coords.shape[1]
     xvs = vertices[0, :]
     yvs = vertices[1, :]
     zvs = vertices[2, :]
-
+ 
     a_s, b_s, c_s, d_s, V = tet_coefficients(xvs, yvs, zvs)
-
-    Em1s = Etet[0:6]
-    Ef1s = Etet[6:10]
-    Em2s = Etet[10:16]
-    Ef2s = Etet[16:20]
-
-    difE = np.zeros((xs.shape[0],), dtype=np.complex128)
-
-    V1 = 216 * V**3
-    V2 = 72 * V**3
-
-    for ie in range(6):
-        Em1, Em2 = Em1s[ie], Em2s[ie]
-        edgeids = l_edge_ids[:, ie]
-        a1, a2 = a_s[edgeids]
-        b1, b2 = b_s[edgeids]
-        c1, c2 = c_s[edgeids]
-        d1, d2 = d_s[edgeids]
-        x1, x2 = xvs[edgeids]
-        y1, y2 = yvs[edgeids]
-        z1, z2 = zvs[edgeids]
-
-        L = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-        C1 = a2 + b2 * xs + c2 * ys + d2 * zs
-        C2 = a1 + b1 * xs + c1 * ys + d1 * zs
-        C3 = b1 * C1 - b2 * C2
-        C4 = c1 * C1 - c2 * C2
-        C5 = d1 * C1 - d2 * C2
-        C6 = b1 * c2 - b2 * c1
-        C7 = c1 * d2 - c2 * d1
-        C8 = b1 * d2 - b2 * d1
-        difE += (
-            Em1
-            * L
-            * (
-                b1 * uxx * C3
-                + b1 * uxy * C4
-                + b1 * uxz * C5
-                + c1 * uyx * C3
-                + c1 * uyy * C4
-                + c1 * uyz * C5
-                + d1 * uzx * C3
-                + d1 * uzy * C4
-                + d1 * uzz * C5
-                - uxy * C6 * C2
-                - uxz * C8 * C2
-                + uyx * C6 * C2
-                - uyz * C7 * C2
-                + uzx * C8 * C2
-                + uzy * C7 * C2
-            )
-            + Em2
-            * L
-            * (
-                b2 * uxx * C3
-                + b2 * uxy * C4
-                + b2 * uxz * C5
-                + c2 * uyx * C3
-                + c2 * uyy * C4
-                + c2 * uyz * C5
-                + d2 * uzx * C3
-                + d2 * uzy * C4
-                + d2 * uzz * C5
-                - uxy * C6 * C1
-                - uxz * C8 * C1
-                + uyx * C6 * C1
-                - uyz * C7 * C1
-                + uzx * C8 * C1
-                + uzy * C7 * C1
-            )
-        ) / V1
-
-    for ie in range(4):
-        Em1, Em2 = Ef1s[ie], Ef2s[ie]
-        triids = l_tri_ids[:, ie]
-        a1, a2, a3 = a_s[triids]
-        b1, b2, b3 = b_s[triids]
-        c1, c2, c3 = c_s[triids]
-        d1, d2, d3 = d_s[triids]
-
-        x1, x2, x3 = xvs[l_tri_ids[:, ie]]
-        y1, y2, y3 = yvs[l_tri_ids[:, ie]]
-        z1, z2, z3 = zvs[l_tri_ids[:, ie]]
-
-        L1 = np.sqrt((x1 - x3) ** 2 + (y1 - y3) ** 2 + (z1 - z3) ** 2)
-        L2 = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-        C1 = a3 + b3 * xs + c3 * ys + d3 * zs
-        C2 = a1 + b1 * xs + c1 * ys + d1 * zs
-        C6 = a2 + b2 * xs + c2 * ys + d2 * zs
-        C3 = b1 * C1 - b3 * C2
-        C4 = c1 * C1 - c3 * C2
-        C5 = d1 * C1 - d3 * C2
-        C7 = b1 * c3 - b3 * c1
-        C8 = b1 * d3 - b3 * d1
-        C9 = c1 * d3 - c3 * d1
-        C10 = b1 * C6 - b2 * C2
-        C11 = c1 * C6 - c2 * C2
-        C12 = d1 * C6 - d2 * C2
-        C13 = b1 * c2 - b2 * c1
-        C14 = b1 * d2 - b2 * d1
-        C15 = c1 * d2 - c2 * d1
-
-        difE += (
-            -Em1
-            * L1
-            * (
-                b2 * uxx * C3
-                + b2 * uxy * C4
-                + b2 * uxz * C5
-                + c2 * uyx * C3
-                + c2 * uyy * C4
-                + c2 * uyz * C5
-                + d2 * uzx * C3
-                + d2 * uzy * C4
-                + d2 * uzz * C5
-                - uxy * C7 * C6
-                - uxz * C8 * C6
-                + uyx * C7 * C6
-                - uyz * C9 * C6
-                + uzx * C8 * C6
-                + uzy * C9 * C6
-            )
-            + Em2
-            * L2
-            * (
-                b3 * uxx * C10
-                + b3 * uxy * C11
-                + b3 * uxz * C12
-                + c3 * uyx * C10
-                + c3 * uyy * C11
-                + c3 * uyz * C12
-                + d3 * uzx * C10
-                + d3 * uzy * C11
-                + d3 * uzz * C12
-                - uxy * C13 * C1
-                - uxz * C14 * C1
-                + uyx * C13 * C1
-                - uyz * C15 * C1
-                + uzx * C14 * C1
-                + uzy * C15 * C1
-            )
-        ) / V1
-
-    return difE
-
-
-@njit(c16[:](f8[:, :], c16[:], i8[:, :], i8[:, :], c16[:, :]), cache=True, nogil=True)
+    coeff = np.empty((4, 4), dtype=np.float64)
+    coeff[0, :] = a_s / (6*V)
+    coeff[1, :] = b_s / (6*V)
+    coeff[2, :] = c_s / (6*V)
+    coeff[3, :] = d_s / (6*V)
+ 
+    u_scalar = Um[0, 0]
+ 
+    typearray, indexarray = parse_dofcode(dofcodes)
+    nidof = dofcodes.shape[0]
+ 
+    difE = np.zeros(N, dtype=np.complex128)
+    Fdiv = np.zeros(N, dtype=np.complex128)
+    for idof in range(nidof):
+        i_type = typearray[idof]
+        i_index = indexarray[idof]
+ 
+        if i_type == 0:
+            i1 = l_edge_ids[0, i_index]
+            j1 = l_edge_ids[1, i_index]
+            k1 = 0
+        else:
+            i1 = l_tri_ids[0, i_index]
+            j1 = l_tri_ids[1, i_index]
+            k1 = l_tri_ids[2, i_index]
+ 
+        _eval_div_f_3d(coeff, coords, i1, j1, k1, dofcodes[idof], Fdiv)
+        difE += Etet[idof] * Fdiv
+ 
+    return u_scalar * difE
+ 
+ 
+@njit(c16[:](f8[:, :], c16[:], i8[:, :], i8[:, :], c16[:, :], i8[:]),
+      cache=True, nogil=True)
 def compute_curl_curl(
     vertices: np.ndarray,
     Etet: np.ndarray,
     l_edge_ids: np.ndarray,
     l_tri_ids: np.ndarray,
     Um: np.ndarray,
+    dofcodes: np.ndarray,
 ):
-
-    uxx, uxy, uxz = Um[0, 0], Um[0, 1], Um[0, 2]
-    uyx, uyy, uyz = Um[1, 0], Um[1, 1], Um[1, 2]
-    uzx, uzy, uzz = Um[2, 0], Um[2, 1], Um[2, 2]
-
+    """Exact for general (even non-diagonal) Um -- see prior notes. Only
+    the internal _eval_curlcurl_f_3d calling convention changes here.
+    """
     xvs = vertices[0, :]
     yvs = vertices[1, :]
     zvs = vertices[2, :]
-
+ 
+    a_s, b_s, c_s, d_s, V = tet_coefficients(xvs, yvs, zvs)
+    coeff = np.empty((4, 4), dtype=np.float64)
+    coeff[0, :] = a_s
+    coeff[1, :] = b_s
+    coeff[2, :] = c_s
+    coeff[3, :] = d_s
+ 
+    uxx, uxy, uxz = Um[0, 0], Um[0, 1], Um[0, 2]
+    uyx, uyy, uyz = Um[1, 0], Um[1, 1], Um[1, 2]
+    uzx, uzy, uzz = Um[2, 0], Um[2, 1], Um[2, 2]
+ 
+    dummy_coords = np.zeros((3, 1), dtype=np.float64)
+ 
+    typearray, indexarray = parse_dofcode(dofcodes)
+    nidof = dofcodes.shape[0]
+ 
     Exl = 0.0 + 0.0j
     Eyl = 0.0 + 0.0j
     Ezl = 0.0 + 0.0j
-
-    a_s, b_s, c_s, d_s, V = tet_coefficients(xvs, yvs, zvs)
-
-    Em1s = Etet[0:6]
-    Ef1s = Etet[6:10]
-    Em2s = Etet[10:16]
-    Ef2s = Etet[16:20]
-
-    V1 = (6 * V) ** 3
-
-    for ie in range(6):
-        Em1, Em2 = Em1s[ie], Em2s[ie]
-        edgeids = l_edge_ids[:, ie]
-        a1, a2 = a_s[edgeids]
-        b1, b2 = b_s[edgeids]
-        c1, c2 = c_s[edgeids]
-        d1, d2 = d_s[edgeids]
-        x1, x2 = xvs[edgeids]
-        y1, y2 = yvs[edgeids]
-        z1, z2 = zvs[edgeids]
-
-        L1 = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-        ex = (
-            -3
-            * L1
-            * (
-                Em1
-                * (
-                    b1 * c1 * c2 * uzz
-                    - b1 * c1 * d2 * uzy
-                    - b1 * c2 * d1 * uyz
-                    + b1 * d1 * d2 * uyy
-                    - b2 * c1**2 * uzz
-                    + b2 * c1 * d1 * uyz
-                    + b2 * c1 * d1 * uzy
-                    - b2 * d1**2 * uyy
-                    + c1**2 * d2 * uzx
-                    - c1 * c2 * d1 * uzx
-                    - c1 * d1 * d2 * uyx
-                    + c2 * d1**2 * uyx
-                )
-                + Em2
-                * (
-                    b1 * c2**2 * uzz
-                    - b1 * c2 * d2 * uyz
-                    - b1 * c2 * d2 * uzy
-                    + b1 * d2**2 * uyy
-                    - b2 * c1 * c2 * uzz
-                    + b2 * c1 * d2 * uyz
-                    + b2 * c2 * d1 * uzy
-                    - b2 * d1 * d2 * uyy
-                    + c1 * c2 * d2 * uzx
-                    - c1 * d2**2 * uyx
-                    - c2**2 * d1 * uzx
-                    + c2 * d1 * d2 * uyx
-                )
-            )
-        )
-        ey = (
-            3
-            * L1
-            * (
-                Em1
-                * (
-                    b1**2 * c2 * uzz
-                    - b1**2 * d2 * uzy
-                    - b1 * b2 * c1 * uzz
-                    + b1 * b2 * d1 * uzy
-                    + b1 * c1 * d2 * uzx
-                    - b1 * c2 * d1 * uxz
-                    - b1 * c2 * d1 * uzx
-                    + b1 * d1 * d2 * uxy
-                    + b2 * c1 * d1 * uxz
-                    - b2 * d1**2 * uxy
-                    - c1 * d1 * d2 * uxx
-                    + c2 * d1**2 * uxx
-                )
-                + Em2
-                * (
-                    b1 * b2 * c2 * uzz
-                    - b1 * b2 * d2 * uzy
-                    - b1 * c2 * d2 * uxz
-                    + b1 * d2**2 * uxy
-                    - b2**2 * c1 * uzz
-                    + b2**2 * d1 * uzy
-                    + b2 * c1 * d2 * uxz
-                    + b2 * c1 * d2 * uzx
-                    - b2 * c2 * d1 * uzx
-                    - b2 * d1 * d2 * uxy
-                    - c1 * d2**2 * uxx
-                    + c2 * d1 * d2 * uxx
-                )
-            )
-        )
-        ez = (
-            -3
-            * L1
-            * (
-                Em1
-                * (
-                    b1**2 * c2 * uyz
-                    - b1**2 * d2 * uyy
-                    - b1 * b2 * c1 * uyz
-                    + b1 * b2 * d1 * uyy
-                    - b1 * c1 * c2 * uxz
-                    + b1 * c1 * d2 * uxy
-                    + b1 * c1 * d2 * uyx
-                    - b1 * c2 * d1 * uyx
-                    + b2 * c1**2 * uxz
-                    - b2 * c1 * d1 * uxy
-                    - c1**2 * d2 * uxx
-                    + c1 * c2 * d1 * uxx
-                )
-                + Em2
-                * (
-                    b1 * b2 * c2 * uyz
-                    - b1 * b2 * d2 * uyy
-                    - b1 * c2**2 * uxz
-                    + b1 * c2 * d2 * uxy
-                    - b2**2 * c1 * uyz
-                    + b2**2 * d1 * uyy
-                    + b2 * c1 * c2 * uxz
-                    + b2 * c1 * d2 * uyx
-                    - b2 * c2 * d1 * uxy
-                    - b2 * c2 * d1 * uyx
-                    - c1 * c2 * d2 * uxx
-                    + c2**2 * d1 * uxx
-                )
-            )
-        )
-
-        Exl += ex / V1
-        Eyl += ey / V1
-        Ezl += ez / V1
-
-    for ie in range(4):
-        Em1, Em2 = Ef1s[ie], Ef2s[ie]
-        triids = l_tri_ids[:, ie]
-        a1, a2, a3 = a_s[triids]
-        b1, b2, b3 = b_s[triids]
-        c1, c2, c3 = c_s[triids]
-        d1, d2, d3 = d_s[triids]
-
-        x1, x2, x3 = xvs[l_tri_ids[:, ie]]
-        y1, y2, y3 = yvs[l_tri_ids[:, ie]]
-        z1, z2, z3 = zvs[l_tri_ids[:, ie]]
-
-        L1 = np.sqrt((x1 - x3) ** 2 + (y1 - y3) ** 2 + (z1 - z3) ** 2)
-        L2 = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-
-        ex = Em1 * L1 * (
-            3 * c2 * uzx * (c1 * d3 - c3 * d1)
-            + 3 * c2 * uzz * (b1 * c3 - b3 * c1)
-            - 3 * d2 * uyx * (c1 * d3 - c3 * d1)
-            + 3 * d2 * uyy * (b1 * d3 - b3 * d1)
-            - uyz
-            * (
-                -b2 * (c1 * d3 - c3 * d1)
-                + c2 * (b1 * d3 - b3 * d1)
-                + 2 * d2 * (b1 * c3 - b3 * c1)
-            )
-            - uzy
-            * (
-                b2 * (c1 * d3 - c3 * d1)
-                + 2 * c2 * (b1 * d3 - b3 * d1)
-                + d2 * (b1 * c3 - b3 * c1)
-            )
-        ) - Em2 * L2 * (
-            3 * c3 * uzx * (c1 * d2 - c2 * d1)
-            + 3 * c3 * uzz * (b1 * c2 - b2 * c1)
-            - 3 * d3 * uyx * (c1 * d2 - c2 * d1)
-            + 3 * d3 * uyy * (b1 * d2 - b2 * d1)
-            - uyz
-            * (
-                -b3 * (c1 * d2 - c2 * d1)
-                + c3 * (b1 * d2 - b2 * d1)
-                + 2 * d3 * (b1 * c2 - b2 * c1)
-            )
-            - uzy
-            * (
-                b3 * (c1 * d2 - c2 * d1)
-                + 2 * c3 * (b1 * d2 - b2 * d1)
-                + d3 * (b1 * c2 - b2 * c1)
-            )
-        )
-        ey = Em1 * L1 * (
-            3 * b2 * uzy * (b1 * d3 - b3 * d1)
-            - 3 * b2 * uzz * (b1 * c3 - b3 * c1)
-            + 3 * d2 * uxx * (c1 * d3 - c3 * d1)
-            - 3 * d2 * uxy * (b1 * d3 - b3 * d1)
-            + uxz
-            * (
-                -b2 * (c1 * d3 - c3 * d1)
-                + c2 * (b1 * d3 - b3 * d1)
-                + 2 * d2 * (b1 * c3 - b3 * c1)
-            )
-            - uzx
-            * (
-                2 * b2 * (c1 * d3 - c3 * d1)
-                + c2 * (b1 * d3 - b3 * d1)
-                - d2 * (b1 * c3 - b3 * c1)
-            )
-        ) - Em2 * L2 * (
-            3 * b3 * uzy * (b1 * d2 - b2 * d1)
-            - 3 * b3 * uzz * (b1 * c2 - b2 * c1)
-            + 3 * d3 * uxx * (c1 * d2 - c2 * d1)
-            - 3 * d3 * uxy * (b1 * d2 - b2 * d1)
-            + uxz
-            * (
-                -b3 * (c1 * d2 - c2 * d1)
-                + c3 * (b1 * d2 - b2 * d1)
-                + 2 * d3 * (b1 * c2 - b2 * c1)
-            )
-            - uzx
-            * (
-                2 * b3 * (c1 * d2 - c2 * d1)
-                + c3 * (b1 * d2 - b2 * d1)
-                - d3 * (b1 * c2 - b2 * c1)
-            )
-        )
-        ez = -(
-            Em1
-            * L1
-            * (
-                3 * b2 * uyy * (b1 * d3 - b3 * d1)
-                - 3 * b2 * uyz * (b1 * c3 - b3 * c1)
-                + 3 * c2 * uxx * (c1 * d3 - c3 * d1)
-                + 3 * c2 * uxz * (b1 * c3 - b3 * c1)
-                - uxy
-                * (
-                    b2 * (c1 * d3 - c3 * d1)
-                    + 2 * c2 * (b1 * d3 - b3 * d1)
-                    + d2 * (b1 * c3 - b3 * c1)
-                )
-                - uyx
-                * (
-                    2 * b2 * (c1 * d3 - c3 * d1)
-                    + c2 * (b1 * d3 - b3 * d1)
-                    - d2 * (b1 * c3 - b3 * c1)
-                )
-            )
-            - Em2
-            * L2
-            * (
-                3 * b3 * uyy * (b1 * d2 - b2 * d1)
-                - 3 * b3 * uyz * (b1 * c2 - b2 * c1)
-                + 3 * c3 * uxx * (c1 * d2 - c2 * d1)
-                + 3 * c3 * uxz * (b1 * c2 - b2 * c1)
-                - uxy
-                * (
-                    b3 * (c1 * d2 - c2 * d1)
-                    + 2 * c3 * (b1 * d2 - b2 * d1)
-                    + d3 * (b1 * c2 - b2 * c1)
-                )
-                - uyx
-                * (
-                    2 * b3 * (c1 * d2 - c2 * d1)
-                    + c3 * (b1 * d2 - b2 * d1)
-                    - d3 * (b1 * c2 - b2 * c1)
-                )
-            )
-        )
-
-        Exl += ex / V1
-        Eyl += ey / V1
-        Ezl += ez / V1
-
-    out = np.zeros((3,), dtype=np.complex128)
+ 
+    F = np.zeros((3, 1), dtype=np.complex128)
+    for idof in range(nidof):
+        i_type = typearray[idof]
+        i_index = indexarray[idof]
+ 
+        if i_type == 0:
+            i1 = l_edge_ids[0, i_index]
+            j1 = l_edge_ids[1, i_index]
+            k1 = 0
+        else:
+            i1 = l_tri_ids[0, i_index]
+            j1 = l_tri_ids[1, i_index]
+            k1 = l_tri_ids[2, i_index]
+ 
+        _eval_curlcurl_f_3d(coeff, dummy_coords, i1, j1, k1, dofcodes[idof], F)
+        fx, fy, fz = F[0, 0], F[1, 0], F[2, 0]
+ 
+        Exl += Etet[idof] * (uxx * fx + uxy * fy + uxz * fz)
+        Eyl += Etet[idof] * (uyx * fx + uyy * fy + uyz * fz)
+        Ezl += Etet[idof] * (uzx * fx + uzy * fy + uzz * fz)
+ 
+    out = np.empty(3, dtype=np.complex128)
     out[0] = Exl
     out[1] = Eyl
     out[2] = Ezl
     return out
-
 
 @njit(c16[:, :](c16[:], c16[:, :]), cache=True, fastmath=True, nogil=True)
 def cross_c_arry(a: np.ndarray, b: np.ndarray):
@@ -1406,6 +925,7 @@ def dot_c_arry(a: np.ndarray, b: np.ndarray):
         c16[:],
         i8[:],
         f8,
+        i8[:],
     ),
     cache=True,
     nogil=True,
@@ -1428,6 +948,7 @@ def compute_error_single(
     ur,
     pec_tris,
     k0,
+    dofcodes3d,
 ) -> np.ndarray:
 
     tet_is_pec = np.zeros((tris.shape[1],), dtype=np.bool_)
@@ -1435,7 +956,6 @@ def compute_error_single(
 
     # CONSTANTS
     N_TETS = tets.shape[1]
-    N_EDGES = edges.shape[1]
     N2D = DPTS_2D.shape[1]
     WEIGHTS_VOL = DPTS_3D[0, :]
 
@@ -1494,21 +1014,27 @@ def compute_error_single(
         intpts[1, :] = vys
         intpts[2, :] = vzs
 
-        # TET TRI NODE COUPLINGS
+        # TET TRI/EDGE NODE COUPLINGS -- geometry only, independent of how
+        # many DOF "orders" exist per edge/face (unlike the old code, which
+        # derived these from tet_to_field[:6]/[6:10], silently assuming a
+        # fixed 6-edge/4-face-DOF layout). tet_to_edge/tet_to_tri always
+        # have exactly 6/4 entries per tet regardless of DOF order count.
         g_node_ids = tets[:, itet]
-        g_edge_ids = edges[:, tet_to_field[:6, itet]]
-        g_tri_ids = tris[:, tet_to_field[6:10, itet] - N_EDGES]
+        g_edge_ids = edges[:, tet_to_edge[:, itet]]
+        g_tri_ids = tris[:, tet_to_tri[:, itet]]
         l_edge_ids = local_mapping(g_node_ids, g_edge_ids)
         l_tri_ids = local_mapping(g_node_ids, g_tri_ids)
         triids = tet_to_tri[:, itet]
 
-        size_max = circum_sphere_diam(v1, v2, v3, v4)
-        size_max = min(size_max, np.max(edge_lengths[tet_to_edge[:, itet]]))
-
+        #size_max = circum_sphere_diam(v1, v2, v3, v4)
+        #size_max = min(size_max, np.max(edge_lengths[tet_to_edge[:, itet]]))
+        size_max = np.max(edge_lengths[tet_to_edge[:, itet]])
         TET_VOLUME = compute_volume(vertices[0, :], vertices[1, :], vertices[2, :])
         Rt = size_max
 
-        # Efield
+        # Efield -- full per-tet DOF vector, in the same order as dofcodes3d.
+        # No more Em1s/Ef1s/Em2s/Ef2s fixed slicing -- compute_field/curl/div/
+        # curl_curl dispatch per-DOF internally via dofcodes3d.
         Ef = Efield[tet_to_field[:, itet]]
 
         # Qt term
@@ -1517,15 +1043,15 @@ def compute_error_single(
             * EPS0
             * np.sum(
                 WEIGHTS_VOL
-                * compute_div(intpts, vertices, Ef, l_edge_ids, l_tri_ids, ermat),
+                * compute_div(intpts, vertices, Ef, l_edge_ids, l_tri_ids, ermat, dofcodes3d),
                 axis=0,
             )
         )
 
         # Jt term
-        Rv1 = compute_curl_curl(vertices, Ef, l_edge_ids, l_tri_ids, uinv)
+        Rv1 = compute_curl_curl(vertices, Ef, l_edge_ids, l_tri_ids, uinv, dofcodes3d)
         Rv2 = -(k0**2) * matmul(
-            ermat, compute_field(intpts, vertices, Ef, l_edge_ids, l_tri_ids)
+            ermat, compute_field(intpts, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
         )
         Rv = 1 * Rv2
         Rv[0, :] += Rv1[0]  # X-component
@@ -1582,16 +1108,16 @@ def compute_error_single(
         Qf_all = (
             erc
             * EPS0
-            * compute_field(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids)
+            * compute_field(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
         )
         Jf_all = (
             -1
             / (1j * MU0 * W0)
             * matmul(
-                uinv, compute_curl(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids)
+                uinv, compute_curl(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
             )
         )
-        E_face_all = compute_field(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids)
+        E_face_all = compute_field(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
         tetc = centers[:, itet].flatten()
 
         max_elem_size[itet] = size_max
@@ -1725,6 +1251,7 @@ def compute_error_estimate(
     tri_centers = mesh.tri_centers
     tri_to_tet = mesh.tri_to_tet
     tet_to_field = field.basis.tet_to_field
+    dofcodes3d = field.basis.dofcodes3d  # NEW: needed for generic DOF dispatch
     er = field._der
     ur = field._dur
 
@@ -1753,6 +1280,7 @@ def compute_error_estimate(
             ur,
             pec_tris,
             field.k0,
+            dofcodes3d,
         )
         errors.append(error)
 

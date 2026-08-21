@@ -78,85 +78,6 @@ def unpack_lists(_list: Any, collector: list | None = None) -> list[Any]:
     return collector
 
 
-class AMRPoints:
-    def __init__(self):
-        self._amr_fields: list[int] = []
-        self._amr_coords: np.ndarray = None
-        self._amr_sizes: np.ndarray = None
-        self._amr_ratios: np.ndrray = None
-        self._amr_new: np.ndarray = None
-
-    def reset(self):
-        self._amr_fields: list[int] = []
-        self._amr_coords: np.ndarray = None
-        self._amr_sizes: np.ndarray = None
-        self._amr_ratios: np.ndrray = None
-        self._amr_new: np.ndarray = None
-        self._reset_amr_points()
-
-    @property
-    def npts(self) -> int:
-        return self._amr_coords.shape[1]
-
-    def reduce_set(self, ids: np.ndarray) -> None:
-        self._amr_coords = self._amr_coords[:, ids]
-        self._amr_sizes = self._amr_sizes[ids]
-        self._amr_ratios = self._amr_ratios[ids]
-        self._amr_new = self._amr_new[ids]
-
-    def _reset_amr_points(self) -> None:
-        for tag in self._amr_fields:
-            gmsh.model.mesh.field.remove(tag)
-        self._amr_fields = []
-
-    def add_refinement_points(
-        self, coords: np.ndarray, sizes: np.ndarray, ratios: np.ndarray
-    ):
-        if self._amr_coords is None:
-            self._amr_coords = coords
-        else:
-            self._amr_coords = np.hstack((self._amr_coords, coords))
-
-        if self._amr_sizes is None:
-            self._amr_sizes = sizes
-        else:
-            self._amr_sizes = np.hstack((self._amr_sizes, sizes))
-
-        if self._amr_ratios is None:
-            self._amr_ratios = ratios
-        else:
-            self._amr_ratios = np.hstack((self._amr_ratios, ratios))
-
-        if self._amr_new is None:
-            self._amr_new = np.ones_like(sizes)
-        else:
-            self._amr_new = np.hstack((0.0 * self._amr_new, np.ones_like(sizes)))
-
-    def set_refinement_function(self, gr: float = 1.5, _qf: float = 1.0):
-        xs = self._amr_coords[0, :]
-        ys = self._amr_coords[1, :]
-        zs = self._amr_coords[2, :]
-        newsize = self._amr_ratios * self._amr_sizes
-        A = newsize / gr
-        B = (1 - gr) / gr
-
-        from numba import njit, i8, f8
-
-        @njit(f8(i8, i8, f8, f8, f8, f8), nogil=True, fastmath=True, parallel=False)
-        def func(dim, tag, x, y, z, lc):
-            sizes = np.maximum(
-                newsize,
-                A - B * _qf * np.sqrt((x - xs) ** 2 + (y - ys) ** 2 + (z - zs) ** 2),
-            )
-            return min(lc, float(np.min(sizes)))
-
-        gmsh.model.mesh.setSizeCallback(func)
-
-    def set_ratio(self, ratio: float) -> None:
-        newids = self._amr_new == 1
-        self._amr_ratios[newids] = ratio
-        return self._amr_ratios[newids][0]
-
 
 class Mesher:
     def __init__(self):
@@ -166,17 +87,16 @@ class Mesher:
         self.max_mesh_fields: list[int] = []
         self.curved_boundary_segments: float = 10.0
 
+        self._error_size_view_tags: list[int] = []
+        self._error_size_field_tags: list[int] = []
         self._coarse_tags: list[int] = []
 
         self._amr_fields: list[int] = []
-        self._amr_coords: np.ndarray = None
-        self._amr_sizes: np.ndarray = None
-        self._amr_ratios: np.ndrray = None
-        self._amr_new: np.ndarray = None
-        self._amrobj = AMRPoints()
         self.min_size: float = None
         self.max_size: float = None
         self.periodic_cell: PeriodicCell = None
+
+        self._scale: float = 1.0
 
     @property
     def edge_tags(self) -> list[int]:
@@ -253,6 +173,7 @@ class Mesher:
             dimtags, output_mapping = gmsh.model.occ.fragment(
                 final_dimtags, embedding_dimtags
             )
+            gmsh.model.occ.remove_all_duplicates()
             for domain, mapping in zip(
                 final_dimtags + embedding_dimtags, output_mapping
             ):
@@ -270,22 +191,10 @@ class Mesher:
         self, face1: Selection, face2: Selection, lattice: np.ndarray
     ):
         translation = [
-            1,
-            0,
-            0,
-            lattice[0],
-            0,
-            1,
-            0,
-            lattice[1],
-            0,
-            0,
-            1,
-            lattice[2],
-            0,
-            0,
-            0,
-            1,
+            1,0,0,lattice[0],
+            0,1,0,lattice[1],
+            0,0,1,lattice[2],
+            0,0,0,1,
         ]
         gmsh.model.mesh.set_periodic(2, face2.tags, face1.tags, translation)
 
@@ -378,13 +287,7 @@ class Mesher:
         tag = gmsh.model.mesh.field.add("Max")
         maxval_tag = gmsh.model.mesh.field.add("MathEval")
         gmsh.model.mesh.field.setString(maxval_tag, "F", "100")
-        gmsh.model.mesh.field.setNumbers(
-            tag,
-            "FieldsList",
-            [
-                maxval_tag,
-            ],
-        )
+        gmsh.model.mesh.field.setNumbers(tag,"FieldsList",[maxval_tag,],)
         gmsh.model.mesh.field.setAsBackgroundMesh(tag)
         self._coarse_tags = (tag, maxval_tag)
 
@@ -416,7 +319,9 @@ class Mesher:
         size_mapping = dict()
 
         for obj in self.objects:
-            if obj.dim != 2 and obj.max_meshsize < 1e9:
+            if obj.dim != 2:
+                continue
+            if obj.max_meshsize <= 1e9:
                 continue
             self._set_size_on_face(obj.tags, obj.max_meshsize)
 
@@ -426,7 +331,7 @@ class Mesher:
             if obj._unset_constraints:
                 self.unset_constraints(obj.dimtags)
 
-            size = discretizer(obj.material) * resolution * obj.mesh_multiplier
+            size = self._scale*discretizer(obj.material) * resolution * obj.mesh_multiplier
             size = min(size, obj.max_meshsize)
 
             for dimtag in obj.dimtags:
@@ -438,20 +343,10 @@ class Mesher:
                 logger.debug(
                     f"Somehow setting mesh size:{1000 * size:.3f}mm on boundary: {tag}"
                 )
-                self._set_size_on_face(
-                    [
-                        tag,
-                    ],
-                    size,
-                )
+                self._set_size_on_face([tag,],size,)
             if dim == 3:
                 logger.debug(f"Setting mesh size:{1000 * size:.3f}mm in domains: {tag}")
-                self._set_size_in_domain(
-                    [
-                        tag,
-                    ],
-                    size,
-                )
+                self._set_size_in_domain([tag,],size,)
 
         gmsh.model.mesh.field.setNumbers(
             mintag, "FieldsList", self.mesh_fields + self._amr_fields
@@ -463,9 +358,7 @@ class Mesher:
                 maxtag,
                 "FieldsList",
                 self.max_mesh_fields
-                + [
-                    mintag,
-                ],
+                + [mintag,],
             )
             gmsh.model.mesh.field.setAsBackgroundMesh(maxtag)
         else:
@@ -475,12 +368,7 @@ class Mesher:
             logger.debug(
                 f"Setting aux size definition: {1000 * size:.3f}mm in domain {tag}."
             )
-            gmsh.model.mesh.setSize(
-                [
-                    tag,
-                ],
-                size,
-            )
+            gmsh.model.mesh.setSize([tag,],size,)
 
     def _fix_curved_boundary_meshing(self) -> None:
         """Fix the meshing on curved boundaries by setting a finer mesh on edges"""
@@ -500,73 +388,6 @@ class Mesher:
         for dimtag in dimtags:
             gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
 
-    def add_refinement_points(
-        self, coords: np.ndarray, sizes: np.ndarray, ratios: np.ndarray
-    ):
-        if self._amr_coords is None:
-            self._amr_coords = coords
-        else:
-            self._amr_coords = np.hstack((self._amr_coords, coords))
-
-        if self._amr_sizes is None:
-            self._amr_sizes = sizes
-        else:
-            self._amr_sizes = np.hstack((self._amr_sizes, sizes))
-
-        if self._amr_ratios is None:
-            self._amr_ratios = ratios
-        else:
-            self._amr_ratios = np.hstack((self._amr_ratios, ratios))
-
-        if self._amr_new is None:
-            self._amr_new = np.ones_like(sizes)
-        else:
-            self._amr_new = np.hstack((0.0 * self._amr_new, np.ones_like(sizes)))
-
-    def _set_refinement_function(self, gr: float = 1.5, _qf: float = 1.0):
-        """Define the refinement function based on AMR points. Not to be used by you.
-
-        Args:
-            gr (float, optional): The growth ratio . Defaults to 1.5.
-            _qf (float, optional): The growth ratio scale factor. Defaults to 1.0.
-
-        """
-        xs = self._amr_coords[0, :]
-        ys = self._amr_coords[1, :]
-        zs = self._amr_coords[2, :]
-        newsize = self._amr_ratios * self._amr_sizes
-        A = newsize / gr
-        B = (1 - gr) / gr
-        from numba import njit, i8, f8
-
-        @njit(f8(i8, i8, f8, f8, f8, f8), nogil=True, fastmath=True, parallel=False)
-        def func(dim, tag, x, y, z, lc):
-            sizes = np.maximum(
-                newsize,
-                A
-                - B
-                * _qf
-                * np.clip(
-                    np.sqrt((x - xs) ** 2 + (y - ys) ** 2 + (z - zs) ** 2)
-                    - newsize * 0,
-                    a_min=0,
-                    a_max=None,
-                ),
-            )
-            return min(lc, float(np.min(sizes)))
-
-        gmsh.model.mesh.setSizeCallback(func)
-
-    def _set_refinement_ratio(self, ratio: float) -> None:
-        """Update the adaptive mesh refinement ratio. Not to be used by users.
-
-        Args:
-            ratio (float): The new refinement ratio
-
-        """
-        newids = self._amr_new == 1
-        self._amr_ratios[newids] = ratio
-        return self._amr_ratios[newids][0]
 
     def set_boundary_size(
         self,
@@ -667,14 +488,10 @@ class Mesher:
                 'Can only do trace refinement for 2D structures. In case of thick metal traces, use the bottom layer with .face("-z")'
             )
 
-        edge_dimtags = gmsh.model.get_boundary(obj.dimtags, True)
+        edge_dimtags = gmsh.model.get_boundary(obj.dimtags, True, False)
         edges = [t for d, t in edge_dimtags if d == 1]
         edge_nodes: dict[int, tuple[int, int]] = {
-            tag: gmsh.model.get_boundary(
-                [
-                    (1, tag),
-                ]
-            )
+            tag: gmsh.model.get_boundary([(1, tag),],True, False,False)
             for tag in edges
         }
 
@@ -808,7 +625,7 @@ class Mesher:
             self._set_size_on_point(obj.tags, size)
 
     def refine_conductor_edge(self, dimtags: list[tuple[int, int]], size):
-        nodes = gmsh.model.getBoundary(dimtags, combined=False, recursive=False)
+        nodes = gmsh.model.getBoundary(dimtags, combined=False, oriented=False, recursive=False)
 
         # for node in nodes:
         #     pcoords = np.linspace(0, 0.5, 10)
@@ -844,3 +661,86 @@ class Mesher:
 
         for dimtag in dimtags:
             gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
+
+    def set_error_size_field(
+        self, nodes: np.ndarray, tets: np.ndarray, size_at_node: np.ndarray
+    ) -> int:
+        """Installs a per-NODE, error-driven mesh size field via a NodeData
+        view on a frozen auxiliary gmsh model, used as a PostView background
+        field. Registered into self.mesh_fields, same as every other size
+        source -- participates in the normal Min-combination
+        _configure_mesh_size already builds.
+    
+        Args:
+            nodes: (3, N) current mesh node coordinates
+            tets: (4, M) current mesh tet connectivity (node indices into `nodes`)
+            size_at_node: (N,) target size per node
+    
+        Returns:
+            field_tag: the PostView field's tag (already appended to self.mesh_fields)
+        """
+        real_model = gmsh.model.getCurrent()
+    
+        n_nodes = nodes.shape[1]
+        n_tets = tets.shape[1]
+    
+        # gmsh tags are 1-based and must be unique -- local index + 1 is fine
+        # since this auxiliary model is self-contained and doesn't need to
+        # correspond to the real model's own node/element tags at all.
+        node_tags = np.arange(1, n_nodes + 1, dtype=np.int64)
+        elem_tags = np.arange(1, n_tets + 1, dtype=np.int64)
+        node_coords_flat = nodes.T.reshape(-1)          # (3N,) x,y,z per node
+        tet_node_tags_flat = (tets + 1).T.reshape(-1)    # (4M,) 1-based node tags per tet
+    
+        aux_name = "_error_size_field_aux"
+        if aux_name not in gmsh.model.list():
+            gmsh.model.add(aux_name)
+            gmsh.model.addDiscreteEntity(3, 1)
+        gmsh.model.setCurrent(aux_name)
+    
+        gmsh.model.mesh.addNodes(3, 1, node_tags.tolist(), node_coords_flat.tolist())
+        gmsh.model.mesh.addElementsByType(1, 4, elem_tags.tolist(), tet_node_tags_flat.tolist())
+    
+        view_tag = gmsh.view.add("ErrorSizeField")
+        gmsh.view.addHomogeneousModelData(
+            view_tag, 0, aux_name, "NodeData",
+            node_tags, np.asarray(size_at_node, dtype=np.float64),
+            time=0.0, numComponents=1,
+        )
+    
+        gmsh.model.setCurrent(real_model)
+    
+        field_tag = gmsh.model.mesh.field.add("PostView")
+        gmsh.model.mesh.field.setNumber(field_tag, "ViewTag", view_tag)
+    
+        self.mesh_fields.append(field_tag)
+        self._error_size_view_tags.append(view_tag)
+        self._error_size_field_tags.append(field_tag)
+        self._error_size_aux_model = aux_name
+    
+        return field_tag
+    
+    
+    def clear_error_size_field(self) -> None:
+        """Removes any previously-installed error-driven size field(s), their
+        backing views, and clears (but does not remove) the auxiliary model's
+        mesh data so the next call starts fresh. Call before installing a new
+        one each AMR pass.
+        """
+        real_model = gmsh.model.getCurrent()
+    
+        for tag in self._error_size_field_tags:
+            if tag in self.mesh_fields:
+                self.mesh_fields.remove(tag)
+            gmsh.model.mesh.field.remove(tag)
+        for tag in self._error_size_view_tags:
+            gmsh.view.remove(tag)
+        self._error_size_field_tags = []
+        self._error_size_view_tags = []
+    
+        aux_name = getattr(self, "_error_size_aux_model", None)
+        if aux_name is not None and aux_name in gmsh.model.list():
+            gmsh.model.setCurrent(aux_name)
+            gmsh.model.mesh.clear()
+            gmsh.model.setCurrent(real_model)
+    

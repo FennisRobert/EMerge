@@ -113,9 +113,7 @@ for stub in stubs:
 # We define our modal ports, assign the boundary condition and execute a modal analysis to solve for the
 # coaxial field mode.
 port1 = model.mw.bc.ModalPort(model.select.face.near(-lfeed, 0, h), 1, modetype="TEM")
-port2 = model.mw.bc.ModalPort(
-    model.select.face.near(Lbox + lfeed, 0, h), 2, modetype="TEM"
-)
+port2 = model.mw.bc.ModalPort(model.select.face.near(Lbox + lfeed, 0, h), 2, modetype="TEM")
 
 # Finally we may create our mesh.
 model.generate_mesh()

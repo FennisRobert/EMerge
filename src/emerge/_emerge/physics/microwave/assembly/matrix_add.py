@@ -115,26 +115,70 @@ def _as_dtype(arr, dtype):
     arr = np.asarray(arr)
     return arr if arr.dtype == dtype else arr.astype(dtype)
 
-
 def add_coo_to_csc(K_csc, data_coo, rows_coo, cols_coo):
     """
     In-place: K_csc[rows_coo[i], cols_coo[i]] += data_coo[i] for all i.
-
-    Requires every (rows_coo[i], cols_coo[i]) to already be an explicit
-    stored entry of K_csc (i.e. a subset of its sparsity pattern). Safe
-    with duplicate (row, col) pairs within the COO triplet -- they
-    accumulate correctly (this runs as a sequential scatter-add).
-
+ 
+    FIXED: the original version assumed every (row, col) pair was already
+    an explicit stored entry of K_csc. When that assumption didn't hold,
+    _find_pos returned -1 and `csc_data[pos] += v` silently wrote into
+    csc_data[-1] -- the LAST stored entry in the entire matrix, an
+    unrelated position -- rather than failing loudly. That's genuine
+    silent data corruption, not just a missed contribution, and it's what
+    produced a singular matrix several layers downstream with no direct
+    error pointing at the cause (confirmed root cause of a real bug: a
+    Robin BC contributing to DOFs whose tets were entirely excluded from
+    the base volumetric assembly, e.g. a thin/pinched conductor feature
+    fully surrounded by conductor-classified tets).
+ 
+    This version detects missing positions up front. If none are missing
+    (the common case), cost is identical to before. If some ARE missing,
+    it fast-paths everything that IS present, and grows K_csc's sparsity
+    pattern via a single generic sparse add for ONLY the missing subset --
+    correct, and far cheaper than falling back to the slow path for the
+    entire call (which is what `K += csc_matrix((data,(rows,cols)))`
+    does, and why that "fixed" your model but at full generic-add cost
+    for every single entry, not just the ones that actually needed it).
+ 
+    Safe with duplicate (row, col) pairs within the COO triplet -- they
+    accumulate correctly either way.
+ 
     K_csc is modified in place; nothing is returned.
     """
     _ensure_sorted(K_csc)
     rows_coo = _as_dtype(rows_coo, K_csc.indices.dtype)
     cols_coo = _as_dtype(cols_coo, K_csc.indices.dtype)
     data_coo = _as_dtype(data_coo, K_csc.data.dtype)
-    _add_coo_to_csc_kernel(K_csc.data, K_csc.indices, K_csc.indptr,
-                            data_coo, rows_coo, cols_coo)
-
-
+ 
+    positions = np.empty(rows_coo.shape[0], dtype=np.int64)
+    _build_positions_kernel(K_csc.indices, K_csc.indptr, rows_coo, cols_coo, positions)
+ 
+    missing = positions < 0
+    if not missing.any():
+        # Fast path -- identical cost to the original implementation.
+        _add_with_positions_kernel(K_csc.data, data_coo, positions)
+        return
+ 
+    present = ~missing
+    if present.any():
+        # Fast scatter-add for everything that was already there.
+        _add_with_positions_kernel(K_csc.data, data_coo[present], positions[present])
+ 
+    # Grow the pattern for ONLY the missing subset -- correct, and the
+    # generic-add cost is paid just for these entries, not the whole call.
+    missing_coo = csc_matrix(
+        (data_coo[missing], (rows_coo[missing], cols_coo[missing])),
+        shape=K_csc.shape,
+    )
+    K_grown = (K_csc + missing_coo).tocsc()
+    K_grown.sort_indices()
+ 
+    # Overwrite K_csc's structure in place so the caller's existing
+    # reference to this same object sees the grown pattern.
+    K_csc.indices = K_grown.indices
+    K_csc.indptr = K_grown.indptr
+    K_csc.data = K_grown.data
+    
 def build_positions(K_csc, rows_coo, cols_coo):
     """
     Precompute, once, the flat position in K_csc.data that each

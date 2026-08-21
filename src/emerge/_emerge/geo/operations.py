@@ -65,7 +65,10 @@ def add(main: T,
         main._exists = False
     if remove_tool:
         tool._exists = False
-    return output.set_material(main.material) # type: ignore
+
+    if main.material is not None:
+        output.set_material(main.material)
+    return output # type: ignore
 
 def remove(main: T, tool: T, 
              remove_object: bool = True,
@@ -98,7 +101,10 @@ def remove(main: T, tool: T,
         main._exists = False
     if remove_tool:
         tool._exists = False
-    return output.set_material(main.material) # type: ignore
+
+    if main.material is not None:
+        output.set_material(main.material)
+    return output # type: ignore
 
 subtract = remove
 
@@ -132,7 +138,10 @@ def intersect(main: T, tool: T,
         main._exists = False
     if remove_tool:
         tool._exists = False
-    return output.set_material(main.material) #type:ignore
+
+    if main.material is not None:
+        output.set_material(main.material)
+    return output # type: ignore
 
 def embed(main: GeoVolume, other: GeoSurface) -> None:
     ''' Embeds a surface into a volume in the GMSH model.

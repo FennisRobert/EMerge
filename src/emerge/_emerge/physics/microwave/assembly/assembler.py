@@ -68,11 +68,17 @@ def do_assemble_wpbc(bc: BoundaryCondition) -> bool:
         return True
     return False
 
-
-def diagnose_matrix(mat: csc_matrix, basis: Nedelec2):
+def diagnose_matrix(mat: csc_matrix, basis: "Nedelec2", solve_ids: np.ndarray) -> None:
     """
-    Performs high-fidelity diagnostics on the FEM system matrix.
-    Crashes with a detailed report if the matrix is numerically or structurally unfit.
+    Performs high-fidelity diagnostics on the REDUCED FEM system matrix,
+    i.e. K[solve_ids,:][:,solve_ids] -- PEC/excluded DoFs already sliced
+    out. Crashes with a detailed report if the matrix is numerically or
+    structurally unfit.
+
+    IMPORTANT: `mat` must already be the REDUCED matrix; `solve_ids` is
+    only used to translate its local indices back to global DoF numbers
+    for reporting. Passing the full, unreduced matrix here will raise an
+    IndexError, since solve_ids is shorter than the full DoF count.
     """
     print("--- Starting FEM Matrix Diagnostics ---")
 
@@ -84,59 +90,38 @@ def diagnose_matrix(mat: csc_matrix, basis: Nedelec2):
         report.append(f"CRITICAL: Non-square matrix detected ({mat.shape})")
         failed = True
 
-    if n_dofs != basis.n_field:
+    if n_dofs != len(solve_ids):
         report.append(
-            f"CRITICAL: DoF mismatch! Matrix size {n_dofs} != Basis nfield {basis.n_field}"
+            f"CRITICAL: DoF mismatch! Matrix size {n_dofs} != len(solve_ids) {len(solve_ids)}"
         )
         failed = True
 
     col_counts = np.diff(mat.indptr)
-    empty_cols = np.where(col_counts == 0)[0]
+    empty_cols_local = np.where(col_counts == 0)[0]
 
     row_present = np.zeros(n_dofs, dtype=bool)
     row_present[mat.indices] = True
-    empty_rows = np.where(~row_present)[0]
+    empty_rows_local = np.where(~row_present)[0]
+
+    empty_cols = solve_ids[empty_cols_local]
+    empty_rows = solve_ids[empty_rows_local]
 
     if len(empty_cols) > 0 or len(empty_rows) > 0:
         failed = True
         report.append(
-            f"CRITICAL: Found {len(empty_cols)} empty columns and {len(empty_rows)} empty rows."
+            f"CRITICAL: Found {len(empty_cols)} empty columns and {len(empty_rows)} empty rows "
+            f"among SOLVED (non-PEC-excluded) DoFs."
         )
 
-        nedges = basis.nedges
-        ntris = basis.ntris
-
-        def map_dof_to_entity(dofs):
-            e_idx = dofs[
-                (dofs < nedges)
-                | ((dofs >= (nedges + ntris)) & (dofs < (2 * nedges + ntris)))
-            ]
-            t_idx = dofs[
-                ((dofs >= nedges) & (dofs < (nedges + ntris)))
-                | (dofs >= (2 * nedges + ntris))
-            ]
-            return e_idx, t_idx
-
-        e_empty, t_empty = map_dof_to_entity(empty_cols)
-
-        if len(e_empty) > 0:
-            report.append(
-                f" -> Problem involves {len(e_empty)} Edge DoFs. Check for unmeshed lines or duplicate STEP edges."
-            )
-        if len(t_empty) > 0:
-            report.append(
-                f" -> Problem involves {len(t_empty)} Triangle DoFs. Check for internal non-conformal faces."
-            )
-
     diag = mat.diagonal()
-    zero_diag = np.where(np.isclose(diag, 0, atol=1e-15))[0]
-    if len(zero_diag) > 0:
-        true_zero_diag = np.setdiff1d(zero_diag, empty_cols)
-        if len(true_zero_diag) > 0:
-            failed = True
-            report.append(
-                f"CRITICAL: {len(true_zero_diag)} non-empty columns have zero diagonal (Numerical Singularity)."
-            )
+    zero_diag_local = np.where(np.isclose(diag, 0, atol=1e-15))[0]
+    true_zero_diag_local = np.setdiff1d(zero_diag_local, empty_cols_local)
+    if len(true_zero_diag_local) > 0:
+        failed = True
+        report.append(
+            f"CRITICAL: {len(true_zero_diag_local)} non-empty (solved) columns have zero diagonal "
+            f"(Numerical Singularity)."
+        )
 
     if (mat - mat.T).nnz > 0:
         max_asym = np.max(np.abs((mat - mat.T).data)) if mat.nnz > 0 else 0
@@ -150,84 +135,210 @@ def diagnose_matrix(mat: csc_matrix, basis: Nedelec2):
         for line in report:
             print(line)
 
-        print("\nHINT: Your 'nfield' is based on mesh.n_edges and n_tris.")
-        print("If parts aren't 'welded' with gmsh.model.mesh.removeDuplicateNodes(),")
-        print("you will have extra DoFs on the interface that never get assembled.")
+        print("\nHINT: PEC DoFs are intentionally excluded from `mat` via solve_ids")
+        print("and are expected to be absent entirely. A problem DoF below IS in")
+        print("solve_ids but has no matrix contribution or a zero diagonal -- THAT's")
+        print("the real anomaly to investigate.")
         print("!" * 50)
-        identify_mesh_dead_zones(mat, basis)
-        raise RuntimeError("FEM Matrix is singular or improperly assembled.")
+
+        # Union every problem category into one set of GLOBAL dof ids, each
+        # tagged with why it was flagged, then resolve to actual points.
+        problem_dofs: dict[int, list[str]] = {}
+        for gid in empty_cols:
+            problem_dofs.setdefault(int(gid), []).append("empty column")
+        for gid in empty_rows:
+            problem_dofs.setdefault(int(gid), []).append("empty row")
+        for gid in solve_ids[true_zero_diag_local]:
+            problem_dofs.setdefault(int(gid), []).append("zero diagonal")
+
+        points = list_problem_points(problem_dofs, basis)
+        print(f"\n--- {len(points)} Problematic Point(s) ---")
+        for p in points:
+            tags_str = f", groups={p['groups']}" if p['groups'] else ""
+            print(
+                f"  dof={p['dof']:>8}  type={p['type']:<8}  "
+                f"reasons={','.join(p['reasons']):<28}  "
+                f"xyz=({p['x']:.6g}, {p['y']:.6g}, {p['z']:.6g}){tags_str}"
+            )
+
+        if points:
+            coords_arr = np.array([[p['x'], p['y'], p['z']] for p in points]).T
+            np.save("dead_coords.npy", coords_arr)
+            print(f"\nSaved {len(points)} point coordinates to dead_coords.npy")
+
+            # Copy-paste-ready for model.display.add_scatter(xs, ys, zs)
+            xs_lit = ", ".join(f"{p['x']:.6g}" for p in points)
+            ys_lit = ", ".join(f"{p['y']:.6g}" for p in points)
+            zs_lit = ", ".join(f"{p['z']:.6g}" for p in points)
+            print("\n--- Copy-paste for model.display.add_scatter(xs, ys, zs) ---")
+            print(f"xs = [{xs_lit}]")
+            print(f"ys = [{ys_lit}]")
+            print(f"zs = [{zs_lit}]")
+
+        raise MatrixDiagnosisError(
+            "FEM Matrix is singular or improperly assembled.", points=points
+        )
 
     print("Diagnostics Passed: Matrix is structurally sound.")
 
-
-def identify_mesh_dead_zones(mat, basis: "Nedelec2"):
+def diagnose_robin_matrix(
+    field: "Nedelec2",
+    B_matrix_robin,
+    tri_ids: np.ndarray,
+) -> list[dict]:
+    """Checks whether the DOFs a Robin BC (SurfaceImpedance/ThinConductor)
+    re-includes from pec_ids actually received a matrix contribution from
+    assemble_robin_bc, rather than checking the whole system.
+ 
+    ASSUMPTION (unverified against assemble_robin_bc's actual source):
+    B_matrix_robin is a flat values array, same length as field._rows /
+    field._cols, where entry i contributes to global position
+    (field._rows[i], field._cols[i]) in K -- matching the "precomputed
+    across all triangles in the mesh" sparsity pattern add_coo_to_csc
+    consumes. If B_matrix_robin's actual shape/type doesn't match this,
+    this will error immediately rather than silently mislead -- tell me
+    what it says if so.
+ 
+    Returns a list of problem-point dicts (same shape as
+    list_problem_points), one per DOF that should have gotten a Robin
+    contribution but didn't.
     """
-    Identifies exactly which physical parts of the STEP file
-    correspond to the empty matrix columns.
+    rows = np.asarray(field._rows)
+    cols = np.asarray(field._cols)
+    vals = np.asarray(B_matrix_robin)
+ 
+    if vals.shape != rows.shape:
+        raise ValueError(
+            f"B_matrix_robin shape {vals.shape} doesn't match field._rows "
+            f"shape {rows.shape} -- the flat-values-array assumption this "
+            f"diagnostic is built on doesn't hold here. Check assemble_robin_bc's "
+            f"actual return type before trusting anything below."
+        )
+ 
+    nnz_mask = np.abs(vals) > 0
+    print(f"B_matrix_robin: {nnz_mask.sum()} / {vals.size} entries nonzero "
+          f"(sum |val| = {np.sum(np.abs(vals)):.6g})")
+    if nnz_mask.sum() == 0:
+        print("B_matrix_robin is ENTIRELY ZERO -- assemble_robin_bc produced "
+              "no contribution at all for this call. Check tri_ids and gamma "
+              "before looking at individual DOFs.")
+ 
+    # The DOFs this BC un-excludes from pec_ids -- exactly what
+    # _assemble_robin_terms computes for SurfaceImpedance/ThinConductor.
+    expected_dofs = sorted(set(field.tri_to_field[:, tri_ids].flatten().tolist()))
+    print(f"\nChecking {len(expected_dofs)} DOFs expected to receive Robin contributions...")
+ 
+    has_any_local = {d: False for d in expected_dofs}
+    has_diag_local = {d: False for d in expected_dofs}
+ 
+    nz_rows = rows[nnz_mask]
+    nz_cols = cols[nnz_mask]
+    expected_set = set(expected_dofs)
+ 
+    for r, c in zip(nz_rows, nz_cols):
+        r, c = int(r), int(c)
+        if r in expected_set:
+            has_any_local[r] = True
+            if r == c:
+                has_diag_local[r] = True
+        if c in expected_set and c != r:
+            has_any_local[c] = True
+ 
+    never_touched = [d for d in expected_dofs if not has_any_local[d]]
+    touched_no_diag = [d for d in expected_dofs if has_any_local[d] and not has_diag_local[d]]
+ 
+    print(f" - {len(never_touched)} DOFs got NO contribution at all "
+          f"(row or col) from B_matrix_robin")
+    print(f" - {len(touched_no_diag)} DOFs got off-diagonal contributions "
+          f"but NO diagonal entry (exactly the zero-diagonal singularity pattern)")
+    print(f" - {len(expected_dofs) - len(never_touched) - len(touched_no_diag)} DOFs look fine")
+ 
+    problem_dofs: dict[int, list[str]] = {}
+    for d in never_touched:
+        problem_dofs.setdefault(d, []).append("robin: no contribution at all")
+    for d in touched_no_diag:
+        problem_dofs.setdefault(d, []).append("robin: off-diagonal only, no diagonal")
+ 
+    points = list_problem_points(problem_dofs, field)
+ 
+    if points:
+        print(f"\n--- {len(points)} Robin-Problem DOF(s) ---")
+        for p in points:
+            print(
+                f"  dof={p['dof']:>8}  type={p['type']:<8}  "
+                f"reasons={','.join(p['reasons']):<40}  "
+                f"xyz=({p['x']:.6g}, {p['y']:.6g}, {p['z']:.6g})"
+            )
+        xs_lit = ", ".join(f"{p['x']:.6g}" for p in points)
+        ys_lit = ", ".join(f"{p['y']:.6g}" for p in points)
+        zs_lit = ", ".join(f"{p['z']:.6g}" for p in points)
+        print("\n--- Copy-paste for model.display.add_scatter(xs, ys, zs) ---")
+        print(f"xs = [{xs_lit}]")
+        print(f"ys = [{ys_lit}]")
+        print(f"zs = [{zs_lit}]")
+ 
+    return points
+class MatrixDiagnosisError(RuntimeError):
+    """Same as RuntimeError, but carries the resolved problem-point list so
+    a caller can catch it and use the points directly (e.g. to visualize
+    via add_solution_error / a scatter plot) instead of re-parsing stdout.
     """
-    col_counts = np.diff(mat.indptr)
-    empty_indices = np.where(col_counts == 0)[0]
+    def __init__(self, message: str, points: list[dict]):
+        super().__init__(message)
+        self.points = points
 
-    if len(empty_indices) == 0:
-        print("No empty columns found spatially.")
-        return
 
+def list_problem_points(problem_dofs: dict[int, list[str]], basis: "Nedelec2") -> list[dict]:
+    """Resolves a {global_dof_id: [reasons]} dict into a list of dicts with
+    actual coordinates and physical-group membership, for printing or for
+    programmatic use (e.g. feeding a visualization).
+
+    Returns a list of:
+        {"dof": int, "type": "edge"|"tri", "x": float, "y": float, "z": float,
+         "reasons": [str, ...], "groups": [str, ...]}
+    """
     nedges = basis.nedges
     ntris = basis.ntris
+    mesh = basis.mesh
 
-    dead_elements = {"edges": [], "tris": []}
-    dead_coords = []
-
-    for idx in empty_indices:
-        if idx < nedges:
-            e_id = idx
-            dead_elements["edges"].append(e_id)
-            dead_coords.append(basis.mesh.edge_centers[:, e_id])
-        elif nedges <= idx < (nedges + ntris):
-            t_id = idx - nedges
-            dead_elements["tris"].append(t_id)
-            dead_coords.append(basis.mesh.tri_centers[:, t_id])
-        elif (nedges + ntris) <= idx < (2 * nedges + ntris):
-            e_id = idx - (nedges + ntris)
-            dead_elements["edges"].append(e_id)
-            dead_coords.append(basis.mesh.edge_centers[:, e_id])
+    points = []
+    for dof, reasons in sorted(problem_dofs.items()):
+        if dof < nedges:
+            entity_type = "edge"
+            entity_id = dof
+            coord = mesh.edge_centers[:, entity_id]
+        elif nedges <= dof < (nedges + ntris):
+            entity_type = "tri"
+            entity_id = dof - nedges
+            coord = mesh.tri_centers[:, entity_id]
+        elif (nedges + ntris) <= dof < (2 * nedges + ntris):
+            entity_type = "edge"
+            entity_id = dof - (nedges + ntris)
+            coord = mesh.edge_centers[:, entity_id]
         else:
-            t_id = idx - (2 * nedges + ntris)
-            dead_elements["tris"].append(t_id)
-            dead_coords.append(basis.mesh.tri_centers[:, t_id])
+            entity_type = "tri"
+            entity_id = dof - (2 * nedges + ntris)
+            coord = mesh.tri_centers[:, entity_id]
 
-    np.save("dead_coords.npy", np.array(dead_coords).T)
-    dead_coords = np.array(dead_coords)
-    avg_pos = np.mean(dead_coords, axis=0)
-    spread = np.std(dead_coords, axis=0)
+        groups = []
+        if entity_type == "edge":
+            for tag, edges in mesh.etag_to_edge.items():
+                if entity_id in edges:
+                    groups.append(f"Curve[{tag}]")
+        else:
+            for tag, tris in mesh.ftag_to_tri.items():
+                if entity_id in tris:
+                    groups.append(f"Surface[{tag}]")
 
-    print("\n--- Spatial Autopsy Report ---")
-    print(f"Dead Zone Center of Mass: {avg_pos}")
-    print(f"Dead Zone Bounding Box Spread (std): {spread}")
+        points.append({
+            "dof": dof,
+            "type": entity_type,
+            "x": float(coord[0]), "y": float(coord[1]), "z": float(coord[2]),
+            "reasons": reasons,
+            "groups": groups,
+        })
 
-    troubled_groups = set()
-
-    for e_id in set(dead_elements["edges"]):
-        for tag, edges in basis.mesh.etag_to_edge.items():
-            if e_id in edges:
-                troubled_groups.add(f"Physical Curve (Tag {tag})")
-
-    for t_id in set(dead_elements["tris"]):
-        for tag, tris in basis.mesh.ftag_to_tri.items():
-            if t_id in tris:
-                troubled_groups.add(f"Physical Surface (Tag {tag})")
-
-    if troubled_groups:
-        print("The following Physical Groups contain dead DoFs:")
-        for group in troubled_groups:
-            print(f" - {group}")
-    else:
-        print("HINT: Dead DoFs do not belong to any Physical Group.")
-        print(
-            "This means they are INTERIOR elements that your assembly loop is missing."
-        )
-
-
+    return points
 def plane_basis_from_points(points: np.ndarray) -> np.ndarray:
     """
     Compute an orthonormal basis from a cloud of 3D points dominantly
@@ -400,14 +511,15 @@ class Assembler:
                 pec_ids = pec_ids.difference(dofs)
 
             gamma = bc.get_gamma(K0)
-            logger.trace(f"    - robin bc \u03b3={gamma:.3f}")
+            logger.trace(f"    - robin bc γ={gamma:.3f}")
 
             is_pml = getattr(bc, "pml", False)
             if bc._assemble_matrix and not is_pml:
                 B_matrix_robin = assemble_robin_bc(field, B_matrix_robin, tri_ids, gamma)
+
                 if isinstance(bc, ThinConductor):
                     B_matrix_robin_2 = assemble_robin_bc(field, B_matrix_robin_2, tri_ids, gamma)
-
+            
             if force_callback is not None:
                 force_callback(bc, tri_ids)
 
@@ -665,7 +777,7 @@ class Assembler:
                 b_p = assemble_robin_bc_bvec(field, tri_ids, Ufunc)
                 port_vectors[number] += b_p
                 logger.trace(f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}")
-
+        
         B_matrix_robin, B_matrix_robin_2, pec_ids = self._assemble_robin_terms(
             field, mesh, K0, robin_bcs, thin_conductor_bcs, pec_ids, force_callback
         )
@@ -685,7 +797,7 @@ class Assembler:
         mask = np.ones(NF, dtype=bool)
         mask[list(pec_ids)] = False
         solve_ids = np.flatnonzero(mask)
-
+        
         if has_periodic:
             K, solve_ids = self._apply_periodic_reduction(K, solve_ids, Pmat, keep_indices, NF, port_vectors)
 
@@ -695,6 +807,7 @@ class Assembler:
 
         K.eliminate_zeros()
 
+        
         simjob = SimJob(
             K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic
         )

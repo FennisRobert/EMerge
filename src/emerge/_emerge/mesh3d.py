@@ -593,7 +593,7 @@ class Mesh3D(Mesh, Saveable):
                 f"with magnitude {perturbation}."
             )
 
-    def _pre_update(self, periodic_bcs: list[Periodic] | None = None):
+    def _pre_update(self, periodic_bcs: list[Periodic] | None = None, scale: float = 1.0):
         """Builds the mesh data properties
 
         Args:
@@ -652,9 +652,13 @@ class Mesh3D(Mesh, Saveable):
             self.dimtag_to_center.update(
                 {dt: gmsh.model.occ.get_center_of_mass(*dt) for dt in dts}
             )
+            
             self.dimtag_to_bb.update(
-                {dt: np.array(gmsh.model.occ.get_bounding_box(*dt)) for dt in dts}
+                {dt: np.array(gmsh.model.occ.get_bounding_box(*dt))*scale for dt in dts}
             )
+        if scale != 1.0:
+            self.dimtag_to_center = {dt: (x*scale, y*scale, z*scale) for dt, (x,y,z) in self.dimtag_to_center.items()}
+
 
         # -----------------------------------------------------------------------------
         # Start of Processing
@@ -1022,9 +1026,9 @@ class Mesh3D(Mesh, Saveable):
                     ]
                 )
                 if dim == 2:
-                    center = self.dimtag_to_center[dt]
-                    xyz, _ = gmsh.model.get_closest_point(*dt, center)
-                    self.ftag_to_point[dt[1]] = np.array(xyz)
+                    (x0,y0,z0) = self.dimtag_to_center[dt]
+                    xyz, _ = gmsh.model.get_closest_point(*dt, (x0/scale, y0/scale, z0/scale))
+                    self.ftag_to_point[dt[1]] = np.array(xyz)*scale
 
         logger.info("Finalized mesh data generation!")
 
@@ -1268,7 +1272,128 @@ class Mesh3D(Mesh, Saveable):
             port_normal = -port_normal
 
         return port_normal
+    
+    def apply_local_refinement(
+        self,
+        tet_indices: np.ndarray,
+        local_node_ids: np.ndarray,
+        steiner: np.ndarray,
+        tetra_out: np.ndarray,
+    ) -> None:
+        """Installs the output of gmsh.algorithm.refine_tetrahedra back into the gmsh model.
 
+        This only updates the gmsh model itself (new nodes, removed/added elements).
+        Call self._pre_update(periodic_bcs) afterward to rebuild all derived EMerge
+        mesh properties (edges, triangles, mappings, etc.) from the updated model --
+        patching those incrementally by hand here would duplicate and risk diverging
+        from the already-tested logic in _pre_update.
+
+        Args:
+            tet_indices: EMerge-local indices into self.tets that were passed to
+                refine_tetrahedra (e.g. your `refine_tet_ids`). Must all belong to
+                the same gmsh volume.
+            local_node_ids: EMerge-local indices into self.nodes, in the same order
+                as the `coord`/`sizeAtNode` arrays passed to refine_tetrahedra (e.g.
+                the node-index output of tet_to_node).
+            steiner: flat (3*n_new,) new point coordinates returned by
+                refine_tetrahedra.
+            tetra_out: flat, 1-based, 4-per-tet connectivity returned by
+                refine_tetrahedra (confirmed convention: subtract 1 for local use).
+        """
+        steiner = np.asarray(steiner, dtype=np.float64)
+        tetra_out = np.asarray(tetra_out, dtype=np.int64) - 1  # 1-based -> 0-based
+        tet_indices = np.asarray(tet_indices, dtype=np.int64)
+        local_node_ids = np.asarray(local_node_ids, dtype=np.int64)
+
+        # Determine the owning gmsh volume from the flagged tets themselves --
+        # reuses vtag_to_tet rather than re-deriving anything from gmsh.
+        vol_tag = None
+        for t, tets in self.vtag_to_tet.items():
+            if int(tet_indices[0]) in tets:
+                vol_tag = t
+                break
+        if vol_tag is None:
+            raise MeshException(
+                "apply_local_refinement: could not determine the owning gmsh "
+                "volume for the given tet_indices."
+            )
+        tet_set = set(self.vtag_to_tet[vol_tag])
+        if not all(int(i) in tet_set for i in tet_indices):
+            raise MeshException(
+                "apply_local_refinement: tet_indices span more than one gmsh "
+                "volume. Group flagged tets per volume before calling this."
+            )
+
+        n_new = steiner.size // 3
+
+        # 1. Register new (Steiner) nodes on the volume with fresh gmsh tags.
+        if n_new:
+            max_node_tag = gmsh.model.mesh.get_max_node_tag()
+            new_gmsh_node_tags = np.arange(
+                max_node_tag + 1, max_node_tag + 1 + n_new, dtype=np.int64
+            )
+            gmsh.model.mesh.add_nodes(
+                3, vol_tag, new_gmsh_node_tags.tolist(), steiner.tolist()
+            )
+        else:
+            new_gmsh_node_tags = np.empty(0, dtype=np.int64)
+
+        # 2. Translate refine_tetrahedra's local index space
+        #    [local_node_ids ++ steiner points] into gmsh node tags.
+        orig_gmsh_node_tags = np.array(
+            [self.n_i2t[int(i)] for i in local_node_ids], dtype=np.int64
+        )
+        combined_gmsh_tags = np.concatenate([orig_gmsh_node_tags, new_gmsh_node_tags])
+        tet_node_gmsh_tags = combined_gmsh_tags[tetra_out]
+
+        # 3. Remove the superseded tets (element tags via tet_i2t -- no need
+        #    to re-query gmsh for them).
+        old_element_tags = np.array(
+            [self.tet_i2t[int(i)] for i in tet_indices], dtype=np.int64
+        )
+        gmsh.model.mesh.remove_elements(3, vol_tag, old_element_tags.tolist())
+
+        # 4. Add the refined tets with fresh gmsh element tags.
+        n_new_tets = tet_node_gmsh_tags.size // 4
+        max_elem_tag = gmsh.model.mesh.get_max_element_tag()
+        new_elem_tags = np.arange(
+            max_elem_tag + 1, max_elem_tag + 1 + n_new_tets, dtype=np.int64
+        )
+        gmsh.model.mesh.add_elements_by_type(
+            vol_tag, 4, new_elem_tags.tolist(), tet_node_gmsh_tags.tolist()
+        )
+
+    def expand_with_neighbors(self, tet_indices: np.ndarray, allowed_tets: set, layers: int = 1) -> np.ndarray:
+        """Grows a set of tet indices by `layers` rings of face-adjacency,
+        using tet_to_tri / tri_to_tet -- no new mesh bookkeeping needed, this
+        is exactly the adjacency info Mesh3D already maintains.
+    
+        `allowed_tets` restricts expansion to a single gmsh volume (e.g.
+        set(mesh.vtag_to_tet[vol_tag])) -- expansion must NOT cross a material
+        boundary into a different volume; that's a different, harder problem
+        than sliver avoidance and out of scope here.
+        """
+        current = set(int(t) for t in tet_indices)
+        frontier = set(current)
+    
+        for _ in range(layers):
+            new_frontier = set()
+            for itet in frontier:
+                for iface in range(4):
+                    tri_id = self.tet_to_tri[iface, itet]
+                    for j in range(2):
+                        other = self.tri_to_tet[j, tri_id]
+                        if other == self._MISSING_ID or other == itet:
+                            continue
+                        other = int(other)
+                        if other in allowed_tets and other not in current:
+                            new_frontier.add(other)
+            if not new_frontier:
+                break
+            current |= new_frontier
+            frontier = new_frontier
+    
+        return np.array(sorted(current), dtype=np.int64)
 
 class SurfaceMesh(Mesh):
     """The surface mesh class is used to assemble the Modal port matrix.

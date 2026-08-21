@@ -473,7 +473,7 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.0a4"
+version = "3.0.0a6"
 source = { editable = "." }
 dependencies = [
     { name = "emsutil" },
@@ -528,7 +528,7 @@ requires-dist = [
     { name = "cupy-cuda12x", marker = "extra == 'cudss12'" },
     { name = "emsutil", specifier = ">=1.0.0,<1.1.0" },
     { name = "ezdxf", marker = "extra == 'dxf'" },
-    { name = "gmsh", specifier = ">=4.13.0,<4.15" },
+    { name = "gmsh", specifier = ">=4.13.0,<=5.0" },
     { name = "joblib", specifier = ">=1.5.1" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "matplotlib", specifier = ">=3.8.0" },

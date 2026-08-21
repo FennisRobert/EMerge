@@ -1512,6 +1512,192 @@ class Simulation:
 
         return old
 
+    def adaptive_mesh_refinement_new(
+        self,
+        max_steps: int = 6,
+        min_refined_passes: int = 1,
+        convergence: float = 0.02,
+        magnitude_convergence: float = 2.0,
+        phase_convergence: float = 180,
+        max_tets: int = 1_000_000,
+        order: float = 3.0,
+        theta: float = 0.7,
+        minimum_steps: int = 1,
+        frequency: float | list[float] | None = None,
+        show_mesh: bool = False,
+    ) -> SimulationDataset:
+        """Adaptive mesh refinement via full remesh-from-scratch, driven by a
+        single native gmsh background size field per pass.
+    
+        SIZE PREDICTION: equidistribution formula --
+    
+            h_new = h_current * (error_target / error_current) ** (1/order)
+    
+        SIZE DELIVERY: self.mesher.set_error_size_field() installs a NodeData
+        view on a frozen auxiliary model, registered into self.mesher.mesh_fields
+        alongside every other size source. IMPORTANT: h_new from the
+        equidistribution formula is per-TET; set_error_size_field needs
+        per-NODE data. The scatter step below (minimum over each node's
+        incident tets) is required -- skipping it doesn't crash (gmsh silently
+        accepts a too-long values array, since n_tets > n_nodes is the normal
+        case for a tet mesh) but produces a field that fails to interpolate
+        anywhere, which looks exactly like "no refinement happening" with no
+        error to point at.
+
+        This method is Claude generated and does not fall under copyrightable code.
+        """
+        from .physics.microwave.adaptive_mesh import compute_convergence
+    
+        max_freq = np.max(self.mw.frequencies)
+        sim_freqs = frequency if frequency is not None else [max_freq]
+        if isinstance(sim_freqs, float):
+            sim_freqs = [sim_freqs]
+        NF = len(sim_freqs)
+    
+        S_matrices: list[list[np.ndarray]] = []
+        logger.info(f"Initial mesh has {self.mesh.n_tets} tetrahedra")
+        passed = 0
+        self.state.stash()
+    
+        logger.info("Starting adaptive mesh refinement (full remesh, background field).")
+    
+        self._cleanup_entities()
+
+        previous_tet_count = self.mesh.n_tets
+        for step in range(1, max_steps + 1):
+            self.data.sim.new(iter_step=step)
+    
+            fields, Smats = [], []
+            logger.debug("Running frequency simulation.")
+            for sf in sim_freqs:
+                data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
+                fields.append(data.field[-1])
+                Smats.append(data.scalar[-1].Sp)
+            S_matrices.append(Smats)
+    
+            # -------------------------------------------------------------------
+            # Convergence check
+            # -------------------------------------------------------------------
+            if step > minimum_steps:
+                S0s, S1s = S_matrices[-2], S_matrices[-1]
+                max_complx = max_mag = max_phase = 0.0
+                for i in range(NF):
+                    conv_complex, conv_mag, conv_phase = compute_convergence(S0s[i], S1s[i])
+                    max_complx = max(max_complx, conv_complex)
+                    max_mag = max(max_mag, conv_mag)
+                    max_phase = max(max_phase, conv_phase)
+    
+                logger.info(
+                    f"Pass {step}: Convergence = {max_complx:.3f}, Mag = {max_mag:.3f}, Phase = {max_phase:.1f} deg"
+                )
+    
+                if max_complx <= convergence and max_phase < phase_convergence and max_mag < magnitude_convergence:
+                    logger.info(f"Pass {step}: Mesh refinement passed!")
+                    passed += 1
+                else:
+                    passed = 0
+    
+            if passed >= min_refined_passes and step > minimum_steps:
+                logger.info(f"Adaptive mesh refinement successful with {self.mesh.n_tets} tetrahedra.")
+                break
+    
+            # -------------------------------------------------------------------
+            # Error + current size per tet
+            # -------------------------------------------------------------------
+            errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
+            h_current_per_freq = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
+            for i in range(NF):
+                error, h_current = fields[i]._solution_quality(solve_ids)
+                errors[:, i] = error
+                h_current_per_freq[:, i] = h_current
+            error_current = np.max(errors, axis=1)
+            h_current = h_current_per_freq[:, 0]
+
+            logger.debug(
+                f"h_current: min={h_current.min():.3e}, max={h_current.max():.3e}, "
+                f"NaN={np.isnan(h_current).sum()}, zero={(h_current == 0).sum()}"
+            )
+            logger.debug(
+                f"error_current: min={error_current.min():.3e}, max={error_current.max():.3e}, "
+                f"NaN={np.isnan(error_current).sum()}, zero={(error_current == 0).sum()}"
+            )
+    
+            # -------------------------------------------------------------------
+            # Equidistribution size prediction, per TET.
+            # -------------------------------------------------------------------
+            n_tets = self.mesh.n_tets
+            total_sq_error = np.sum(error_current**2)
+            error_target = np.sqrt(theta * total_sq_error / n_tets)
+    
+            ratio = error_target / np.maximum(error_current, 1e-300)
+            h_new = h_current * ratio ** (1.0 / order)
+
+            h_new = np.clip(h_new, 0.7 * h_current, h_current * 1.5)
+    
+            ratio_applied = h_new / h_current
+            logger.info(
+                f" - h_new range: min={float(h_new.min())*1000:.4f}mm, "
+                f"max={float(h_new.max())*1000:.4f}mm "
+                f"(theta={theta}, order={order})"
+            )
+            logger.info(
+                f" - applied ratio range: min={float(ratio_applied.min()):.3f}, "
+                f"max={float(ratio_applied.max()):.3f}"
+            )
+    
+            # -------------------------------------------------------------------
+            # Scatter per-TET h_new onto NODES (minimum over incident tets) --
+            # set_error_size_field needs per-node data, not per-tet.
+            # -------------------------------------------------------------------
+            nodes = np.asarray(self.mesh.nodes, dtype=np.float64)  # (3, N)
+            tets = np.asarray(self.mesh.tets, dtype=np.int64)      # (4, M)
+    
+            size_at_node = np.full(nodes.shape[1], np.inf, dtype=np.float64)
+            for corner in range(4):
+                np.minimum.at(size_at_node, tets[corner, :], h_new)
+    
+            if np.isinf(size_at_node).any():
+                # Shouldn't happen (every node belongs to at least one tet), but
+                # gmsh needs finite values regardless.
+                size_at_node[np.isinf(size_at_node)] = h_current.max()
+    
+            logger.info(
+                f" - size_at_node range: min={float(size_at_node.min())*1000:.4f}mm, "
+                f"max={float(size_at_node.max())*1000:.4f}mm"
+            )
+    
+            # -------------------------------------------------------------------
+            # Install via the Mesher's own size-field convention, then let the
+            # NORMAL remesh pipeline handle everything else.
+            # -------------------------------------------------------------------
+            self.mesher.clear_error_size_field()
+            self.mesher.set_error_size_field(nodes, tets, size_at_node)
+    
+            self._reset_mesh()
+            self.generate_mesh(regenerate=True)
+    
+            logger.info(f"    Pass {step}: New mesh has {self.mesh.n_tets} tetrahedra (Δ={(self.mesh.n_tets/previous_tet_count-1)*100:.1f}%)")
+            previous_tet_count = self.mesh.n_tets
+            if show_mesh:
+                self.view(plot_mesh=True, volume_mesh=True)
+    
+            if self.mesh.n_tets > max_tets:
+                logger.warning(
+                    f"Aborting refinement because the number of tets exceeds the maximum: {self.mesh.n_tets}>{max_tets}"
+                )
+                break
+    
+        self.mesher.clear_error_size_field()
+    
+        if passed < min_refined_passes:
+            logger.warning("Adaptive mesh refinement did not converge!")
+    
+        if show_mesh:
+            self.view(plot_mesh=True, volume_mesh=True)
+    
+        old = self.state.reload()
+        self.state.store_geometry_data()
+        return old
 
 class SimulationBeta(Simulation):
     def __post_init__(self):

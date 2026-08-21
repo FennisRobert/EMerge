@@ -178,6 +178,9 @@ class Mesher:
         self.max_size: float = None
         self.periodic_cell: PeriodicCell = None
 
+        self._error_size_field_tags = []
+        self._error_size_view_tags = []
+
     @property
     def edge_tags(self) -> list[int]:
         return [tag[1] for tag in gmsh.model.getEntities(1)]
@@ -844,3 +847,85 @@ class Mesher:
 
         for dimtag in dimtags:
             gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
+
+    def set_error_size_field(
+        self, nodes: np.ndarray, tets: np.ndarray, size_at_node: np.ndarray
+    ) -> int:
+        """Installs a per-NODE, error-driven mesh size field via a NodeData
+        view on a frozen auxiliary gmsh model, used as a PostView background
+        field. Registered into self.mesh_fields, same as every other size
+        source -- participates in the normal Min-combination
+        _configure_mesh_size already builds.
+    
+        Args:
+            nodes: (3, N) current mesh node coordinates
+            tets: (4, M) current mesh tet connectivity (node indices into `nodes`)
+            size_at_node: (N,) target size per node
+    
+        Returns:
+            field_tag: the PostView field's tag (already appended to self.mesh_fields)
+        """
+        real_model = gmsh.model.getCurrent()
+    
+        n_nodes = nodes.shape[1]
+        n_tets = tets.shape[1]
+    
+        # gmsh tags are 1-based and must be unique -- local index + 1 is fine
+        # since this auxiliary model is self-contained and doesn't need to
+        # correspond to the real model's own node/element tags at all.
+        node_tags = np.arange(1, n_nodes + 1, dtype=np.int64)
+        elem_tags = np.arange(1, n_tets + 1, dtype=np.int64)
+        node_coords_flat = nodes.T.reshape(-1)          # (3N,) x,y,z per node
+        tet_node_tags_flat = (tets + 1).T.reshape(-1)    # (4M,) 1-based node tags per tet
+    
+        aux_name = "_error_size_field_aux"
+        if aux_name not in gmsh.model.list():
+            gmsh.model.add(aux_name)
+            gmsh.model.addDiscreteEntity(3, 1)
+        gmsh.model.setCurrent(aux_name)
+    
+        gmsh.model.mesh.addNodes(3, 1, node_tags.tolist(), node_coords_flat.tolist())
+        gmsh.model.mesh.addElementsByType(1, 4, elem_tags.tolist(), tet_node_tags_flat.tolist())
+    
+        view_tag = gmsh.view.add("ErrorSizeField")
+        gmsh.view.addHomogeneousModelData(
+            view_tag, 0, aux_name, "NodeData",
+            node_tags, np.asarray(size_at_node, dtype=np.float64),
+            time=0.0, numComponents=1,
+        )
+    
+        gmsh.model.setCurrent(real_model)
+    
+        field_tag = gmsh.model.mesh.field.add("PostView")
+        gmsh.model.mesh.field.setNumber(field_tag, "ViewTag", view_tag)
+    
+        self.mesh_fields.append(field_tag)
+        self._error_size_view_tags.append(view_tag)
+        self._error_size_field_tags.append(field_tag)
+        self._error_size_aux_model = aux_name
+    
+        return field_tag
+    
+    
+    def clear_error_size_field(self) -> None:
+        """Removes any previously-installed error-driven size field(s), their
+        backing views, and clears (but does not remove) the auxiliary model's
+        mesh data so the next call starts fresh. Call before installing a new
+        one each AMR pass.
+        """
+        real_model = gmsh.model.getCurrent()
+    
+        for tag in self._error_size_field_tags:
+            if tag in self.mesh_fields:
+                self.mesh_fields.remove(tag)
+            gmsh.model.mesh.field.remove(tag)
+        for tag in self._error_size_view_tags:
+            gmsh.view.remove(tag)
+        self._error_size_field_tags = []
+        self._error_size_view_tags = []
+    
+        aux_name = getattr(self, "_error_size_aux_model", None)
+        if aux_name is not None and aux_name in gmsh.model.list():
+            gmsh.model.setCurrent(aux_name)
+            gmsh.model.mesh.clear()
+            gmsh.model.setCurrent(real_model)

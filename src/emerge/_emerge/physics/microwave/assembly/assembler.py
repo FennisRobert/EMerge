@@ -339,6 +339,7 @@ def list_problem_points(problem_dofs: dict[int, list[str]], basis: "Nedelec2") -
         })
 
     return points
+
 def plane_basis_from_points(points: np.ndarray) -> np.ndarray:
     """
     Compute an orthonormal basis from a cloud of 3D points dominantly
@@ -805,8 +806,7 @@ class Assembler:
         logger.debug(f"  - Number of DoF: {K.shape[0]:,}")
         logger.debug(f"  - Number of non-zero: {K.nnz:,}")
 
-        K.eliminate_zeros()
-
+        #K.eliminate_zeros()
         
         simjob = SimJob(
             K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic

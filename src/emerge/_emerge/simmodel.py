@@ -1235,29 +1235,31 @@ class Simulation:
         magnitude_convergence: float = 2.0,
         phase_convergence: float = 180,
         max_tets: int = 1_000_000,
-        order: float = 3.0,
-        theta: float = 0.7,
+        order: float = 2.0,
+        theta: float = 0.5,
+        growth_clamps: float = (0.1, 2.0),
         minimum_steps: int = 1,
         frequency: float | list[float] | None = None,
         show_mesh: bool = False,
     ) -> SimulationDataset:
-        """Adaptive mesh refinement via full remesh-from-scratch, driven by a
-        single native gmsh background size field per pass.
-    
-        SIZE PREDICTION: equidistribution formula --
-    
-            h_new = h_current * (error_target / error_current) ** (1/order)
-    
-        SIZE DELIVERY: self.mesher.set_error_size_field() installs a NodeData
-        view on a frozen auxiliary model, registered into self.mesher.mesh_fields
-        alongside every other size source. IMPORTANT: h_new from the
-        equidistribution formula is per-TET; set_error_size_field needs
-        per-NODE data. The scatter step below (minimum over each node's
-        incident tets) is required -- skipping it doesn't crash (gmsh silently
-        accepts a too-long values array, since n_tets > n_nodes is the normal
-        case for a tet mesh) but produces a field that fails to interpolate
-        anywhere, which looks exactly like "no refinement happening" with no
-        error to point at.
+        """The new adaptive pass refinement algorithm designed with help from Claude Code.
+
+        Args:
+            max_steps (int, optional): The maximum number of converging steps. Quits and proceeds with the solve afterwards. Defaults to 6.
+            min_refined_passes (int, optional): The minimum number of subsequently refined passes. Defaults to 1.
+            convergence (float, optional): The absolute convergence limit for any S-parameter |Sij^(k+1)-Sij^(k)|. Defaults to 0.02.
+            magnitude_convergence (float, optional): An optional convergence limit for only the magnitude |Sij^(k+1)|-|Sij^k|. Defaults to 2.0.
+            phase_convergence (float, optional): An absolute limit for the phase convergence. Defaults to 180.
+            max_tets (int, optional): The maximum number of tets before aborting. Defaults to 1_000_000.
+            order (float, optional): An assumption for the convergence order (minimum 1). Lower values initiates more aggressive tet refinement. Defaults to 2.0.
+            theta (float, optional): Error reduction target. Lower means more reduction between subsequent solves. Defaults to 0.5.
+            growth_clamps (float, optional): Limit to the change in mesh size (shrink/growth). Defaults to (0.1, 2.0).
+            minimum_steps (int, optional): The minimum number of refinement steps. Defaults to 1.
+            frequency (float | list[float] | None, optional): The desired convergence frequency/frequencies. Defaults to None.
+            show_mesh (bool, optional): If the mesh should be shown in between solves. Defaults to False.
+
+        Returns:
+            SimulationDataset: _description_
         """
         from .physics.microwave.adaptive_mesh import compute_convergence
     
@@ -1275,8 +1277,15 @@ class Simulation:
         logger.info("Starting adaptive mesh refinement (full remesh, background field).")
     
         self._cleanup_entities()
-
+    
         previous_tet_count = self.mesh.n_tets
+        # Tracked across passes to calibrate `order` empirically and to check
+        # whether near-zero growth reflects real convergence or the formula
+        # having gone quiet before the physics actually settled -- see the
+        # debug block below, right after error_current/h_current are computed.
+        previous_rms_error: float | None = None
+        previous_h_repr: float | None = None
+    
         for step in range(1, max_steps + 1):
             self.data.sim.new(iter_step=step)
     
@@ -1325,7 +1334,7 @@ class Simulation:
                 h_current_per_freq[:, i] = h_current
             error_current = np.max(errors, axis=1)
             h_current = h_current_per_freq[:, 0]
-
+    
             logger.debug(
                 f"h_current: min={h_current.min():.3e}, max={h_current.max():.3e}, "
                 f"NaN={np.isnan(h_current).sum()}, zero={(h_current == 0).sum()}"
@@ -1334,6 +1343,34 @@ class Simulation:
                 f"error_current: min={error_current.min():.3e}, max={error_current.max():.3e}, "
                 f"NaN={np.isnan(error_current).sum()}, zero={(error_current == 0).sum()}"
             )
+    
+            # ---------------------------------------------------------------
+            # DEBUG: empirically calibrate `order` from the last two passes'
+            # RMS error and a representative h, and cross-check against
+            # S-parameter convergence -- if growth is collapsing toward zero
+            # WHILE S-params are still moving meaningfully, that's a sign
+            # `order` is set too high (over-damping the size response) rather
+            # than the mesh having genuinely converged.
+            # ---------------------------------------------------------------
+            rms_error = float(np.sqrt(np.mean(error_current**2)))
+            h_repr = float(np.median(h_current))
+    
+            if previous_rms_error is not None and previous_h_repr is not None:
+                log_h_ratio = np.log(previous_h_repr / h_repr)
+                if abs(log_h_ratio) > 1e-12 and previous_rms_error > 0 and rms_error > 0:
+                    order_empirical = np.log(previous_rms_error / rms_error) / log_h_ratio
+                    logger.debug(
+                        f" - empirical order (from passes {step - 1}->{step}): "
+                        f"{order_empirical:.3f}  (currently using order={order})"
+                    )
+                else:
+                    logger.debug(
+                        " - empirical order: undefined this pass (h_repr or rms_error "
+                        "barely changed between passes -- need more spread to calibrate)"
+                    )
+    
+            previous_rms_error = rms_error
+            previous_h_repr = h_repr
     
             # -------------------------------------------------------------------
             # Equidistribution size prediction, per TET.
@@ -1344,8 +1381,8 @@ class Simulation:
     
             ratio = error_target / np.maximum(error_current, 1e-300)
             h_new = h_current * ratio ** (1.0 / order)
-
-            h_new = np.clip(h_new, 0.7 * h_current, h_current * 1.5)
+    
+            h_new = np.clip(h_new, growth_clamps[0] * h_current, h_current * growth_clamps[1])
     
             ratio_applied = h_new / h_current
             logger.info(
@@ -1356,6 +1393,19 @@ class Simulation:
             logger.info(
                 f" - applied ratio range: min={float(ratio_applied.min()):.3f}, "
                 f"max={float(ratio_applied.max()):.3f}"
+            )
+    
+            # DEBUG: how many tets are actually pinned at the clamp bounds vs
+            # settled by the formula itself. If this count drops toward zero
+            # at the same time overall growth does, the FORMULA (not the
+            # clamp) has become the limiting factor -- consistent with
+            # `order` being too high rather than genuine convergence.
+            n_at_shrink_clamp = int(np.isclose(ratio_applied, growth_clamps[0], atol=1e-6).sum())
+            n_at_grow_clamp = int(np.isclose(ratio_applied, growth_clamps[1], atol=1e-6).sum())
+            logger.debug(
+                f" - clamp hits: {n_at_shrink_clamp}/{n_tets} at shrink bound ({growth_clamps[0]:.1f}x), "
+                f"{n_at_grow_clamp}/{n_tets} at grow bound ({growth_clamps[1]:.1f}x), "
+                f"{n_tets - n_at_shrink_clamp - n_at_grow_clamp}/{n_tets} unclamped"
             )
     
             # -------------------------------------------------------------------
@@ -1399,7 +1449,8 @@ class Simulation:
                     f"Aborting refinement because the number of tets exceeds the maximum: {self.mesh.n_tets}>{max_tets}"
                 )
                 break
-    
+
+        self.mw.reset(_reset_bc=False)
         self.mesher.clear_error_size_field()
     
         if passed < min_refined_passes:

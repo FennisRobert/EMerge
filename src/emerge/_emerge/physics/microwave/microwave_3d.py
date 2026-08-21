@@ -524,6 +524,7 @@ class Microwave3D(GenericPhysics3D):
         if dof_set is not None:
             self.dofset = dof_set
             return
+        
         if elementspace is not None:
             self.dofset = elementspace.get_set()
             return

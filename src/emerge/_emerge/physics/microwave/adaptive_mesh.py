@@ -324,7 +324,7 @@ def compute_convergence(Sold: np.ndarray, Snew: np.ndarray) -> float:
     mag_conv = float(np.abs(np.abs(Snew) - np.abs(Sold)).max())
     amp_conv = float(np.abs(Snew - Sold).max())
     phase_conv = (
-        float(np.abs(np.angle(np.diag(Sold) / np.diag(Snew))).max()) * 180 / np.pi
+        float(np.abs(np.angle(Sold / Snew)).max()) * 180 / np.pi
     )
     return amp_conv, mag_conv, phase_conv
 
@@ -1030,7 +1030,7 @@ def compute_error_single(
         #size_max = min(size_max, np.max(edge_lengths[tet_to_edge[:, itet]]))
         size_max = np.max(edge_lengths[tet_to_edge[:, itet]])
         TET_VOLUME = compute_volume(vertices[0, :], vertices[1, :], vertices[2, :])
-        Rt = size_max
+        Rt = circum_sphere_diam(v1, v2, v3, v4)
 
         # Efield -- full per-tet DOF vector, in the same order as dofcodes3d.
         # No more Em1s/Ef1s/Em2s/Ef2s fixed slicing -- compute_field/curl/div/

@@ -1147,7 +1147,7 @@ def compute_error_single(
 
             #Rf = np.max(np.array([l1, l2, l3]))
             #Rf = diam_circum_circle(n1, n2, n3)
-            Rf = (area/4)**0.5
+            Rf = (area/np.pi)**0.5
 
             Rf_face_residual[iface, itet] = Rf
             areas_face_residual[iface, :, itet] = area

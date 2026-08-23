@@ -872,6 +872,7 @@ class RectangularWaveguide(PortBC, Saveable):
         face: FaceSelection | GeoSurface,
         port_number: int,
         mode: tuple[int, int] = (1, 0),
+        mode_type: Literal["TE", "TM"] = "TE",
         er: float = 1.0,
         cs: CoordinateSystem | None = None,
         dims: tuple[float, float] | None = None,
@@ -879,17 +880,17 @@ class RectangularWaveguide(PortBC, Saveable):
     ):
         """Creates a rectangular waveguide as a port boundary condition.
 
-        Currently the Rectangular waveguide only supports TE0n modes. The mode field
-        is derived analytically. The local face coordinate system and dimensions can be provided
-        manually. If not provided the class will attempt to derive the local coordinate system and
-        face dimensions itself. It always orients the longest edge along the local X-direction.
-        The information on the derived coordiante system will be shown in the DEBUG level logs.
+        Supports arbitrary TE_mn and TM_mn modes. The mode field is derived
+        analytically from the standard rectangular waveguide mode expressions.
+        TM modes require both m > 0 and n > 0, since TM_m0 and TM_0n modes are
+        identically zero.
 
         Args:
             face (FaceSelection, GeoSurface): The port boundary face selection
             port_number (int): The port number
-            mode: (tuple[int, int], optional): The TE mode number. Defaults to (1,0).
-            er: (float, optional): The Dielectric constant. Defaults to 1.0.
+            mode (tuple[int, int], optional): The mode number (m, n). Defaults to (1, 0).
+            mode_type (Literal["TE", "TM"], optional): The mode family. Defaults to "TE".
+            er (float, optional): The Dielectric constant. Defaults to 1.0.
             cs (CoordinateSystem, optional): The local coordinate system. Defaults to None.
             dims (tuple[float, float], optional): The port face. Defaults to None.
             power (float): The port power. Default to 1.
@@ -899,11 +900,22 @@ class RectangularWaveguide(PortBC, Saveable):
         self.port_number: int = port_number
         self.active: bool = False
         self.power: float = power
-        self.type: str = "TE"
+        self.type: str = mode_type
         self.mode: tuple[int, int] = mode
         self.mode_axis: Axis | None = None
         self.er: float = er
         self._polarization: float = 1.0
+
+        m, n = self.mode
+        if self.type not in ("TE", "TM"):
+            raise ValueError(f"mode_type must be 'TE' or 'TM', got {self.type!r}")
+        if m == 0 and n == 0:
+            raise ValueError("Mode (0, 0) does not exist for either TE or TM.")
+        if self.type == "TM" and (m == 0 or n == 0):
+            raise ValueError(
+                f"TM modes require m > 0 and n > 0 (got mode=({m}, {n})); "
+                "TM_m0 and TM_0n modes are identically zero."
+            )
 
         if dims is None:
             logger.debug(
@@ -931,7 +943,6 @@ class RectangularWaveguide(PortBC, Saveable):
         Args:
             axis (Axis): The alignment vector for the mode
         """
-
         self.mode_axis = axis
         self._polarization: float = float(np.sign(self.cs.yax.dot(self.mode_axis)))
         if self._polarization == 0.0:
@@ -944,21 +955,40 @@ class RectangularWaveguide(PortBC, Saveable):
         return self.cs._basis_inv
 
     def portZ0(self, k0: float) -> complex:
-        return k0 * 299792458 * MU0 / self.get_beta(k0)
+        """Return the modal wave impedance, TE or TM as appropriate."""
+        beta = self.get_beta(k0)
+        omega = k0 * 299792458.0
+        if self.type == "TE":
+            return omega * MU0 / beta
+        elif self.type == "TM":
+            return beta / (omega * EPS0 * self.er)
+        else:
+            raise ValueError(f"Unsupported mode type: {self.type!r}")
 
     def modetype(self, k0):
         return self.type
 
     def get_amplitude(self, k0: float) -> float:
-        Zte = k0 * 299792458 * MU0 / self.get_beta(k0)
-        width = self.dims[0]
-        height = self.dims[1]
+        """Modal amplitude scaling Ex and Ey such that the mode carries `self.power`.
+
+        Derived by integrating the Poynting flux of the transverse fields over
+        the port face and solving for the amplitude at fixed power. Reduces
+        exactly to the original TE0n normalisation in that special case.
+        """
+        width, height = self.dims
         m, n = self.mode
-        scale_m = 2.0 if m == 0 else 1.0
-        scale_n = 2.0 if n == 0 else 1.0
-        multiplier = 8.0 / (scale_m * scale_n)
-        amplitude = np.sqrt(self.power * multiplier * Zte / (width * height))
-        return amplitude
+        Z0 = self.portZ0(k0)
+
+        if self.type == "TE":
+            eps_m = 2.0 if m == 0 else 1.0
+            eps_n = 2.0 if n == 0 else 1.0
+            bracket = (n * np.pi / height) ** 2 * eps_m + (m * np.pi / width) ** 2 * eps_n
+            return np.sqrt(8.0 * self.power * Z0 / (width * height * bracket))
+        elif self.type == "TM":
+            kc2 = (np.pi * m / width) ** 2 + (np.pi * n / height) ** 2
+            return np.sqrt(8.0 * self.power * Z0 / (width * height * kc2))
+        else:
+            raise ValueError(f"Unsupported mode type: {self.type!r}")
 
     def get_beta(self, k0: float) -> float:
         """Return the out of plane propagation constant. βz."""
@@ -972,14 +1002,7 @@ class RectangularWaveguide(PortBC, Saveable):
         return beta
 
     def get_gamma(self, k0: float) -> complex:
-        """Computes the γ-constant for matrix assembly. This constant is required for the Robin boundary condition.
-
-        Args:
-            k0 (float): The free space propagation constant.
-
-        Returns:
-            complex: The γ-constant
-        """
+        """Computes the γ-constant for matrix assembly (Robin boundary condition)."""
         return 1j * self.get_beta(k0)
 
     def get_Uinc(
@@ -1007,55 +1030,59 @@ class RectangularWaveguide(PortBC, Saveable):
         mode_nr: int = None,
         which: Literal["E", "H"] = "E",
     ) -> np.ndarray:
-        """Compute the port mode E-field in local coordinates (XY) + Z out of plane."""
-        width = self.dims[0]
-        height = self.dims[1]
+        """Compute the port mode field in local coordinates (XY) + Z out of plane.
+
+        Field patterns per Pozar, Microwave Engineering, §3.4 (TE) / §3.5 (TM):
+
+        TE_mn: Ex ∝ (n/height) cos(mπx/w) sin(nπy/h)
+               Ey ∝ -(m/width) sin(mπx/w) cos(nπy/h)
+               Ez = 0
+
+        TM_mn: Ex ∝ -(m/width) cos(mπx/w) sin(nπy/h)
+               Ey ∝ -(n/height) sin(mπx/w) cos(nπy/h)
+               Ez ∝ sin(mπx/w) sin(nπy/h)
+        """
+        width, height = self.dims
         m, n = self.mode
-        Ev = (
-            self._polarization
-            * self.get_amplitude(k0)
-            * np.cos(np.pi * m * (x_local) / width)
-            * np.cos(np.pi * n * (y_local) / height)
-        )
-        Eh = (
-            self._polarization
-            * self.get_amplitude(k0)
-            * np.sin(np.pi * m * (x_local) / width)
-            * np.sin(np.pi * n * (y_local) / height)
-        )
-        Ex = Eh
-        Ey = Ev
-        Ez = 0 * Eh
+        amplitude = self.get_amplitude(k0)
+
+        cos_x = np.cos(np.pi * m * x_local / width)
+        sin_x = np.sin(np.pi * m * x_local / width)
+        cos_y = np.cos(np.pi * n * y_local / height)
+        sin_y = np.sin(np.pi * n * y_local / height)
+
+        if self.type == "TE":
+            Ex = self._polarization * amplitude * (n * np.pi / height) * cos_x * sin_y
+            Ey = -self._polarization * amplitude * (m * np.pi / width) * sin_x * cos_y
+            Ez = 0.0 * Ex
+        elif self.type == "TM":
+            beta = self.get_beta(k0)
+            kc2 = (np.pi * m / width) ** 2 + (np.pi * n / height) ** 2
+            Ex = -self._polarization * amplitude * (m * np.pi / width) * cos_x * sin_y
+            Ey = -self._polarization * amplitude * (n * np.pi / height) * sin_x * cos_y
+            Ez = self._polarization * amplitude * (kc2 / beta) * sin_x * sin_y
+        else:
+            raise ValueError(
+                f"Unsupported mode type: {self.type!r}; expected 'TE' or 'TM'"
+            )
 
         if which == "E":
             return np.array([Ex, Ey, Ez])
         elif which == "Exy":
             return np.array([Ex, Ey, 0 * Ez])
         elif which == "H":
-            Z_te = self.portZ0(k0)
-            omega_mu = k0 * 299792458 * 1.25663706212e-6
-
-            Hx = Ey / Z_te
-            Hy = -Ex / Z_te
-
-            dEy_dx = (
-                self._polarization
-                * self.get_amplitude(k0)
-                * (-np.pi * m / width)
-                * np.sin(np.pi * m * x_local / width)
-                * np.cos(np.pi * n * y_local / height)
-            )
-            dEx_y = (
-                self._polarization
-                * self.get_amplitude(k0)
-                * (np.pi * n / height)
-                * np.sin(np.pi * m * x_local / width)
-                * np.cos(np.pi * n * y_local / height)
-            )
-            Hz = -1j * (dEy_dx - dEx_y) / omega_mu
-
-            Hxyz = np.array([Hx, Hy, Hz])
-            return Hxyz
+            Z0 = self.portZ0(k0)
+            if self.type == "TE":
+                omega = k0 * 299792458.0
+                kc2 = (np.pi * m / width) ** 2 + (np.pi * n / height) ** 2
+                Hx = Ey / Z0
+                Hy = -Ex / Z0
+                Hz = self._polarization * amplitude * (kc2 / (omega * MU0)) * cos_x * cos_y
+            else:  # TM
+                Hx = -Ey / Z0
+                Hy = Ex / Z0
+                Hz = 0.0 * Ex
+            return np.array([Hx, Hy, Hz])
         else:
             raise ValueError(
                 f"Field parameter 'which' must be either 'E' or 'H', not {which}"
@@ -1075,7 +1102,6 @@ class RectangularWaveguide(PortBC, Saveable):
         Ex, Ey, Ez = self.port_mode_3d(xl, yl, k0, which=which)
         Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
         return np.array([Exg, Eyg, Ezg])
-
 
 class CoaxPort(PortBC, Saveable):
     _include_stiff: bool = True

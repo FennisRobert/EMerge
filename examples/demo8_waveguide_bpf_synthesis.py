@@ -90,7 +90,7 @@ Ks = []
 hphis = []
 
 with em.Simulation("IrisSim") as model_iris:
-    model_iris.check_version("2.8.6")  # Checks version compatibility.
+    model_iris.check_version("2.8.7")  # Checks version compatibility.
 
     for wgap in model_iris.parameter_sweep(True, wgap=wgaps):
         # Define two short waveguide sections separated by iris plate

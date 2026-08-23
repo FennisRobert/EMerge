@@ -3,7 +3,7 @@ allow-direct-references = true
 
 [project]
 name = "emerge"
-version = "2.8.7"
+version = "2.8.8"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"

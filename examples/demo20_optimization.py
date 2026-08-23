@@ -22,7 +22,7 @@ rout = em.coax_rout(rin, Z0=50)
 Lcoax_outside = 10 * mm
 
 model = em.Simulation("Optimization")
-model.check_version("2.8.7")
+model.check_version("2.8.8")
 
 # Here will will set out optimization. We will tune two parameters
 # Offset is the distance from the back wall

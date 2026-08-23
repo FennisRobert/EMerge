@@ -1039,24 +1039,33 @@ class RectangularWaveguide(PortBC, Saveable):
     ) -> np.ndarray:
         """Compute the port mode field in local coordinates (XY) + Z out of plane.
 
-        Field patterns per Pozar, Microwave Engineering, §3.4 (TE) / §3.5 (TM):
+        NOTE: the local coordinate system is centred on the port face
+        (x_local, y_local in [-w/2, w/2] x [-h/2, h/2]), whereas the standard
+        mode expressions are written for a corner-origin face. The x_local/
+        y_local inputs are therefore shifted by half the face dimension
+        (xs, ys) before the trig patterns are evaluated.
 
-        TE_mn: Ex ∝ (n/height) cos(mπx/w) sin(nπy/h)
-               Ey ∝ -(m/width) sin(mπx/w) cos(nπy/h)
+        TE_mn: Ex ∝ (n/height) cos(mπxs/w) sin(nπys/h)
+               Ey ∝ -(m/width) sin(mπxs/w) cos(nπys/h)
                Ez = 0
 
-        TM_mn: Ex ∝ -(m/width) cos(mπx/w) sin(nπy/h)
-               Ey ∝ -(n/height) sin(mπx/w) cos(nπy/h)
-               Ez ∝ sin(mπx/w) sin(nπy/h)
+        TM_mn: Ex ∝ -(m/width) cos(mπxs/w) sin(nπys/h)
+               Ey ∝ -(n/height) sin(mπxs/w) cos(nπys/h)
+               Ez ∝ sin(mπxs/w) sin(nπys/h)
         """
         width, height = self.dims
         m, n = self.mode
         amplitude = self.get_amplitude(k0)
 
-        cos_x = np.cos(np.pi * m * x_local / width)
-        sin_x = np.sin(np.pi * m * x_local / width)
-        cos_y = np.cos(np.pi * n * y_local / height)
-        sin_y = np.sin(np.pi * n * y_local / height)
+        # Shift from centred local coords to the corner-origin frame
+        # the mode formulas are written in.
+        xs = x_local + width / 2.0
+        ys = y_local + height / 2.0
+
+        cos_x = np.cos(np.pi * m * xs / width)
+        sin_x = np.sin(np.pi * m * xs / width)
+        cos_y = np.cos(np.pi * n * ys / height)
+        sin_y = np.sin(np.pi * n * ys / height)
 
         if self.type == "TE":
             Ex = self._polarization * amplitude * (n * np.pi / height) * cos_x * sin_y

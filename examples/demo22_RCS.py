@@ -26,7 +26,7 @@ OBJECT = "PEC SPHERE"
 air_radius = 1.5
 # First we create our simulation object
 model = em.Simulation("RCS")
-model.check_version("2.8.8")  # Checks version compatibility
+model.check_version("2.8.9")  # Checks version compatibility
 
 # We select the material of choice
 if OBJECT == "PEC SPHERE":

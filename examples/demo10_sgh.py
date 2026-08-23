@@ -34,7 +34,7 @@ dx = 2 * mm  # distance from horn exit to PML start
 # Create simulation object
 
 model = em.Simulation("StandardGainHornAntenna")
-model.check_version("2.8.8")  # Checks version compatibility.
+model.check_version("2.8.9")  # Checks version compatibility.
 
 # --- Coordinate system for horn geometry -------------------------------
 hornCS = em.CS(em.YAX, em.ZAX, em.XAX)

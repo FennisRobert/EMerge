@@ -803,7 +803,7 @@ class Assembler:
         logger.debug(f"Number of DoF: {K.shape[0]:,}")
         logger.debug(f"Number of non-zero: {K.nnz:,}")
 
-        K.eliminate_zeros()
+        #K.eliminate_zeros()
 
         simjob = SimJob(
             K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic

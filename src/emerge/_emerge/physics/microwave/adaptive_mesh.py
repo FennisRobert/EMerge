@@ -1030,8 +1030,8 @@ def compute_error_single(
         #size_max = min(size_max, np.max(edge_lengths[tet_to_edge[:, itet]]))
         size_max = np.max(edge_lengths[tet_to_edge[:, itet]])
         TET_VOLUME = compute_volume(vertices[0, :], vertices[1, :], vertices[2, :])
-        Rt = circum_sphere_diam(v1, v2, v3, v4)
-
+        #Rt = circum_sphere_diam(v1, v2, v3, v4)
+        Rt = ((3*TET_VOLUME)/(4*np.pi))**(1/3)
         # Efield -- full per-tet DOF vector, in the same order as dofcodes3d.
         # No more Em1s/Ef1s/Em2s/Ef2s fixed slicing -- compute_field/curl/div/
         # curl_curl dispatch per-DOF internally via dofcodes3d.
@@ -1141,11 +1141,13 @@ def compute_error_single(
             n1 = nodes[:, i1]
             n2 = nodes[:, i2]
             n3 = nodes[:, i3]
-            l1 = np.linalg.norm(n2 - n1)
-            l2 = np.linalg.norm(n3 - n1)
-            l3 = np.linalg.norm(n3 - n2)
-            Rf = np.max(np.array([l1, l2, l3]))
-            Rf = diam_circum_circle(n1, n2, n3)
+            #l1 = np.linalg.norm(n2 - n1)
+            #l2 = np.linalg.norm(n3 - n1)
+            #l3 = np.linalg.norm(n3 - n2)
+            #Rf = np.max(np.array([l1, l2, l3]))
+            #Rf = diam_circum_circle(n1, n2, n3)
+            Rf = (area/np.pi)**0.5
+
             Rf_face_residual[iface, itet] = Rf
             areas_face_residual[iface, :, itet] = area
 

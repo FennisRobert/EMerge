@@ -833,6 +833,7 @@ class Simulation:
                         opacity=0.1,
                         label=face_name,
                         selectable_as=face_name,
+                        minimize_opacity=True,
                     )
 
         if selections:
@@ -1237,7 +1238,7 @@ class Simulation:
         max_tets: int = 1_000_000,
         order: float = 2.0,
         theta: float = 0.5,
-        growth_clamps: float = (0.1, 2.0),
+        growth_clamps: float = (0.1, 5.0),
         minimum_steps: int = 1,
         frequency: float | list[float] | None = None,
         show_mesh: bool = False,

@@ -3,7 +3,7 @@ allow-direct-references = true
 
 [project]
 name = "emerge"
-version = "3.0.0a7"
+version = "3.0.0a9"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"
@@ -17,7 +17,7 @@ dependencies = [
     "pyvista>=0.45.2",
     "scipy>=1.14.0",
     "mkl!=2024.0; platform_machine == \"x86_64\" or platform_machine == \"AMD64\"",
-    "emsutil>=1.0.0, <1.1.0",
+    "emsutil>=1.0.2, <1.1.0",
     "msgpack>=1.1.2",
     "msgpack-numpy>=0.4.8",
     "psutil>=7.2.2",

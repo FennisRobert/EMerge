@@ -1,3 +1,5 @@
+from emerge_config import config
+config.set_acc_threads(10)
 import emerge as em
 import numpy as np
 from emerge.plot import plot_sp, smith, plot_ff_polar, plot_ff

@@ -29,7 +29,7 @@ distance = 2 * mm
 
 m = em.Simulation("PlottingDemo")
 m.check_version("3.0.0")
-m.display.set_theme(em.themes.GigawaveStudio)
+
 box = em.geo.Box(wgb, wga, L, (-wgb / 2, -wga / 2, -L))
 cut1 = em.geo.Box(
     wgb, wga * (1 - opening) / 2, th, (-wgb / 2, -wga / 2, -distance - th / 2)

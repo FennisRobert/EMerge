@@ -84,9 +84,9 @@ model.mw.set_frequency_range(0.2e9, 8e9, 41)
 # This is adviced for small stripline structures.
 # The growth_rate setting allows us to change how fast the mesh size will recover to the original size.
 
-# model.mesher.set_boundary_size(polies, 1.5 * mm)
-# model.mesher.set_face_size(p1, 1 * mm)
-# model.mesher.set_face_size(p2, 1 * mm)
+model.mesher.set_boundary_size(polies, 1.5 * mm)
+model.mesher.set_face_size(p1, 1 * mm)
+model.mesher.set_face_size(p2, 1 * mm)
 
 # Finally we generate our mesh and view it
 model.generate_mesh()

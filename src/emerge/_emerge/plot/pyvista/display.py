@@ -355,10 +355,26 @@ class PVDisplay(EMergeDisplay):
         pbr: bool = True,
         smooth_shading: bool = False,
         selectable_as: str | None = None,
+        minimize_opacity: bool = False,
         *args,
         **kwargs,
     ):
+        """Adds an EMerge object or selection to the plot
 
+        Args:
+            obj (GeoObject | Selection): The object or object selection
+            mesh (bool, optional): If the mesh should be plotted. Defaults to False.
+            volume_mesh (bool, optional): If the mesh (in case mesh=True) should be plotted as a volume mesh (As opposed to surface). Defaults to True.
+            label (bool, optional): If object name labels should be added. Defaults to False.
+            label_text (str | None, optional): Specify a custom label text. Defaults to None.
+            texture (str | None, optional): Selects a surface texture name for rendering. Defaults to None.
+            opacity (float | None, optional): The objects plot opacity. Defaults to None.
+            draw_line (bool, optional): Draw a perimiter line of the geometry edges. Defaults to True.
+            pbr (bool, optional): Turns on physics based rendering in PyVista. Defaults to True.
+            smooth_shading (bool, optional): Turns on Smooth shading of geometries (smoothes out surfaces). Defaults to False.
+            selectable_as (str | None, optional): Make the geometry selectable under a given name. Defaults to None.
+            minimize_opacity (bool, optional): Minimize the provided opacity with the material opacity. Defaults to False.
+        """
         if isinstance(obj, GeoObject):
             if obj._hidden or obj.dim in (0,1):
                 return
@@ -370,7 +386,7 @@ class PVDisplay(EMergeDisplay):
             plot_mesh=mesh,
             volume_mesh=volume_mesh,
             metal=obj._metal,
-            opacity=self.parse_opacity(opacity, obj.opacity, minimize=True),
+            opacity=self.parse_opacity(opacity, obj.opacity, minimize=minimize_opacity),
             color=obj.color_str,
             texture=texture,
             allow_pbr=pbr,
@@ -411,19 +427,20 @@ class PVDisplay(EMergeDisplay):
                 shape_color=self.set.theme.label_color,
             )
 
-    def add_objects(self, *objects, opacity: float = None, **kwargs) -> None:
+    def add_objects(self, *objects, opacity: float | None = None, minimize_opacity: bool = True, **kwargs) -> None:
         """Add a series of objects provided as a list of arguments"""
         for obj in objects:
-            self.add_object(obj, opacity=opacity, **kwargs)
+            self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
 
-    def populate(self, opacity: float = None, **kwargs) -> None:
+    def populate(self, opacity: float | None = None, minimize_opacity: bool = True, **kwargs) -> None:
         """Populate the view with all objects in your simulation model
 
         Args:
             opacity (float, optional): The max opacity to use for all geometries. Defaults to 1.0.
+            minimize_opacity (bool, optional): If the minimum of the objects natural opacity and true opacity should be chosen. Defaults to True.
         """
         for obj in self._state.current_geo_state:
-            self.add_object(obj, opacity=opacity, **kwargs)
+            self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
 
     def add_scatter(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
         """Adds a scatter point cloud

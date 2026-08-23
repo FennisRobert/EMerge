@@ -5,10 +5,8 @@
 # and see how we can use Adaptive mesh refinement in this simulation
 # -----------------------------------------------------------------------------
 
-
 import emerge as em
 from emerge.plot import plot_sp
-
 
 ############################################################
 #                    CONSTANT DEFINITION                   #
@@ -34,7 +32,7 @@ Rcirc = 8  # Readius of the open circuit circle.
 
 # We will invoke the SimulationBeta class because it houses some specific
 # implementation details required for adaptive mesh refinement.
-model = em.Simulation("Transition", loglevel='INFO')
+model = em.Simulation("Transition")
 model.check_version("3.0.0")
 
 # Next we create the PCB designer class instance.
@@ -133,7 +131,7 @@ model.mw.bc.AbsorbingBoundary(em.select(air_top.top, air_bottom.bottom))
 # This limitation is mostly set to make sure that users do not require a PC with large amounts of RAM to run this simulation.
 # You may increase the number of steps at will to make the simulation converge.
 model.view(bc=True)
-model.adaptive_mesh_refinement(max_steps=8, frequency=5.5e9, show_mesh=True)
+model.adaptive_mesh_refinement(max_steps=8, frequency=5.5e9)
 
 # We can view the improvement in the refined mesh.
 model.view(plot_mesh=True, volume_mesh=False)

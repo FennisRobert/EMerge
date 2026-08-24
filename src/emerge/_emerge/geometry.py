@@ -1085,7 +1085,6 @@ class GeoVolume(GeoObject):
         self._origins_cache = [(x/factor, y/factor, z/factor) for x,y,z in self._origins_cache]
                 
     def _cache_gmsh(self):
-        print(self)
         self._get_boundary_cache = gmsh.model.get_boundary(self.dimtags, True, False)
         self._normals_cache = [
             gmsh.model.get_normal(t, [0, 0]) for d, t in self._get_boundary_cache

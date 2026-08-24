@@ -18,8 +18,9 @@
 
 # Last Cleanup: 2025-01-01
 from scipy.optimize import minimize
+from scipy.optimize import direct as _direct
 import numpy as np
-from typing import Generator, Callable
+from typing import Generator, Callable, Literal
 from loguru import logger
 
 class _StopMinimize(Exception):
@@ -31,6 +32,31 @@ class OptimizationError(Exception):
 def _null_callback(*args, **kwargs):
     return
 
+# All scipy.optimize.minimize methods are deterministic given identical
+# starting points, bounds and cached function values, so they replay
+# correctly under this optimizer's "raise-and-resume" trick.
+# 'direct' (scipy.optimize.direct - the DIRECT global search algorithm) is
+# also fully deterministic and is supported as a distinct code path below,
+# since it does not take an x0 and is not a valid `method=` for minimize().
+OptimizerMethod = Literal[
+    'Nelder-Mead',
+    'Powell',
+    'CG',
+    'BFGS',
+    'Newton-CG',
+    'L-BFGS-B',
+    'TNC',
+    'COBYLA',
+    'COBYQA',
+    'SLSQP',
+    'trust-constr',
+    'dogleg',
+    'trust-ncg',
+    'trust-exact',
+    'trust-krylov',
+    'direct',
+]
+
 class Optimizer:
     
     def __init__(self):
@@ -38,7 +64,7 @@ class Optimizer:
         self.value_cache: dict[np.ndarray, float] = dict()
         self._param_data: list[tuple[str, tuple[float, float, float]]] = []
         self.last_iter: np.ndarray = None
-        self.method: str = 'Powell'
+        self.method: OptimizerMethod = 'Powell'
         self._stop: bool = False
         self.callback: Callable = _null_callback
         self._updated: bool = False
@@ -70,6 +96,25 @@ class Optimizer:
         """ Sets the optimizer to a maximization instead of minimization. """
         self._maximize = True
 
+    def set_method(self, method: OptimizerMethod) -> None:
+        """Set the optimization method used on the next call to .run().
+
+        Accepts any scipy.optimize.minimize method string, or 'direct' for
+        scipy.optimize.direct (the DIRECT global search algorithm).
+
+        Note: 'direct' requires every parameter to have finite lower and
+        upper bounds - it will not accept the open bounds that the local
+        minimize() methods tolerate.
+
+        Args:
+            method: One of 'Nelder-Mead', 'Powell', 'CG', 'BFGS',
+                'Newton-CG', 'L-BFGS-B', 'TNC', 'COBYLA', 'COBYQA', 'SLSQP',
+                'trust-constr', 'dogleg', 'trust-ncg', 'trust-exact',
+                'trust-krylov', or 'direct'.
+        """
+        logger.debug(f'Setting optimization method to {method}')
+        self.method = method
+
     def reset(self):
         """Reset the optimizer state
         """
@@ -93,6 +138,21 @@ class Optimizer:
         """
         logger.debug(f'Adding {name}={x0} ∈ ({bounds[0]},{bounds[1]})')
         self._param_data.append((name, (x0, bounds[0], bounds[1])))
+
+    def _check_finite_bounds(self) -> None:
+        """Raise a clear error if 'direct' is selected but a bound is open.
+
+        scipy.optimize.direct requires a fully finite bounded box; unlike
+        the local minimize() methods it will not accept None on either side.
+        """
+        for name, (_, lo, hi) in self._param_data:
+            if lo is None or hi is None:
+                raise OptimizationError(
+                    f"Parameter '{name}' has an open bound ({lo}, {hi}). "
+                    "The 'direct' method requires finite lower and upper "
+                    "bounds on every parameter - please supply both when "
+                    "calling add_param()."
+                )
     
     def run(self, max_iter: int = 1_000, clear_mesh: bool = True) -> Generator[tuple[float,...], None, None]:
         """Run an optimization sweep
@@ -114,6 +174,9 @@ class Optimizer:
         Q = 1.0
         if self._maximize:
             Q = -1.0
+
+        if self.method == 'direct':
+            self._check_finite_bounds()
             
         while not self._stop:
             
@@ -127,7 +190,6 @@ class Optimizer:
                 if not self._updated:
                     raise OptimizationError('You must call .update() after each optimization step with the new optimization value.')
                 self._updated = False
-            options = {'maxiter': max_iter,}
             
             success = True
             def f(x):
@@ -138,14 +200,26 @@ class Optimizer:
                 raise _StopMinimize
 
             try:
-                minimize(
-                    f,
-                    self.x0,
-                    method=self.method,
-                    bounds=self.bounds,
-                    options=options,
-                    tol=self.tolerance,
-                )
+                if self.method == 'direct':
+                    # scipy.optimize.direct has no x0 - it deterministically
+                    # partitions the full bounded box, so it is called
+                    # identically on every restart, exactly like minimize()
+                    # is below.
+                    _direct(
+                        f,
+                        bounds=self.bounds,
+                        maxiter=max_iter,
+                    )
+                else:
+                    options = {'maxiter': max_iter,}
+                    minimize(
+                        f,
+                        self.x0,
+                        method=self.method,
+                        bounds=self.bounds,
+                        options=options,
+                        tol=self.tolerance,
+                    )
             except _StopMinimize:
                 success = False
                 pass
@@ -183,4 +257,3 @@ class Optimizer:
         else:
             smallest_key = sorted(self.value_cache.keys(), key=lambda x: self.value_cache[x])[-1]
         return {p[0]: value for p, value in zip(self._param_data, smallest_key)}, self.value_cache[smallest_key]
-    

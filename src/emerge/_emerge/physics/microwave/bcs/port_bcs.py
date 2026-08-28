@@ -136,6 +136,23 @@ class PortBC(RobinBC, Saveable):
         """
         return 1j * self.get_beta(k0)
 
+    def get_Uinc(
+            self,
+            x_global: np.ndarray,
+            y_global: np.ndarray,
+            z_global: np.ndarray,
+            k0: float,
+            mode_nr: int = 1,
+        ) -> np.ndarray:
+            return (
+                -2
+                * 1j
+                * self.get_beta(k0)
+                * self.port_mode_3d_global(
+                    x_global, y_global, z_global, k0, mode_nr=mode_nr
+                )
+            )
+    
     def port_mode_3d(
         self,
         xs: np.ndarray,
@@ -243,7 +260,6 @@ class ModalPort(PortBC, Saveable):
         if len(self.available_modes) == 0:
             return None
         else:
-            print(self.available_modes)
             return self.get_modes(k0)[0].neff
 
     @property
@@ -562,23 +578,6 @@ class ModalPort(PortBC, Saveable):
     def get_gamma(self, k0: float) -> complex:
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0,
-        mode_nr: int = 1,
-    ) -> np.ndarray:
-
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
 
     def port_mode_3d(
         self,
@@ -1012,22 +1011,6 @@ class RectangularWaveguide(PortBC, Saveable):
         """Computes the γ-constant for matrix assembly (Robin boundary condition)."""
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0: float,
-        mode_nr: int = None,
-    ) -> np.ndarray:
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
 
     def port_mode_3d(
         self,
@@ -1206,22 +1189,7 @@ class CoaxPort(PortBC, Saveable):
         """
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0: float,
-        mode_nr: int = None,
-    ) -> np.ndarray:
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
+
 
     def port_mode_3d(
         self,
@@ -1385,20 +1353,6 @@ class UserDefinedPort(PortBC, Saveable):
         """
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0: float,
-        mode_nr: int = 1,
-    ) -> np.ndarray:
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(x_global, y_global, z_global, k0)
-        )
 
     def port_mode_3d(
         self,

@@ -448,9 +448,9 @@ class Mesh3D(Mesh, Saveable):
         # Check tet-to-edge and tet-to-tri
         pointed_edges = np.zeros((self.n_edges,), dtype=np.bool_)
         pointed_tris = np.zeros((self.n_tris,), dtype=np.bool_)
-        for itet in range(self.n_tets):
-            pointed_edges[self.tet_to_edge[:, itet]] = True
-            pointed_tris[self.tet_to_tri[:, itet]] = True
+        pointed_tris[self.tet_to_tri] = True
+        pointed_edges[self.tet_to_edge] = True
+        
         if not np.all(pointed_edges):
             orphan_edges = np.where(~pointed_edges)[0]
             raise MeshException(
@@ -1559,20 +1559,17 @@ class SurfaceMesh(Mesh):
             for i in range(self.tris.shape[1])
         }
         ##
-        self.areas = np.array(
-            [
-                area(
-                    self.nodes[:, self.tris[0, i]],
-                    self.nodes[:, self.tris[1, i]],
-                    self.nodes[:, self.tris[2, i]],
-                )
-                for i in range(self.n_tris)
-            ]
-        ).T
-
+        # TRIANGLE AREAS
         n1 = self.nodes[:, self.tris[0, :]]
         n2 = self.nodes[:, self.tris[1, :]]
         n3 = self.nodes[:, self.tris[2, :]]
+
+        e1 = n2 - n1
+        e2 = n3 - n1
+        av1 = e1[1, :] * e2[2, :] - e1[2, :] * e2[1, :]
+        av2 = e1[2, :] * e2[0, :] - e1[0, :] * e2[2, :]
+        av3 = e1[0, :] * e2[1, :] - e1[1, :] * e2[0, :]
+        self.areas = np.sqrt(av1**2 + av2**2 + av3**2) / 2
 
         self.centroids = 1 / 3 * (n1 + n2 + n3)
         self.tri_to_edge = np.ndarray((3, self.tris.shape[1]), dtype=int)

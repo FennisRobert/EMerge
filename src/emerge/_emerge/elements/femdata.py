@@ -57,18 +57,11 @@ class FEMBasis(Saveable):
 
     def empty_tet_rowcol(self) -> tuple[np.ndarray, np.ndarray]:
         N = self.n_tet_dofs
-        N2 = N**2
-        nnz = self.n_tets * N2
-        rows = np.empty(nnz, dtype=np.int64)
-        cols = np.empty(nnz, dtype=np.int64)
+        t2f = self.tet_to_field  # shape (N, n_tets)
 
-        for itet in range(self.n_tets):
-            p = itet * N2
+        rows = np.repeat(t2f, N, axis=0).ravel(order="F").astype(np.int64, copy=False)
+        cols = np.tile(t2f, (N, 1)).ravel(order="F").astype(np.int64, copy=False)
 
-            indices = self.tet_to_field[:, itet]
-            for ii in range(self.n_tet_dofs):
-                rows[p + N * ii : p + N * (ii + 1)] = indices[ii]
-                cols[p + ii : p + N2 : N] = indices[ii]
         self._rows = rows
         self._cols = cols
         return rows, cols
@@ -77,21 +70,10 @@ class FEMBasis(Saveable):
         self, other_side: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
         N = self.n_tri_dofs
-        N2 = N**2
-        nnz = self.n_tris * N2
-        rows = np.empty(nnz, dtype=np.int64)
-        cols = np.empty(nnz, dtype=np.int64)
+        t2f = self.tri_to_field_os if other_side else self.tri_to_field
 
-        t2f = self.tri_to_field
-        if other_side:
-            t2f = self.tri_to_field_os
-
-        for itri in range(self.n_tris):
-            p = itri * N2
-            indices = t2f[:, itri]
-            for ii in range(N):
-                rows[p + N * ii : p + N * (ii + 1)] = indices[ii]
-                cols[p + ii : p + N2 : N] = indices[ii]
+        rows = np.repeat(t2f, N, axis=0).ravel(order="F").astype(np.int64, copy=False)
+        cols = np.tile(t2f, (N, 1)).ravel(order="F").astype(np.int64, copy=False)
         return rows, cols
 
     def tetslice(self, itet: int) -> slice:

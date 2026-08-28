@@ -86,6 +86,7 @@ class SimulationDataset(Saveable):
       """Resets all SimulationDataset data
       """
       self.mw: MWData = MWData()
+      self.hc: HCData = HCData()
       self.globals: dict[str, Any] = dict()
       self.sim: DataContainer = DataContainer() 
       self.initialize()

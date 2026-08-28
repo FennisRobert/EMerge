@@ -196,7 +196,7 @@ class Assembler:
             vertex_ids = list(mesh.tets[:, tet_ids].flatten())
 
             prescribed.extend([(field.edge_to_field[ii], bc.T) for ii in edge_ids])
-            prescribed.extend([(field.node_to_ield[ii], bc.T) for ii in vertex_ids])
+            prescribed.extend([(field.node_to_field[ii], bc.T) for ii in vertex_ids])
 
         # --- Surface flux
         for bc in heat_flux_bound:

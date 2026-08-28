@@ -341,7 +341,7 @@ class HexCell(PeriodicCell):
         Returns:
             GeoPrism: _description_
         """
-        z1, z2 = min(z1, z2), max(z2, z2)
+        z1, z2 = min(z1, z2), max(z1, z2)
         xs, ys, zs = zip(self.p1, self.p2, self.p3)
         xs2 = np.array(xs) # type: ignore
         ys2 = np.array(ys) # type: ignore

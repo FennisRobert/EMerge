@@ -57,7 +57,7 @@ logger.info(f'EMerge v{__version__}')
 logger.debug('Importing modules')
 
 import gmsh
-from ._emerge.simmodel import Simulation, SimulationBeta
+from ._emerge.simmodel import Simulation
 from ._emerge import bc
 from ._emerge.solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, Sorter, SolverPardiso, SolverUMFPACK, SolverSuperLU, EMSolver
 from ._emerge.cs import CoordinateSystem, CS, GCS, Plane, Axis, XAX, YAX, ZAX, XYPLANE, XZPLANE, YZPLANE, YXPLANE, ZXPLANE, ZYPLANE, cs, Anchor
@@ -81,6 +81,7 @@ from emsutil.lib import C0, MU0, EPS0, Z0
 from ._emerge.elements.dofsets import ElementSpace, DoFSet
 from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
 from . import optycal
+
 howto = _HowtoClass()
 
 from ._emerge.install_check import run_installation_checks

@@ -109,6 +109,7 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
             "Periodic",
             "FloquetPort",
             "SurfaceImpedance",
+            "ThinConductor"
         ],
     ) -> FaceSelection:
         tags = []

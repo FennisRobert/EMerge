@@ -973,10 +973,10 @@ class SolverSuperLU(Solver):
                 x = np.empty_like(xp)
                 x[self._perm] = xp
             else:
-                x = np.empty_like(b)
-                for i in range(b.shape[1]):
-                    xp = self.lu.solve(b[self._perm, i])
-                    x[self._perm, i] = xp
+                bp = b[self._perm, :]
+                xp = self.lu.solve(bp)
+                x = np.empty_like(xp)
+                x[self._perm, :] = xp
         else:
             x = self.lu.solve(b)
 
@@ -1200,17 +1200,17 @@ class SolverAASDS(Solver):
             logger.trace(f"{_pfx(self.pre, id)} Executing symbolic factorization.")
             self.aasds.analyse(A)
             self.fact_symb = True
-        if True:
-            logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
-            self.aasds.factorize(A)
-            self.A = A
+    
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        self.aasds.factorize(A)
+        self.A = A
+
         logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
         x = np.zeros_like(b)
         for i in range(x.shape[1]):
             logger.trace(f"{_pfx(self.pre, id)} Solve RHS {i}.")
             x[:, i], _ = self.aasds.solve(b[:, i])
 
-        #
         return x, SolveReport(solver=str(self), exit_code=0)
 
 

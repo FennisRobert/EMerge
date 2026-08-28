@@ -782,7 +782,6 @@ class ThinConductor(RobinBC, Saveable):
         if self.thickness is not None:
             eps_c = eps - 1j * sigma / w0
             gamma_m = 1j * w0 * (mu * eps_c) ** 0.5
-            gamma_m = (1 + 1j) / d_skin
             R = R / np.tanh(gamma_m * self.thickness)
             logger.trace(
                 f"Impedance scaler due to thickness: {1 / np.tanh(gamma_m * self.thickness):.4f}"

@@ -348,7 +348,7 @@ class PardisoInterface:
         """
         
         self._configure(A)
-        zerovec = np.zeros_like((A.shape[0], 1), dtype=A.dtype)
+        zerovec = np.zeros((A.shape[0], 1), dtype=A.dtype)
         _, error = self._call_solver(A, zerovec, phase=PARDISOPhase.SYMBOLIC_FACTOR)
         return error
 
@@ -360,7 +360,7 @@ class PardisoInterface:
         """
 
         self._configure(A)
-        zerovec = np.zeros_like((A.shape[0], 1), dtype=A.dtype)
+        zerovec = np.zeros((A.shape[0], 1), dtype=A.dtype)
         _, error = self._call_solver(A, zerovec, phase=PARDISOPhase.NUMERIC_FACTOR)
         return error
         

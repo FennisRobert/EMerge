@@ -18,6 +18,7 @@
 import numpy as np
 from ....elements.leg2 import Legrange2
 from numba import types, f8, i8, njit, prange
+from ....mth.csc_cast import CSCMapping
 
 ############################################################
 #                    UTILITY FUNCTIONS                    #
@@ -415,7 +416,7 @@ def _mass_matrix_builder(nodes, tets, tet_to_field, rho_cp_per_tet):
 
 def tet_stiffness_matrix(
     field: Legrange2, cond_termal: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, CSCMapping]:
     """Main assembly function of the mass matrix for stationary heat transfer
 
     Args:
@@ -423,7 +424,7 @@ def tet_stiffness_matrix(
         cond_termal (np.ndarray): Array with 3x3 conductivity tensors for each tet
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray]: Amatrix, rows, cols (COO triplet)
+        tuple[np.ndarray, CSCMapping]: The A-matrix entry and CSCMapping object
     """
     tets = field.mesh.tets
     nodes = field.mesh.nodes
@@ -432,12 +433,13 @@ def tet_stiffness_matrix(
 
     Amatrix, rows, cols = _stiff_matrix_builder(nodes, tets, tet_to_field, cond_termal)
 
-    return Amatrix, rows, cols
+    cscmap = CSCMapping.from_rowcol(rows, cols, field.n_field)
+    return Amatrix, cscmap
 
 
 def tet_mass_matrix(
     field: Legrange2, rho_cp: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, CSCMapping]:
     """Assemble the global mass (capacity) matrix for transient heat transfer.
 
     M_ij = integral rho * cp * N_i * N_j dV
@@ -447,7 +449,8 @@ def tet_mass_matrix(
         rho_cp: (n_tets,) array of density * specific heat per element [J/(m³·K)]
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray]: Mmatrix, rows, cols (COO triplet)
+        M_coo: COO values
+        cscmap: CSCMapping for conversion to CSC
     """
     tets = field.mesh.tets
     nodes = field.mesh.nodes
@@ -455,4 +458,5 @@ def tet_mass_matrix(
 
     Mmatrix, rows, cols = _mass_matrix_builder(nodes, tets, tet_to_field, rho_cp)
 
-    return Mmatrix, rows, cols
+    cscmap = CSCMapping.from_rowcol(rows, cols, field.n_field)
+    return Mmatrix, cscmap

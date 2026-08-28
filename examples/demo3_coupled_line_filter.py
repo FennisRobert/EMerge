@@ -41,14 +41,14 @@ Dtot = 750  # total clearance (mil)
 extra = 100  # extra margin (mil)
 
 # --- Simulation setup ----------------------------------------------------
-model = em.Simulation("CoupledLineFilter", loglevel='DEBUG')
+model = em.Simulation("CoupledLineFilter")
 model.check_version("3.0.0")  # Checks version compatibility.
 model.mw.set_basis_space(elementspace=em.ElementSpace.SECOND_MIXED_WEBB)
 # --- Material and layouter -----------------------------------------------
 mat = em.Material(er=3.55, color="#488343", opacity=0.4)
 
 # Create PCB layouter with given substrate thickness and units
-pcb = em.geo.PCB(th, unit=mil, material=mat, trace_material=em.lib.COPPER)
+pcb = em.geo.PCB(th, unit=mil, material=mat)
 
 # --- Route coupled-line trace --------------------------------------------
 # start at (0,140) with width w0
@@ -88,7 +88,7 @@ model.mw.set_frequency_range(5.2e9, 6.2e9, 30)  # 5.2–6.2 GHz, 31 points
 model.commit_geometry()
 # --- Mesh refinement -----------------------------------------------------
 # High growth rates are generally not adviced but used here to save some memory.
-model.mesher.set_boundary_size(stripline, 0.2 * mm, growth_rate=4)
+model.mesher.set_boundary_size(stripline, 0.25 * mm, growth_rate=4)
 model.mesher.set_face_size(p1, 1 * mm)
 model.mesher.set_face_size(p2, 1 * mm)
 
@@ -97,6 +97,7 @@ model.generate_mesh()  # build mesh
 model.view(plot_mesh=True, volume_mesh=False)
 
 # --- Run frequency-domain solver ----------------------------------------
+model.adaptive_mesh_refinement(frequency=5.8e9, max_steps=20, max_tets=300_000)
 model.view(plot_mesh=True)
 data = model.mw.run_sweep()
 

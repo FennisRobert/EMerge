@@ -351,6 +351,14 @@ class Cylinder(GeoVolume):
         self.cs: CoordinateSystem = cs
         self.radius = radius
         self.height = height
+
+        self.circumpherence: float = 0.0
+        # The circumpherence of the cylinder or polygon
+        
+        if Nsections is None:
+            self.circumpherence: float = 2*np.pi*radius
+        else:
+            self.circumpherence: float = 2*Nsections*radius*np.sin(np.pi/Nsections)
         
         self.anch.init(cs.origin + height*cs.zax.np/2, cs.xax.np, cs.yax.np, cs.zax.np)
 

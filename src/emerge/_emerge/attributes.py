@@ -314,6 +314,15 @@ class LumpedElementAttribute(PhysicalAttribute):
     def __descr__(self):
         return f'{format_length(self.width)}x{format_length(self.height)}'
 
+class VoidAttribute(PhysicalAttribute):
+    name: str = 'VoidAttribute'
+
+    def __init__(self):
+        pass
+
+    def __descr__(self):
+        return ''
+    
 if __name__ == "__main__":
     pset = PhysicalAttributeSet()
 

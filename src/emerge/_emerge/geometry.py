@@ -613,7 +613,6 @@ class GeoObject(Saveable):
         self.give_name(name)
         if _submit_geometry:
             _GlobalHandler.active().geomanager.submit_geometry(self)
-        self._fill_face_pointers()
 
         if self.dim==3:
             self.properties += AIR
@@ -632,6 +631,35 @@ class GeoObject(Saveable):
         """
         return self._base_priority + self._sub_priority / 2
 
+    def _become(self: T, other: GeoObject) -> T:
+        """In-place mutating transformation of self into another GeoObject instance.
+        
+        Transfers all internal attributes, tags, anchors, and geometric properties
+        from `other` to `self`, deactivates `other`, and updates the geometry manager.
+        """
+        # 1. Clean up old GMSH entity tags if self is completely replaced
+        if self._exists and self.dimtags != other.dimtags:
+            self._do_self_destruct()
+
+        # 2. Preserve self's name and registration key identity
+        target_name = self.name
+
+        # 3. Swap instance state completely
+        self.__dict__.clear()
+        self.__dict__.update(other.__dict__)
+
+        # 4. Restore original name to avoid global manager lookup conflicts
+        self.name = target_name
+
+        # 5. Deactivate and mark the transient object as removed
+        other._exists = False
+        other.deactivate() if hasattr(other, "deactivate") else None
+
+        # 6. Re-register self with the active GeometryManager
+        _GlobalHandler.active().geomanager.submit_geometry(self)
+
+        return self
+    
     def _apply_size_scaling(self, factor: float) -> None:
         """Apply a size scaling to all geometric quantities
 
@@ -776,6 +804,14 @@ class GeoObject(Saveable):
         out.prio_set(objects[0]._priority)
         out.give_name(f"MergedGeometries{[obj.name for obj in objects]}")
         return out
+
+    def remove_tags(self, tags: list[int]) -> None:
+        """Removes tags from this assignment
+
+        Args:
+            tags (list[int]): _description_
+        """
+        self.tags = [tag for tag in self.tags if tag not in tags]
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.name},{self.dim},{self.tags})"
@@ -1059,6 +1095,7 @@ class GeoVolume(GeoObject):
     ):
         super().__init__(name=name, _submit_geometry=_submit_geometry)
 
+
         self.tags: list[int] = []
 
         if isinstance(tag, Iterable):
@@ -1067,6 +1104,7 @@ class GeoVolume(GeoObject):
             self.tags = [
                 tag,
             ]
+        self.tags = self._rebuild_positive_volume(self.tags)
 
         self._normals_cache: list[tuple[float, float, float]] = None
         self._origins_cache: list[tuple[float, float, float]] = None
@@ -1074,6 +1112,36 @@ class GeoVolume(GeoObject):
 
         self._fill_face_pointers()
         self._autoname()
+
+    @staticmethod
+    def _check_negative_volume(tags: list[int]) -> bool:
+        for t in tags:
+            if gmsh.model.occ.get_mass(3,t) < 0:
+                return True
+        return False
+
+    @staticmethod
+    def _rebuild_positive_volume(tags: list[int]) -> list[int]:
+        """
+        Extract surface loops from 3D entities and rebuild them as positive-mass volumes.
+        """
+        
+        if not GeoVolume._check_negative_volume(tags):
+            return tags
+
+        logger.warning(f'Negative volumes detected for dimtags {tags}. Reconstructing topology.')
+
+        gmsh.model.occ.synchronize()
+        new_solids = []
+        
+        for tag in tags:
+            surfloop, _ = gmsh.model.occ.getSurfaceLoops(tag)
+            gmsh.model.occ.remove([(3, tag)])
+            new_volume = gmsh.model.occ.addVolume(surfloop)
+            new_solids.append((3, new_volume))
+
+        gmsh.model.occ.synchronize()
+        return new_solids
 
     def _apply_size_scaling(self, factor: float) -> None:
         """Apply a size scaling to all geometric quantities
@@ -1085,6 +1153,7 @@ class GeoVolume(GeoObject):
         self._origins_cache = [(x/factor, y/factor, z/factor) for x,y,z in self._origins_cache]
                 
     def _cache_gmsh(self):
+        self._fill_face_pointers()
         self._get_boundary_cache = gmsh.model.get_boundary(self.dimtags, True, False)
         self._normals_cache = [
             gmsh.model.get_normal(t, [0, 0]) for d, t in self._get_boundary_cache
@@ -1095,6 +1164,10 @@ class GeoVolume(GeoObject):
         self._cached = True
         for name in self._face_pointers.keys():
             self._face_tag_cache[name] = self._face_tags(name)
+        
+        for tool, fpdict in self._tools.items():
+            for name in fpdict.keys():
+                self._face_tag_cache[f'{tool}.{name}'] = self._face_tags(name, tool_key=tool)
 
     def _get_normal(self):
         if not self._cached:
@@ -1353,7 +1426,7 @@ class GeoVolume(GeoObject):
             tags.extend(self._face_tags(name, tool))
         return FaceSelection(tags)._named("Faces[" + ",".join(names) + "]")
 
-    def _face_tags(self, name: FaceNames, tool: GeoObject | None = None) -> list[int]:
+    def _face_tags(self, name: FaceNames, tool: GeoObject | None = None, tool_key: int | None = None) -> list[int]:
         names = self._all_pointer_names
 
         if name not in names:
@@ -1361,8 +1434,16 @@ class GeoVolume(GeoObject):
                 f"The face {name} does not exist in {self}. Only {list(self._face_pointers.keys())}"
             )
 
-        if name in self._face_tag_cache:
-            return self._face_tag_cache[name]
+        cachename = name
+
+        if tool is not None:
+            cachename = f'{tool._key}.{name}'
+
+        if tool_key is not None:
+            cachename = f'{tool_key}.{name}'
+        
+        if cachename in self._face_tag_cache:
+            return self._face_tag_cache[cachename]
         
         gmsh.model.occ.synchronize()
         dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
@@ -1372,6 +1453,8 @@ class GeoVolume(GeoObject):
 
         if tool is not None:
             tags = self._tools[tool._key][name].find(dimtags, origins, normals)
+        if tool_key is not None:
+            tags = self._tools[tool_key][name].find(dimtags, origins, normals)
         else:
             tags = self._face_pointers[name].find(dimtags, origins, normals)
         logger.trace(f" - Face {name} with tool {tool} on {self} resolved in tags: {tags}.")

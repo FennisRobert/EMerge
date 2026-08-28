@@ -30,7 +30,7 @@ from ...selection import FaceSelection
 from ...settings import Settings
 from ...simstate import SimState
 from ...const import C0
-from ...attributes import PhysicalAttribute, FiniteThickness, SurfaceRoughness, MetalCoating, WavePortAttribute, LumpedElementAttribute, LumpedPortAttribute
+from ...attributes import PhysicalAttribute, FiniteThickness, SurfaceRoughness, MetalCoating, WavePortAttribute, LumpedElementAttribute, LumpedPortAttribute, VoidAttribute
 from ..material_assignment import MaterialAssignment
 from ..physics_generic import GenericPhysics3D
 
@@ -736,6 +736,10 @@ class Microwave3D(GenericPhysics3D):
                 self.bc.no_overwrite().SurfaceImpedance(geometry.boundary(), material=material)
                 material_map[material].update(set(geometry.boundary().tags))
 
+            if wpattr := geometry.properties.get(VoidAttribute):
+                self.bc.no_overwrite().Void(geometry)
+                self.bc.no_overwrite().PEC(geometry.boundary())
+
         for material, assignment in material_map.items():
             self.bc.no_overwrite().SurfaceImpedance(FaceSelection(list(assignment)), material=material)
 
@@ -795,6 +799,11 @@ class Microwave3D(GenericPhysics3D):
 
         if check_port_placement:
             exterior_tags = set(self.mesher.domain_boundary_face_tags)
+            for geo in self._state.all3d:
+                if geo.properties.get(VoidAttribute):
+                    exterior_tags.update(geo.boundary().tags)
+
+
             for lumped_port in self.bc.oftype(LumpedPort):
                 if not set(lumped_port.selection.tags).isdisjoint(exterior_tags):
                     _GlobalHandler.active().debugcollector.add_report(
@@ -904,7 +913,7 @@ class Microwave3D(GenericPhysics3D):
         edge_ids = set(list(mesh.tri_to_edge[:, tri_ids].flatten()))
 
         port_pec_edges = np.array([i for i in pec_edges if i in edge_ids])
-
+        
         pec_islands = mesh.find_edge_groups(port_pec_edges)
 
         logger.debug(f" - Found {len(pec_islands)} PEC islands.")
@@ -985,7 +994,7 @@ class Microwave3D(GenericPhysics3D):
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id
+                A, bmat, ids, matrix_type=job.mtype, id=job.id, mldataset=job._mlpd
             )
             report.add(**aux)
             job.submit_solution(solution, report)
@@ -1010,7 +1019,7 @@ class Microwave3D(GenericPhysics3D):
                 routine = get_routine()
                 A, bmat, ids, aux = job.get_Ab()
                 solution, report = routine.solve(
-                    A, bmat, ids, matrix_type=job.mtype, id=job.id
+                    A, bmat, ids, matrix_type=job.mtype, id=job.id, mldataset=job._mlpd
                 )
                 report.add(**aux)
                 job.submit_solution(solution, report)
@@ -1183,7 +1192,11 @@ class Microwave3D(GenericPhysics3D):
         tandtet = np.zeros((3, 3, self.mesh.n_tets), dtype=np.complex128)
         urtet = np.zeros((3, 3, self.mesh.n_tets), dtype=np.complex128)
         condtet = np.zeros((3, 3, self.mesh.n_tets), dtype=np.complex128)
+        void = np.zeros((self.mesh.n_tets), dtype=np.int8)
 
+        for geo in self._state.all3d:
+            if geo.properties.get(VoidAttribute):
+                void[self.mesh.get_tetrahedra(geo.tags)] = 1
         # Evaluating the relavant function er, tand etc on these functions automatically
         # only assigned these material values to those arrays where they are valid.
         # The materials know (high coupling, I know) which tet-indices they are assigned to.
@@ -1207,11 +1220,15 @@ class Microwave3D(GenericPhysics3D):
         # and then use that value for our material assignment
         # Modal ports may only be connected to one tetrahedron so we can safely assume that the only
         # Assigned tet index is in array index 0.
+
         for itri in range(self.mesh.n_tris):
             itet = self.mesh.tri_to_tet[0, itri]
+            if void[itet] == 1:
+                itet = self.mesh.tri_to_tet[1, itri]
             er[:, :, itri] = ertet[:, :, itet]
             ur[:, :, itri] = urtet[:, :, itet]
             cond[itri] = condtet[0, 0, itet]
+            
 
         # A list of all the triangles that are part of the Port.
         itri_port = self.mesh.get_triangles(port.tags)

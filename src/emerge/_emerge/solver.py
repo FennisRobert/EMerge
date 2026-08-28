@@ -32,6 +32,7 @@ from typing import Literal, Callable
 from enum import Enum
 from .file import Saveable
 import os
+from .mldata import MLPreconData
 
 ############################################################
 #                   ENVIRONMENT VARIABLES                  #
@@ -2038,6 +2039,7 @@ class SolveRoutine:
         direct: bool = True,
         id: int = -1,
         matrix_type: MatrixType = MatrixType.UNKNOWN,
+        mldataset: MLPreconData | None = None,
     ) -> tuple[np.ndarray, SolveReport]:
         """Solve the system of equations defined by Ax=b for x.
 
@@ -2059,10 +2061,14 @@ class SolveRoutine:
 
         if self.save_disk:
             name_A = f'SparseMatrix_{id}.npz'
-            name_b = f'SolVector_{id}.npy'
+            name_b = f'SolVector_{id}'
+            name_solve_ids = f'SolveIds_{id}'
+
             save_npz(name_A, A)
             np.save(name_b, b)
+            np.save(name_solve_ids, solve_ids)
             logger.info(f'Saved {name_A} and {name_b}')
+
         logger.debug(f"{_pfx(self.pre, id)} matrix type: {matrix_type}")
 
         if b.ndim == 1:
@@ -2126,6 +2132,15 @@ class SolveRoutine:
         solution = np.zeros((NF, NB), dtype=A.dtype)
 
         solution[solve_ids, :] = x
+
+        if self.save_disk:
+            name_solution = f'Solution_{id}'
+            np.save(name_solution, solution)
+            logger.info(f'Saved {name_solution}')
+
+        if mldataset is not None:
+
+            mldataset.save(f'_{id}', b, solution)
 
         logger.debug(f"{_pfx(self.pre, id)} Solver complete!")
         report.jobid = id

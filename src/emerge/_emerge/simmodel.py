@@ -413,7 +413,25 @@ class Simulation:
 
         for geo in self.all_geos():
             geo._apply_size_scaling(self._geo_scale_factor)
-        
+
+    def _remove_voids(self):
+        """Subtracting voids from all objects.
+        """
+        from .geo.operations import subtract
+        objects = self.state.all3d
+        voids = [obj for obj in objects if obj._is_void]
+
+        new_objects = []
+        for base_obj in objects:
+            if base_obj._is_void:
+                continue
+
+            for void in voids:
+                logger.debug(f' - Subtracting {void} from {base_obj}')
+                new_obj = subtract(base_obj, void, remove_tool=False)
+                base_obj._become(new_obj)
+        for void in voids:
+            void.remove()
     ############################################################
     #                       PUBLIC FUNCTIONS                  #
     ############################################################
@@ -786,6 +804,8 @@ class Simulation:
             assigned_materials: (bool, optional): Shows the materials in geometries as assigned per unique domain. Defaults to False
             off_screen: (bool, optional): Only shows off screen (useful for combinations with Screenshot). Defaults to False
         """
+        if not isinstance(selections, (list, set, tuple)) and selections is not None:
+            selections = [selections,]
 
         # Use GMSH if there are only 3D geometries
         if len(self.state.all3d) == 0:
@@ -1116,11 +1136,13 @@ class Simulation:
 
         self._apply_size_scaling()
         
-        logger.info("GMSH Meshing complete!")
+        
         self.mesh._pre_update(self.mesher._get_periodic_bcs(), 1/self._geo_scale_factor)
         if self.settings.safe_mode:
             self.mesh.diagnose()
 
+        logger.info(f"GMSH Meshing complete! (◮{self.mesh.n_tets}, ▲{self.mesh.n_tris})")
+        
         self.mesh.exterior_face_tags = self.mesher.domain_boundary_face_tags
         gmsh.model.occ.synchronize()
         self.state.store_geometry_data()

@@ -278,6 +278,8 @@ class PVDisplay(EMergeDisplay):
 
     def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid:
         tris = self._mesh.get_triangles(surface.tags)
+        if tris.shape[0] == 0:
+            return None
         ntris = tris.shape[0]
         cells = np.zeros((ntris, 4), dtype=np.int64)
         cells[:, 1:] = self._mesh.tris[:, tris].T
@@ -380,6 +382,8 @@ class PVDisplay(EMergeDisplay):
                 return
 
         mesh_obj = self.mesh(obj)
+        if mesh_obj is None:
+            return
         actor = self._add_obj(
             mesh_obj,
             obj.dim,

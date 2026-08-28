@@ -137,8 +137,6 @@ class GeoPrism(GeoVolume):
                  name: str | None = None):
         super().__init__(volume_tag, name=name)
         
-        
-        
         if front_tag is not None and side_tags is not None:
             self.front_tag: int = front_tag
             self.back_tag: int = None

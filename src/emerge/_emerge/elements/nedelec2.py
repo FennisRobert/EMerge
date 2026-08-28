@@ -99,6 +99,128 @@ class Nedelec2(FEMBasis, Saveable):
         self._rows = rows
         self._cols = cols
         
+    def compute_global_dofcodes(self) -> np.ndarray:
+        """Expand `field.dofcodes3d` (fixed-length, one entry per local basis-
+        function slot of a single tet, identical for every tet of this element
+        order) into a length-`field.n_field` array aligned with the row/column
+        order of the assembled E/B matrices.
+
+        A given global DOF is referenced by every tet that shares the mesh
+        edge/face it lives on; those references must all agree on its dofcode
+        (edge-vs-face + which basis-function definition), since that's a
+        property of the abstract basis function, not of any one tet. This is
+        checked rather than assumed -- a mismatch means something about the
+        element setup violates that assumption and should be looked at, not
+        silently averaged over.
+
+        Args:
+            field: a Nedelec2 field object (anything exposing `get_tet_to_field()`,
+                `dofcodes3d`, and `n_field`).
+
+        Returns:
+            np.ndarray, shape (field.n_field,), int64 dofcode per global DOF.
+        """
+        field = self
+        tet_to_field = field.get_tet_to_field()  # (ndof_local, ntets)
+        dofcodes3d = np.asarray(field.dofcodes3d)  # (ndof_local,)
+
+        global_codes = np.full(field.n_field, -1, dtype=np.int64)
+
+        for idof in range(dofcodes3d.shape[0]):
+            gids = tet_to_field[idof, :]
+            code = int(dofcodes3d[idof])
+
+            existing = global_codes[gids]
+            conflict = (existing != -1) & (existing != code)
+            if np.any(conflict):
+                bad = int(gids[conflict][0])
+                raise ValueError(
+                    f"Inconsistent dofcode for global DOF {bad}: "
+                    f"already tagged {global_codes[bad]}, local slot {idof} says {code}. "
+                    f"This means a DOF is being reached by basis-function definitions "
+                    f"that disagree -- check element-order consistency across the mesh."
+                )
+            global_codes[gids] = code
+
+        unset = np.flatnonzero(global_codes == -1)
+        if unset.size:
+            raise ValueError(
+                f"{unset.size} of {field.n_field} global DOFs were never referenced "
+                f"by any tet (e.g. dof {int(unset[0])}) -- dofcode undefined for them."
+            )
+
+        return global_codes
+
+    @staticmethod
+    def _parse_dofcode_np(dofcodes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Pure-numpy reimplementation of compiled/ccbf.py:parse_dofcode -- kept
+        inline (rather than imported) so this file has no relative-import
+        dependency on wherever it ends up living inside EMerge.
+
+        Returns (typearray, indexarray): typearray 0=edge/1=face, indexarray =
+        the *local* edge index (0-5) or local face index (0-3) within a tet that
+        this local dof-template slot corresponds to.
+        """
+        dofcodes = np.asarray(dofcodes)
+        idofcode = dofcodes & 0b00111111
+        is_edge = (dofcodes & 0b11000000) == 64
+        typearray = np.where(is_edge, 0, 1)
+
+        indexarray = np.empty_like(dofcodes, dtype=np.int64)
+        counters: dict[tuple[int, bool], int] = {}
+        for i in range(dofcodes.shape[0]):
+            key = (int(idofcode[i]), bool(is_edge[i]))
+            indexarray[i] = counters.get(key, 0)
+            counters[key] = counters.get(key, 0) + 1
+        return typearray, indexarray
+
+
+    def compute_global_dof_coords(self) -> np.ndarray:
+        """Representative world-space coordinate per global DOF: the midpoint of
+        its mesh edge (edge-type DOFs) or centroid of its mesh face (face-type
+        DOFs). Deliberately doesn't distinguish basis-function definition on the
+        same edge/face (e.g. curl-type vs. grad-type both live at the same
+        midpoint) -- that distinction is `dof_types`' job, not this one's.
+
+        Returns:
+            np.ndarray, shape (3, field.n_field), same axis convention as
+            `field.mesh.nodes`.
+        """
+        field = self
+        mesh = field.mesh
+        nodes = mesh.nodes            # (3, n_nodes)
+        edges = mesh.edges            # (2, n_edges) -- global node ids per edge
+        tris = mesh.tris              # (3, n_tris)  -- global node ids per face
+        tet_to_edge = mesh.tet_to_edge  # (6, ntets)
+        tet_to_tri = mesh.tet_to_tri    # (4, ntets)
+        tet_to_field = field.get_tet_to_field()  # (ndof_local, ntets)
+        dofcodes3d = np.asarray(field.dofcodes3d)
+
+        typearray, indexarray = self._parse_dofcode_np(dofcodes3d)
+
+        edge_coords = (nodes[:, edges[0, :]] + nodes[:, edges[1, :]]) / 2.0
+        tri_coords = (nodes[:, tris[0, :]] + nodes[:, tris[1, :]] + nodes[:, tris[2, :]]) / 3.0
+
+        dof_coords = np.full((3, field.n_field), np.nan)
+
+        for idof in range(dofcodes3d.shape[0]):
+            gids = tet_to_field[idof, :]
+            if typearray[idof] == 0:
+                eids = tet_to_edge[indexarray[idof], :]
+                dof_coords[:, gids] = edge_coords[:, eids]
+            else:
+                tids = tet_to_tri[indexarray[idof], :]
+                dof_coords[:, gids] = tri_coords[:, tids]
+
+        unset = np.flatnonzero(np.isnan(dof_coords[0, :]))
+        if unset.size:
+            raise ValueError(
+                f"{unset.size} of {field.n_field} global DOFs got no coordinate "
+                f"(e.g. dof {int(unset[0])})."
+            )
+
+        return dof_coords
+
 
     def diagnose(self):
         visited_field = np.zeros((self.n_field,), dtype=np.bool)

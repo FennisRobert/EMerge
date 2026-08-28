@@ -22,8 +22,7 @@ from typing import Hashable
 from scipy.sparse import csc_matrix, save_npz, load_npz, issparse  # type: ignore
 from ...solver import SolveReport, MatrixType
 from loguru import logger
-
-
+from ...mldata import MLPreconData
 class SimJob:
 
     def __init__(
@@ -33,6 +32,7 @@ class SimJob:
         freq: float,
         B: csc_matrix | None = None,
         symmetric: bool = False,
+        mldataset: MLPreconData | None = None,
     ):
 
         self.A: csc_matrix = A
@@ -59,7 +59,7 @@ class SimJob:
         self.freq: float = freq
         self.k0: float = 2 * np.pi * freq / 299792458
         self.is_solved: bool = False
-
+        self._mlpd: MLPreconData | None = mldataset
         self._solutions: np.ndarray | None = None
         self._solutions_dict: dict[Hashable, np.ndarray] = None
 

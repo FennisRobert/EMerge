@@ -19,6 +19,7 @@
 from typing import TypeVar, overload, Literal
 from ..geometry import GeoSurface, GeoVolume, GeoObject, GeoPoint, GeoEdge, GeoPolygon
 from ..cs import CoordinateSystem, GCS, Anchor
+from ..selection import Selection
 import gmsh
 import numpy as np
 from emsutil import AIR
@@ -93,10 +94,11 @@ def remove(main: T, tool: T,
     out_dim_tags, out_dim_tags_map = gmsh.model.occ.cut(main.dimtags, tool.dimtags, removeObject=remove_object, removeTool=remove_tool)
     
     gmsh.model.occ.synchronize()
+    
     if out_dim_tags[0][0] == 3:
-        output = GeoVolume([dt[1] for dt in out_dim_tags])._take_tools(tool,main)
+        output = GeoVolume([dt[1] for dt in out_dim_tags])._take_tools(tool, main)
     elif out_dim_tags[0][0] == 2:
-        output = GeoSurface([dt[1] for dt in out_dim_tags])._take_tools(tool,main)
+        output = GeoSurface([dt[1] for dt in out_dim_tags])._take_tools(tool, main)
     if remove_object:
         main._exists = False
     if remove_tool:
@@ -454,7 +456,18 @@ def connect_faces(face1: GeoSurface, face2: GeoSurface,
     dts = gmsh.model.occ.addThruSections([wire1[0], wire2[0]], make_solid, make_ruled, parametrization=parametrization)
     tags = [t for d,t in dts]
     return GeoVolume(tags)
-    
+
+def duplicate(entity: GeoObject | Selection) -> GeoObject:
+    """Duplicate a geometric entity or selection there of
+
+    Args:
+        entity (GeoObject | Selection): _description_
+
+    Returns:
+        GeoObject: _description_
+    """
+    return GeoObject.from_dimtags(gmsh.model.occ.copy(entity.dimtags))
+
 
 def thick_wall(thickness: float, *volumes):
     """Add thickness to volumes and return a solid expanded geometry without internal holes."""
@@ -470,34 +483,22 @@ def thick_wall(thickness: float, *volumes):
         union_dimtags, _ = gmsh.model.occ.fuse([dimtags[0]], dimtags[1:], removeObject=True, removeTool=True)
     else:
         union_dimtags = dimtags
-    print('Entities before:', gmsh.model.occ.getEntities(3))
-    print('2D Entities before:', gmsh.model.occ.getEntities(2))
+
     new_solids = []
+
     for dim, tag in union_dimtags:
-        print(f'Dim = {dim}, tag = {tag}')
         # Hollow shell: outer offset surface + inner surface (the cavity)
         thick_dimtags = gmsh.model.occ.addThickSolid(tag, [], offset=thickness)
         gmsh.model.occ.synchronize()
-        print(f'Thick dimtags: {thick_dimtags}')
         for d,t in thick_dimtags:
-            print(f'Mass in = {gmsh.model.occ.getMass(d,t)}')
             surfloop, _ = gmsh.model.occ.getSurfaceLoops(t)
             gmsh.model.occ.remove([(d,t),])
-            print(f'Surface loop = {surfloop}')
             new_volume = gmsh.model.occ.addVolume(surfloop)
-            print(f'New Volume: {new_volume} with mass {gmsh.model.occ.getMass(3, new_volume)}')
             new_solids.append((3,new_volume))
     
     gmsh.model.occ.synchronize()
     
-    print('Entities after:', gmsh.model.occ.getEntities(3))
-    print('2D Entities before:', gmsh.model.occ.getEntities(2))
-    print(new_solids, union_dimtags)
     outdts,_ = gmsh.model.occ.fuse(union_dimtags, new_solids)
-    print(outdts)
     new_vol = GeoVolume.from_dimtags(outdts).set_material(AIR)
     gmsh.model.occ.synchronize()
-    print('Entities final:', gmsh.model.occ.getEntities(3))
-    print('2D Entities final:', gmsh.model.occ.getEntities(2))
-    print(new_vol)
     return new_vol

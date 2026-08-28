@@ -61,6 +61,11 @@ class PMC(BoundaryCondition, Saveable):
     dim: int = 2
     pass
 
+class Void(BoundaryCondition, Saveable):
+    _color: str = "#00000000"
+    _name: str = "VOID"
+    dim: int = 3
+    pass
 
 class RobinBC(BoundaryCondition, Saveable):
     _color: str = "#e7c736"

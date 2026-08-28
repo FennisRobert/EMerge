@@ -27,6 +27,7 @@ from ..bcs import (
     ThinConductor,
     SurfaceImpedance,
     WavePortIH,
+    Void,
 )
 from ...material_assignment import MaterialAssignment
 from ....periodic import Periodic
@@ -42,7 +43,7 @@ from loguru import logger
 from ..simjob import SimJob
 from ....const import EPS0, C0
 import time
-
+from typing import Generator
 _PBC_DSMAX = 1e-15
 
 
@@ -67,6 +68,11 @@ def do_assemble_wpbc(bc: BoundaryCondition) -> bool:
     if isinstance(bc, WavePortIH):
         return True
     return False
+
+def select_bc(bcs: list[BoundaryCondition], bctype: type[BoundaryCondition]) -> Generator[BoundaryCondition,None,None]:
+    for bc in bcs:
+        if isinstance(bc, bctype):
+            yield bc
 
 def diagnose_matrix(mat: csc_matrix, basis: "Nedelec2", solve_ids: np.ndarray) -> None:
     """
@@ -278,6 +284,7 @@ def diagnose_robin_matrix(
         print(f"zs = [{zs_lit}]")
  
     return points
+
 class MatrixDiagnosisError(RuntimeError):
     """Same as RuntimeError, but carries the resolved problem-point list so
     a caller can catch it and use the points directly (e.g. to visualize
@@ -394,7 +401,7 @@ class Assembler:
         self.settings: Settings = settings
         self.SELECT_INDEX: int = None
         self._partitioned: bool = False
-
+        self.mldata_filename: str | None = None
         self._surf_imp_conductivity_limit: float = 1e4
 
     # ------------------------------------------------------------------
@@ -430,13 +437,21 @@ class Assembler:
         )
         return er, ur, cond, is_freq_dep
 
-    def _find_conductor_tets(self, cond: np.ndarray, n_tets: int) -> np.ndarray:
+    def _find_conductor_tets(self, field: Nedelec2, bcs: list[BoundaryCondition], cond: np.ndarray) -> np.ndarray:
         """Tets whose conductivity exceeds either the PEC or surf-impedance limit."""
         limit = min(self.settings.mw_3d_peclim, self.settings.mw_3d_surfimplim)
-        return np.flatnonzero(cond[0, 0, :n_tets] > limit)
+        mask = cond[0, 0, :] > limit
+
+        for bc in bcs:
+            if not isinstance(bc, Void):
+                continue
+            void_tet_ids = field.mesh.get_tetrahedra(bc.tags)
+            mask[void_tet_ids] = True
+
+        return np.flatnonzero(mask)
 
     def _collect_pec_dofs(
-        self, field: Nedelec2, mesh, pec_bcs: list[PEC], conductor_tets: np.ndarray
+        self, field: Nedelec2, mesh, bcs: list[BoundaryCondition], conductor_tets: np.ndarray, cond: np.ndarray
     ) -> tuple[set[int], list[int]]:
         """Collects PEC degrees of freedom from volumetric conductors and
         explicit PEC boundary conditions. Returns (pec_dof_ids, pec_tri_ids).
@@ -444,25 +459,40 @@ class Assembler:
         pec_ids: list[int] = []
         pec_tris: list[int] = []
 
+        # Step 1: Add all conductor tet DoF as PEC (0-field)
         for itet in conductor_tets:
             pec_ids.extend(field.tet_to_field[:, itet])
             pec_tris.extend(field.mesh.tet_to_tri[:, itet])
+        
         if len(conductor_tets):
             logger.trace(
                 f" - Extended PEC with {len(conductor_tets)} tets with a conductivity > {self.settings.mw_3d_peclim}."
             )
+        pec_ids_set = set(pec_ids)
 
-        for pec in pec_bcs:
+        # Step 2: Remove all Robin Bcs
+        for bc in select_bc(bcs, RobinBC):
+            tri_ids = field.mesh.get_triangles(bc.tags)
+            dofs = set(field.tri_to_field[:, tri_ids].flatten())
+            pec_ids_set = pec_ids_set.difference(dofs)
+
+        # Step 3: Add back all actual PEC dofs
+        for pec in select_bc(bcs, PEC):
             logger.trace(f" - Implementing: {pec}")
             if len(pec.tags) == 0:
                 continue
             tri_ids = mesh.get_triangles(pec.tags)
             edge_ids = mesh.tri_to_edge[:, tri_ids].flatten()
-            pec_ids.extend(field.edge_to_field[:, edge_ids].flatten())
-            pec_ids.extend(field.tri_to_field[:, tri_ids].flatten())
+            pec_ids_set.update(field.edge_to_field[:, edge_ids].flatten())
+            pec_ids_set.update(field.tri_to_field[:, tri_ids].flatten())
             pec_tris.extend(tri_ids)
 
-        return set(pec_ids), pec_tris
+        # Step 4: add back pec tets
+        pec_dofs = np.unique(field.tet_to_field[:, np.flatnonzero(cond[0,0,:] > self.settings.mw_2dbc_peclim)].flatten())
+        pec_ids_set.update(pec_dofs)
+        
+        return pec_ids_set, pec_tris
+
 
     def _assemble_robin_terms(
         self,
@@ -471,7 +501,6 @@ class Assembler:
         K0: float,
         robin_bcs: list[RobinBC],
         thin_conductor_bcs: list[ThinConductor],
-        pec_ids: set[int],
         force_callback=None,
     ) -> tuple[np.ndarray | None, np.ndarray | None, set[int]]:
         """Assembles the Robin-BC matrix contribution shared by all three
@@ -495,7 +524,7 @@ class Assembler:
         from .robin_abc_order2 import abc_order_2_matrix
 
         if len(robin_bcs) == 0:
-            return None, None, pec_ids
+            return None, None
 
         logger.debug(" - Assembling Robin Boundary Conditions.")
         B_matrix_robin = field.empty_tri_matrix()
@@ -506,10 +535,6 @@ class Assembler:
         for bc in robin_bcs:
             logger.trace(f"   - Implementing {bc}")
             tri_ids = mesh.get_triangles(bc.tags)
-
-            if isinstance(bc, (SurfaceImpedance, ThinConductor)):
-                dofs = set(field.tri_to_field[:, tri_ids].flatten())
-                pec_ids = pec_ids.difference(dofs)
 
             gamma = bc.get_gamma(K0)
             logger.trace(f"    - robin bc γ={gamma:.3f}")
@@ -529,7 +554,7 @@ class Assembler:
                 c2 = bc.get_abccorr(K0)
                 B_matrix_robin += abc_order_2_matrix(field, tri_ids, c2)
 
-        return B_matrix_robin, B_matrix_robin_2, pec_ids
+        return B_matrix_robin, B_matrix_robin_2
 
     def _assemble_periodic_terms(
         self, field: Nedelec2, mesh, K0: float, periodic_bcs: list[Periodic]
@@ -734,14 +759,14 @@ class Assembler:
         NF = field.n_field
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
-        conductor_tets = self._find_conductor_tets(cond, field.n_tets)
+        conductor_tets = self._find_conductor_tets(field, bcs, cond)
         logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
 
         full_caching = cache_matrices and not is_frequency_dependent
         if full_caching and self.cached_matrices is not None:
             logger.debug(" - Using cached matricies.")
-            Evec, Bvec = self.cached_matrices
-            K: csc_matrix = csc_axpy_same_pattern(Evec, Bvec, (-K0 ** 2))
+            Emat, Bmat = self.cached_matrices
+            K: csc_matrix = csc_axpy_same_pattern(Emat, Bmat, (-K0 ** 2))
         else:
             logger.debug(" - Calling matrix assembler...")
             t0 = time.time()
@@ -758,18 +783,17 @@ class Assembler:
                 self.cached_matrices = (self.cached_cscmap.to_csc(Evec), self.cached_cscmap.to_csc(Bvec))
 
         thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
-        pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         port_bcs: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
-
+        
         port_vectors: dict[int | float, np.ndarray] = {}
         for port in sorted(port_bcs, key=lambda x: x.port_number):
             for mat_index, mode_nr in port._iter_port_numbers():
                 port_vectors[mat_index] = np.zeros((NF,), dtype=np.complex128)
 
         logger.debug(" - Implementing PEC Boundary Conditions.")
-        pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, pec_bcs, conductor_tets)
+        pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
         def force_callback(bc, tri_ids):
             if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
@@ -779,13 +803,13 @@ class Assembler:
                 port_vectors[number] += b_p
                 logger.trace(f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}")
         
-        B_matrix_robin, B_matrix_robin_2, pec_ids = self._assemble_robin_terms(
-            field, mesh, K0, robin_bcs, thin_conductor_bcs, pec_ids, force_callback
+        B_matrix_robin, B_matrix_robin_2 = self._assemble_robin_terms(
+            field, mesh, K0, robin_bcs, thin_conductor_bcs, force_callback
         )
 
         if B_matrix_robin is not None:
-            add_coo_to_csc(K, B_matrix_robin, field._rows, field._cols)
-
+            #add_coo_to_csc(K, B_matrix_robin, field._rows, field._cols)
+            K += csc_matrix((B_matrix_robin, (field._rows, field._cols)), dtype=np.complex128, shape=K.shape)
             if B_matrix_robin_2 is not None:
                 logger.debug("    - Assembling opposite side matrix entries.")
                 rows, cols = field.empty_tri_rowcol(other_side=True)
@@ -806,10 +830,22 @@ class Assembler:
         logger.debug(f"  - Number of DoF: {K.shape[0]:,}")
         logger.debug(f"  - Number of non-zero: {K.nnz:,}")
 
-        #K.eliminate_zeros()
-        
+        if self.mldata_filename is not None:
+            from ....mldata import MLPreconData
+            if self.cached_matrices is not None:
+                Emat, Bmat = self.cached_matrices
+            else:
+                Emat = self.cached_cscmap.to_csc(Evec)
+                Bmat = self.cached_cscmap.to_csc(Bvec)
+
+            mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords())
+        else:
+            mldataset = None
+
+        #diagnose_matrix(K[solve_ids,:][:,solve_ids], field, solve_ids)
+
         simjob = SimJob(
-            K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic
+            K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic, mldataset=mldataset
         )
 
         simjob.solve_ids = solve_ids
@@ -854,7 +890,7 @@ class Assembler:
         NF = field.n_field
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
-        conductor_tets = self._find_conductor_tets(cond, field.n_tets)
+        conductor_tets = self._find_conductor_tets(field, bcs, cond)
 
         if cache_matrices and not is_frequency_dependent and self.cached_matrices is not None:
             logger.debug("Using cached matricies.")
@@ -877,7 +913,7 @@ class Assembler:
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
 
         logger.debug("Implementing PEC Boundary Conditions.")
-        pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, pec_bcs, conductor_tets)
+        pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
         background_fields: dict[tuple[float, float], np.ndarray] = {}
 
@@ -897,8 +933,8 @@ class Assembler:
                     background_fields[bf] = b_p
                 logger.debug(f".. Background field {bf} {np.linalg.norm(b_p):.3f}")
 
-        B_matrix_robin, B_matrix_robin_2, pec_ids = self._assemble_robin_terms(
-            field, mesh, K0, robin_bcs, thin_conductor_bcs, pec_ids, force_callback
+        B_matrix_robin, B_matrix_robin_2 = self._assemble_robin_terms(
+            field, mesh, K0, robin_bcs, thin_conductor_bcs, force_callback
         )
 
         if B_matrix_robin is not None:
@@ -970,7 +1006,7 @@ class Assembler:
         k0 = 2 * np.pi * frequency / C0
 
         er, ur, cond, _ = self._assemble_materials(mat_assy, field, frequency)
-        conductor_tets = self._find_conductor_tets(cond, field.n_tets)
+        conductor_tets = self._find_conductor_tets(field, bcs, cond)
 
         logger.debug("Assembling matrices")
         stiff, mass, cscmap = tet_mass_stiffness_matrices(field, er, ur, conductor_tets)
@@ -986,11 +1022,11 @@ class Assembler:
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
 
         logger.debug("Implementing PEC Boundary Conditions.")
-        pec_ids, _ = self._collect_pec_dofs(field, mesh, pec_bcs, conductor_tets)
+        pec_ids, _ = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
         # No force_callback: eigenmode assembly has no excitation vectors.
-        B_matrix_robin, B_matrix_robin_2, pec_ids = self._assemble_robin_terms(
-            field, mesh, k0, robin_bcs, thin_conductor_bcs, pec_ids, force_callback=None
+        B_matrix_robin, B_matrix_robin_2 = self._assemble_robin_terms(
+            field, mesh, k0, robin_bcs, thin_conductor_bcs, force_callback=None
         )
 
         if B_matrix_robin is not None:

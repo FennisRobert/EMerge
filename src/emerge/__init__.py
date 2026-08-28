@@ -79,7 +79,7 @@ from emsutil import EMergeTheme
 from emsutil import themes
 from emsutil.lib import C0, MU0, EPS0, Z0
 from ._emerge.elements.dofsets import ElementSpace, DoFSet
-from ._emerge.attributes import PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
+from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
 from . import optycal
 howto = _HowtoClass()
 

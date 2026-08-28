@@ -47,6 +47,7 @@ from .boundary_conditions import (
     ScatteredField,
     ThinConductor,
     RobinBC,
+    Void,
 )
 
 
@@ -77,6 +78,8 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
         self.WavePortIH: type[WavePortIH] = self._construct_bc(WavePortIH)
         self.ScatteredField: type[ScatteredField] = self._construct_bc(ScatteredField)
         self.ThinConductor: type[ThinConductor] = self._construct_bc(ThinConductor)
+
+        self.Void: type[Void] = self._construct_bc(Void)
         self._cell: PeriodicCell | None = None
 
     def get_conductors(self) -> list[BoundaryCondition]:

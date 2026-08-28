@@ -125,9 +125,10 @@ model.display.add_object(airbox)
 # Compute full 3D far-field (at the same frequency) and display |Erhcp|
 ff3d = data.field.find(freq=3.1e9).farfield_3d(abc_sel)
 model.display.add_farfield3d(ff3d, "Elhcp", "abs", rmax=L / 2, offset=(0, 0, L))
-model.display.add_particle_lines(
-    data.field.find(freq=3.1e9).trace_poynting_lines(seed_surface=port_sel, density='dense', ds_max = 0.0005, max_steps=500, verbose=True),
-    tube_radius=0.0001,
-    arrow_scale=0.0001)
+# model.display.add_particle_lines(
+#     data.field.find(freq=3.1e9).trace_poynting_lines(seed_surface=port_sel, density='dense', ds_max = 0.0005, max_steps=500, verbose=True),
+#     tube_radius=0.0001,
+#     arrow_scale=0.0001)
+model.display.animate().add_field(data.field.find(freq=3.1e9).grid(N=20_000).vector('E','complex'))
 # Show interactive 3D scene
 model.display.show()

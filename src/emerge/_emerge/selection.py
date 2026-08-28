@@ -442,7 +442,7 @@ class Selection(Saveable):
             include = [i1 for i1, i2 in zip(include, include2) if i1 and i2]
         self._tags = set([t for incl, t in zip(include, self._tags) if incl])
         return self
-
+        
     def isolate(
         self,
         xyz_excl_function: Callable = lambda x, y, z: True,

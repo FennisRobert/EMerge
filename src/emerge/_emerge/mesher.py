@@ -149,6 +149,7 @@ class Mesher:
         Args:
             objects (list[GeoObject]): The set of GeoObjects
         """
+
         if not isinstance(objects, list):
             objects = [
                 objects,
@@ -161,6 +162,7 @@ class Mesher:
         final_dimtags = unpack_lists([domain.dimtags for domain in objects])  # type: ignore
 
         dom_mapping = dict()
+
         for dom in objects:  # type: ignore
             embeddings.extend(dom._embeddings)  # type: ignore
             for dt in dom.dimtags:  # type: ignore
@@ -169,6 +171,7 @@ class Mesher:
         embedding_dimtags = unpack_lists([emb.dimtags for emb in embeddings])
 
         tag_mapping: dict[int, dict] = {0: dict(), 1: dict(), 2: dict(), 3: dict()}
+
         if len(objects) > 0:  # type: ignore
             dimtags, output_mapping = gmsh.model.occ.fragment(
                 final_dimtags, embedding_dimtags

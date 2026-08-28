@@ -34,11 +34,10 @@ from ....periodic import Periodic
 from ....elements.nedelec2 import Nedelec2
 from ....elements.nedleg2 import NedelecLegrange2
 from ....elements.dofsets import DoFSet
-from ....mth.csc_cast import CSCMapping
 from emsutil import Material
 from ....settings import Settings
 from scipy.sparse import csc_matrix
-from .matrix_add import add_coo_to_csc, csc_axpy_same_pattern
+from .matrix_add import build_positions, add_coo_to_csc_with_positions
 from loguru import logger
 from ..simjob import SimJob
 from ....const import EPS0, C0
@@ -397,12 +396,23 @@ class Assembler:
     def __init__(self, settings: Settings):
 
         self.cached_matrices = None
-        self.cached_cscmap: CSCMapping | None = None
         self.settings: Settings = settings
         self.SELECT_INDEX: int = None
         self._partitioned: bool = False
         self.mldata_filename: str | None = None
         self._surf_imp_conductivity_limit: float = 1e4
+
+        # Cached CSC sparsity layout (indices/indptr) + the position of each
+        # COO entry within it -- lets a full frequency sweep with a fixed
+        # mesh/BC topology scatter new values straight into a fixed layout
+        # (O(nnz), no sort) instead of rebuilding + sorting a fresh COO->CSC
+        # every frequency. Invalidated (_k_positions = None) any time the
+        # underlying (rows, cols) pattern might have changed.
+        self._k_indices: np.ndarray | None = None
+        self._k_indptr: np.ndarray | None = None
+        self._k_positions: np.ndarray | None = None
+        self._k_nnz: int = 0
+        self._k_N: int = 0
 
     # ------------------------------------------------------------------
     # Shared helpers (used by assemble_freq_matrix / assemble_scattering_matrix
@@ -633,6 +643,86 @@ class Assembler:
         return K, solve_ids
 
     # ------------------------------------------------------------------
+    # COO assembly helpers -- keep the tet-level and Robin-BC
+    # contributions as flat (data, rows, cols) triplets right up until a
+    # single final conversion to CSC, instead of building intermediate
+    # CSC objects and adding them together (a generic sparse+sparse add
+    # that has to merge two different sparsity patterns every time).
+    # ------------------------------------------------------------------
+
+    def _combine_robin_coo(
+        self,
+        field: Nedelec2,
+        tet_data: np.ndarray,
+        tet_rows: np.ndarray,
+        tet_cols: np.ndarray,
+        B_matrix_robin: np.ndarray | None,
+        B_matrix_robin_2: np.ndarray | None,
+        robin_scale: complex = 1.0,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Concatenates the tet-level COO triplet with the Robin-BC COO
+        values (main side and, for split thin-conductor DOFs, the opposite
+        side). Everything stays a flat COO array -- no CSC object exists
+        until the caller does the one final conversion.
+        """
+        if B_matrix_robin is None:
+            return tet_data, tet_rows, tet_cols
+
+        data_parts = [tet_data, B_matrix_robin * robin_scale]
+        rows_parts = [tet_rows, field._rows]
+        cols_parts = [tet_cols, field._cols]
+
+        if B_matrix_robin_2 is not None:
+            rows_os, cols_os = field.tri_rowcol_os()
+            data_parts.append(B_matrix_robin_2 * robin_scale)
+            rows_parts.append(rows_os)
+            cols_parts.append(cols_os)
+
+        return (
+            np.concatenate(data_parts),
+            np.concatenate(rows_parts),
+            np.concatenate(cols_parts),
+        )
+
+    def _build_csc(
+        self,
+        data: np.ndarray,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        N: int,
+        cacheable: bool,
+    ) -> csc_matrix:
+        """Converts one flat COO triplet to CSC.
+
+        When `cacheable` is True and a cached (indices, indptr, positions)
+        layout from a previous call is still valid (same mesh/BC topology
+        -- true for every frequency in a full_caching sweep), this scatters
+        the new COO values directly into that fixed layout: O(nnz), no
+        sort, no pattern merge. Otherwise (or on the first call) it builds
+        fresh via scipy's COO->CSC constructor -- which sums duplicate
+        (row, col) entries, exactly matching the old `K += csc_matrix(...)`
+        behavior -- and, if cacheable, remembers the layout for next time.
+        """
+        if cacheable and self._k_positions is not None and self._k_N == N:
+            csc_data = np.zeros(self._k_nnz, dtype=data.dtype)
+            K = csc_matrix((csc_data, self._k_indices, self._k_indptr), shape=(N, N), copy=False)
+            add_coo_to_csc_with_positions(K, data, self._k_positions)
+            return K
+
+        K = csc_matrix((data, (rows, cols)), shape=(N, N))
+        if cacheable:
+            # build_positions() may sort K's indices in place -- compute it
+            # first so the indices/indptr captured below are the final ones.
+            self._k_positions = build_positions(K, rows, cols)
+            self._k_indices = K.indices
+            self._k_indptr = K.indptr
+            self._k_nnz = K.data.shape[0]
+            self._k_N = N
+        else:
+            self._k_positions = None
+        return K
+
+    # ------------------------------------------------------------------
     # Boundary mode analysis (unchanged -- different field type / shape,
     # does not share the Robin/periodic/PEC pattern above)
     # ------------------------------------------------------------------
@@ -765,22 +855,18 @@ class Assembler:
         full_caching = cache_matrices and not is_frequency_dependent
         if full_caching and self.cached_matrices is not None:
             logger.debug(" - Using cached matricies.")
-            Emat, Bmat = self.cached_matrices
-            K: csc_matrix = csc_axpy_same_pattern(Emat, Bmat, (-K0 ** 2))
+            Evec, Bvec, tet_rows, tet_cols = self.cached_matrices
         else:
             logger.debug(" - Calling matrix assembler...")
             t0 = time.time()
-            Evec, Bvec, cscmap = tet_mass_stiffness_matrices(
-                field, er, ur, conductor_tets, self.cached_cscmap
-            )
+            Evec, Bvec, tet_rows, tet_cols = tet_mass_stiffness_matrices(field, er, ur, conductor_tets)
             t1 = time.time()
             logger.debug(f' - Assembly speed: {(field.ntets - len(conductor_tets)) / (t1 - t0):.1f} tets/s')
-            self.cached_cscmap = cscmap
-
-            K: csc_matrix = self.cached_cscmap.to_csc(Evec - Bvec * (K0 ** 2))
-
             if full_caching:
-                self.cached_matrices = (self.cached_cscmap.to_csc(Evec), self.cached_cscmap.to_csc(Bvec))
+                self.cached_matrices = (Evec, Bvec, tet_rows, tet_cols)
+            # The mesh/BC topology behind this pattern just changed -- any
+            # previously cached CSC scatter layout is now stale.
+            self._k_positions = None
 
         thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
@@ -806,14 +892,13 @@ class Assembler:
         B_matrix_robin, B_matrix_robin_2 = self._assemble_robin_terms(
             field, mesh, K0, robin_bcs, thin_conductor_bcs, force_callback
         )
+        if B_matrix_robin_2 is not None:
+            logger.debug("    - Assembling opposite side matrix entries.")
 
-        if B_matrix_robin is not None:
-            #add_coo_to_csc(K, B_matrix_robin, field._rows, field._cols)
-            K += csc_matrix((B_matrix_robin, (field._rows, field._cols)), dtype=np.complex128, shape=K.shape)
-            if B_matrix_robin_2 is not None:
-                logger.debug("    - Assembling opposite side matrix entries.")
-                rows, cols = field.empty_tri_rowcol(other_side=True)
-                K += field.generate_csc(B_matrix_robin_2, (rows, cols))
+        data, rows, cols = self._combine_robin_coo(
+            field, Evec - Bvec * (K0 ** 2), tet_rows, tet_cols, B_matrix_robin, B_matrix_robin_2
+        )
+        K: csc_matrix = self._build_csc(data, rows, cols, NF, cacheable=full_caching)
 
         if len(periodic_bcs) > 0:
             logger.debug("  - Implementing Periodic Boundary Conditions.")
@@ -832,11 +917,8 @@ class Assembler:
 
         if self.mldata_filename is not None:
             from ....mldata import MLPreconData
-            if self.cached_matrices is not None:
-                Emat, Bmat = self.cached_matrices
-            else:
-                Emat = self.cached_cscmap.to_csc(Evec)
-                Bmat = self.cached_cscmap.to_csc(Bvec)
+            Emat = csc_matrix((Evec, (tet_rows, tet_cols)), shape=(NF, NF))
+            Bmat = csc_matrix((Bvec, (tet_rows, tet_cols)), shape=(NF, NF))
 
             mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords())
         else:
@@ -892,20 +974,18 @@ class Assembler:
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
 
-        if cache_matrices and not is_frequency_dependent and self.cached_matrices is not None:
+        full_caching = cache_matrices and not is_frequency_dependent
+        if full_caching and self.cached_matrices is not None:
             logger.debug("Using cached matricies.")
-            matrix_stiff_coo, matrix_mass_coo = self.cached_matrices
+            matrix_stiff_coo, matrix_mass_coo, tet_rows, tet_cols = self.cached_matrices
         else:
             logger.debug("Assembling matrices")
-            matrix_stiff_coo, matrix_mass_coo, cscmap = tet_mass_stiffness_matrices(
-                field, er, ur, conductor_tets, self.cached_cscmap
+            matrix_stiff_coo, matrix_mass_coo, tet_rows, tet_cols = tet_mass_stiffness_matrices(
+                field, er, ur, conductor_tets
             )
-            self.cached_cscmap = cscmap
-            self.cached_matrices = (matrix_stiff_coo, matrix_mass_coo)
-
-        matrix_fem: csc_matrix = self.cached_cscmap.to_csc(
-            matrix_stiff_coo - matrix_mass_coo * (K0 ** 2)
-        )
+            if full_caching:
+                self.cached_matrices = (matrix_stiff_coo, matrix_mass_coo, tet_rows, tet_cols)
+            self._k_positions = None
 
         thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
         pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
@@ -936,14 +1016,14 @@ class Assembler:
         B_matrix_robin, B_matrix_robin_2 = self._assemble_robin_terms(
             field, mesh, K0, robin_bcs, thin_conductor_bcs, force_callback
         )
+        if B_matrix_robin_2 is not None:
+            logger.debug("Assembling opposite side matrix entries.")
 
-        if B_matrix_robin is not None:
-            matrix_fem += field.generate_csc(B_matrix_robin)
-
-            if B_matrix_robin_2 is not None:
-                logger.debug("Assembling opposite side matrix entries.")
-                rows, cols = field.empty_tri_rowcol(other_side=True)
-                matrix_fem += field.generate_csc(B_matrix_robin_2, (rows, cols))
+        data, rows, cols = self._combine_robin_coo(
+            field, matrix_stiff_coo - matrix_mass_coo * (K0 ** 2), tet_rows, tet_cols,
+            B_matrix_robin, B_matrix_robin_2
+        )
+        matrix_fem: csc_matrix = self._build_csc(data, rows, cols, NF, cacheable=full_caching)
 
         if len(periodic_bcs) > 0:
             logger.debug("Implementing Periodic Boundary Conditions.")
@@ -1009,12 +1089,9 @@ class Assembler:
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
 
         logger.debug("Assembling matrices")
-        stiff, mass, cscmap = tet_mass_stiffness_matrices(field, er, ur, conductor_tets)
-        matrix_stiff = cscmap.to_csc(stiff)
-        matrix_mass = cscmap.to_csc(mass)
-        self.cached_matrices = (matrix_stiff, matrix_mass)
+        stiff, mass, tet_rows, tet_cols = tet_mass_stiffness_matrices(field, er, ur, conductor_tets)
 
-        NDoF = matrix_stiff.shape[0]
+        NDoF = field.n_field
 
         thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
         pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
@@ -1028,13 +1105,19 @@ class Assembler:
         B_matrix_robin, B_matrix_robin_2 = self._assemble_robin_terms(
             field, mesh, k0, robin_bcs, thin_conductor_bcs, force_callback=None
         )
+        if B_matrix_robin_2 is not None:
+            logger.debug("Assembling opposite side matrix entries.")
 
-        if B_matrix_robin is not None:
-            matrix_mass -= field.generate_csc(B_matrix_robin) / (k0 ** 2)
-            if B_matrix_robin_2 is not None:
-                logger.debug("Assembling opposite side matrix entries.")
-                rows, cols = field.empty_tri_rowcol(other_side=True)
-                matrix_mass -= field.generate_csc(B_matrix_robin_2, (rows, cols)) / (k0 ** 2)
+        # Robin's matrix term folds into the MASS matrix here, subtracted
+        # and scaled by 1/k0**2 -- fold that into the COO values directly
+        # rather than building a separate CSC term to subtract afterward.
+        mass_data, mass_rows, mass_cols = self._combine_robin_coo(
+            field, mass, tet_rows, tet_cols, B_matrix_robin, B_matrix_robin_2,
+            robin_scale=-1.0 / (k0 ** 2),
+        )
+        matrix_stiff = csc_matrix((stiff, (tet_rows, tet_cols)), shape=(NDoF, NDoF))
+        matrix_mass = csc_matrix((mass_data, (mass_rows, mass_cols)), shape=(NDoF, NDoF))
+        self.cached_matrices = (matrix_stiff, matrix_mass)
 
         if len(periodic_bcs) > 0:
             logger.debug("Implementing Periodic Boundary Conditions.")

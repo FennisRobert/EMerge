@@ -464,18 +464,17 @@ class Microwave3D(GenericPhysics3D):
             logger.info('Clearning Microwave boundaryconditions.')
             self.bc = MWBoundaryConditionSet(None)
             self._default_bcs_initialized = False
-            self._bc_data_initialized = False
         else:
             logger.info('Reset boundary condition states.')
             for bc in self.bc.oftype(ModalPort):
                 bc.reset()
 
+        self._bc_data_initialized = False
         self.mat_assy = None
-
         self.basis: FEMBasis = None
         self.solveroutine.reset()
         self.assembler.cached_matrices = None
-        self.assembler.cached_cscmap = None
+        self.assembler._k_positions = None
 
     @property
     def nports(self) -> int:

@@ -21,7 +21,6 @@ from ..mesh3d import Mesh3D
 import numpy as np
 from typing import Callable
 from emsutil import Saveable
-from scipy.sparse import csc_matrix  # type: ignore
 
 class FEMBasis(Saveable):
     def __init__(self, mesh: Mesh3D):
@@ -43,7 +42,6 @@ class FEMBasis(Saveable):
 
         self._rows: np.ndarray = np.array([])
         self._cols: np.ndarray = np.array([])
-        self._cached_csc_ids = None
 
     def empty_tet_matrix(self) -> np.ndarray:
         nnz = self.n_tets * self.n_tet_dofs**2
@@ -83,22 +81,6 @@ class FEMBasis(Saveable):
     def trislice(self, itri: int) -> slice:
         N = self.n_tri_dofs**2
         return slice(itri * N, (itri + 1) * N)
-
-    def generate_csc(
-        self, data: np.ndarray, rowcol: tuple[np.ndarray, np.ndarray] | None = None
-    ):
-        if rowcol is None:
-            rows, cols = self._rows, self._cols
-        else:
-            rows, cols = rowcol
-
-        if self._cached_csc_ids is None:
-            self._cached_csc_ids = np.argwhere(data != 0)[:, 0]
-
-        return csc_matrix(
-            (data[self._cached_csc_ids], (rows[self._cached_csc_ids], cols[self._cached_csc_ids])),
-            shape=(self.n_field, self.n_field),
-        )
 
     ############################################################
     #                         INTERPOLATORS                    #

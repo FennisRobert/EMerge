@@ -20,15 +20,11 @@ from __future__ import annotations
 import numpy as np
 from ....elements import Nedelec2
 from ....mth.optimized import local_mapping, matinv
-from ....mth.csc_cast import CSCMapping
-from ....mth.csr_cast import CSRMapping
 from ....compiled.ccbf import (
     _eval_f_3d, _eval_curl_f_3d, parse_dofcode
 )
 from numba import c16, types, f8, i8, njit, prange, void
-from time import time
 from loguru import logger
-import time
 
 # Toggle this to True when you want to use standard Python breakpoints
 # DEBUG_MODE = False
@@ -224,9 +220,8 @@ def tet_mass_stiffness_matrices(
     er: np.ndarray,
     ur: np.ndarray,
     conductor_tets: np.ndarray,
-    cscmap: CSRMapping | None = None,
-) -> tuple[np.ndarray, np.ndarray, CSRMapping]:
-    """Computes the curl-curl Nedelec-2 mass and stiffness matrices
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Computes the curl-curl Nedelec-2 mass and stiffness matrices in raw COO form.
 
     Args:
         field (Nedelec2): The Nedelec2 Field object
@@ -234,7 +229,7 @@ def tet_mass_stiffness_matrices(
         ur (np.ndarray): a 3x3xN array with permeability tensors
 
     Returns:
-        tuple[csr_matrix, csr_matrix]: The stiffness and mass matrix.
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: dataE, dataB, rows, cols
     """
     tets = field.mesh.tets
     tris = field.mesh.tris
@@ -248,7 +243,6 @@ def tet_mass_stiffness_matrices(
     tet_assy = np.arange(tets.shape[1])
     if conductor_tets.shape[0] > 0:
         tet_assy = np.delete(tet_assy, conductor_tets)
-    #t0 = time.time()
     dataE, dataB, rows, cols = _matrix_builder(
         nodes,
         tets,
@@ -262,12 +256,7 @@ def tet_mass_stiffness_matrices(
         tet_assy,
         field.dofcodes3d,
     )
-    t1 = time.time()
-    #logger.debug(f' - Assembly speed: {(field.ntets -len(conductor_tets))/(t1-t0):.1f} tets/s')
-
-    if cscmap is None:
-        cscmap = CSCMapping.from_rowcol(rows, cols, field.n_field)
-    return dataE, dataB, cscmap
+    return dataE, dataB, rows, cols
 
 
 def tet_mass_stiffness_matrices_subdom(
@@ -276,9 +265,8 @@ def tet_mass_stiffness_matrices_subdom(
     ur: np.ndarray,
     domain_tets: np.ndarray,
     conductor_tets: np.ndarray,
-    cscmap: CSRMapping | None = None,
-) -> tuple[np.ndarray, np.ndarray, CSRMapping]:
-    """Computes the curl-curl Nedelec-2 mass and stiffness matrices
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Computes the curl-curl Nedelec-2 mass and stiffness matrices in raw COO form.
 
     Args:
         field (Nedelec2): The Nedelec2 Field object
@@ -286,7 +274,7 @@ def tet_mass_stiffness_matrices_subdom(
         ur (np.ndarray): a 3x3xN array with permeability tensors
 
     Returns:
-        tuple[csr_matrix, csr_matrix]: The stiffness and mass matrix.
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: dataE, dataB, rows, cols
     """
     tets = field.mesh.tets
     tris = field.mesh.tris
@@ -315,12 +303,7 @@ def tet_mass_stiffness_matrices_subdom(
         tet_assy,
         field.dofcodes3d,
     )
-    t1 = time.time()
-    #logger.debug(f' - Assembly speed: {(field.ntets -len(conductor_tets))/(t1-t0):.1f} tets/s')
-
-    if cscmap is None:
-        cscmap = CSCMapping.from_rowcol(rows, cols, field.n_field)
-    return dataE, dataB, cscmap
+    return dataE, dataB, rows, cols
 
 
 ############################################################

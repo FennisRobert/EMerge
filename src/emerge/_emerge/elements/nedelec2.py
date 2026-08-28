@@ -98,7 +98,19 @@ class Nedelec2(FEMBasis, Saveable):
         rows, cols = self.empty_tri_rowcol()
         self._rows = rows
         self._cols = cols
-        
+
+        self._rows_os: np.ndarray | None = None
+        self._cols_os: np.ndarray | None = None
+
+    def tri_rowcol_os(self) -> tuple[np.ndarray, np.ndarray]:
+        """Cached (row, col) COO pattern for the opposite-side tri DOFs
+        (field.tri_to_field_os, populated by partition_dof). Computed once
+        and reused -- the pattern is fixed for the lifetime of this field.
+        """
+        if self._rows_os is None:
+            self._rows_os, self._cols_os = self.empty_tri_rowcol(other_side=True)
+        return self._rows_os, self._cols_os
+
     def compute_global_dofcodes(self) -> np.ndarray:
         """Expand `field.dofcodes3d` (fixed-length, one entry per local basis-
         function slot of a single tet, identical for every tet of this element

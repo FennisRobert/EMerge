@@ -32,10 +32,9 @@ from ..heatconduction_bc import (
 )
 from ...material_assignment import MaterialAssignment
 from ....elements.leg2 import Legrange2
-from ....mth.csc_cast import CSCMapping
 from emsutil import Material
 from ....settings import Settings
-from scipy.sparse import coo_matrix
+from scipy.sparse import csc_matrix
 from loguru import logger
 from ..simjob import SimJob
 from typing import TypeVar
@@ -61,7 +60,6 @@ class Assembler:
     def __init__(self, settings: Settings):
 
         self.cached_matrices = None
-        self.cached_cscmap: CSCMapping | None = None
         self.settings: Settings = settings
         self.SELECT_INDEX: int = None
         self._partitioned: bool = False
@@ -120,15 +118,19 @@ class Assembler:
         #                     MATRIX ASSEMBLY                      #
         ############################################################
 
-        # --- Stiffness Matrix
-        Amat_coo, cscmap = tet_stiffness_matrix(field, cond_thermal)
-        Amat = cscmap.to_csc(Amat_coo)
+        # --- Stiffness Matrix (kept as flat COO parts; BC contributions
+        # below are appended to the same lists and converted to CSC once,
+        # at the end, instead of building/adding a CSC term per BC).
+        Amat_data, Amat_rows, Amat_cols = tet_stiffness_matrix(field, cond_thermal)
+        data_parts = [Amat_data]
+        rows_parts = [Amat_rows]
+        cols_parts = [Amat_cols]
 
         # --- Mass Matrix
         Bmat = None
         if transient:
-            Bmat_coo, cscmap = tet_mass_matrix(field, density * specific_heat)
-            Bmat = cscmap.to_csc(Bmat_coo)
+            Bmat_data, Bmat_rows, Bmat_cols = tet_mass_matrix(field, density * specific_heat)
+            Bmat = csc_matrix((Bmat_data, (Bmat_rows, Bmat_cols)), shape=(NF, NF))
 
         # --- Forcing vector
         bvec = np.zeros((NF,), dtype=np.float64)
@@ -219,8 +221,9 @@ class Assembler:
             logger.debug(f"Implementing: {bc}")
 
             Kval, Krows, Kcols, out = assemble_robin_bc(field, bc.tags, bc.h, bc.Tamb)
-            K_robin = coo_matrix((Kval, (Krows, Kcols)), shape=Amat.shape).tocsc()
-            Amat = Amat + K_robin
+            data_parts.append(Kval)
+            rows_parts.append(Krows)
+            cols_parts.append(Kcols)
             bvec += out
 
         # --- Black body radiation
@@ -229,17 +232,18 @@ class Assembler:
             Kval, Krows, Kcols, out = assemble_radiation_bc(
                 field, bc.tags, bc.emissivity, bc.Tamb, Tvec
             )
-            K_robin = coo_matrix((Kval, (Krows, Kcols)), shape=Amat.shape).tocsc()
-            Amat = Amat + K_robin
+            data_parts.append(Kval)
+            rows_parts.append(Krows)
+            cols_parts.append(Kcols)
             bvec += out
 
         # --- Thermal Contact
         for bc in thermal_contact:
             logger.debug(f"Implementing: {bc}")
             Kval, Krows, Kcols = assemble_thermal_contact(field, bc.tags, bc.h)
-
-            A_contact = coo_matrix((Kval, (Krows, Kcols)), shape=Amat.shape).tocsc()
-            Amat = Amat + A_contact
+            data_parts.append(Kval)
+            rows_parts.append(Krows)
+            cols_parts.append(Kcols)
 
         # --- Thin Conductor
         for bc in thinconductor:
@@ -248,8 +252,17 @@ class Assembler:
             kappa_t = bc.get_kappa()
 
             Kval, Krows, Kcols = assemble_conductive_sheet(field, bc.tags, kappa_t)
-            K_robin = coo_matrix((Kval, (Krows, Kcols)), shape=Amat.shape).tocsc()
-            Amat = Amat + K_robin
+            data_parts.append(Kval)
+            rows_parts.append(Krows)
+            cols_parts.append(Kcols)
+
+        # --- Finalize A matrix: one COO->CSC conversion covering the base
+        # stiffness matrix plus every boundary condition's contribution
+        # (scipy sums duplicate (row, col) entries automatically).
+        Amat = csc_matrix(
+            (np.concatenate(data_parts), (np.concatenate(rows_parts), np.concatenate(cols_parts))),
+            shape=(NF, NF),
+        )
 
         # --- Finalize
         if len(prescribed) > 0:

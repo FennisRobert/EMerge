@@ -274,11 +274,12 @@ class CNOSDDAssembler:
         dof_per_subdomain: dict[int, np.ndarray] = {}
 
         for i, tets in domain_tets.items():
-            Evec, Bvec, cscmap = mass_stiffness_fn(field, er, ur, tets, conductor_tets, None)
+            Evec, Bvec, rows, cols = mass_stiffness_fn(field, er, ur, tets, conductor_tets)
             D_s = np.sort(np.unique(field.tet_to_field[:, tets]))
             dof_per_subdomain[i] = D_s
             Rsd[i] = generate_reduction_matrix(dof_all, D_s)
-            As[i] = cscmap.to_csc(Evec - Bvec * (K0 ** 2))[D_s, :][:, D_s]
+            A_full = csc_matrix((Evec - Bvec * (K0 ** 2), (rows, cols)), shape=(field.n_field, field.n_field))
+            As[i] = A_full[D_s, :][:, D_s]
             logger.debug(f' - Domain {i}: Rs.shape={Rsd[i].shape}, A.shape={As[i].shape}')
 
         return Rsd, As, dof_per_subdomain

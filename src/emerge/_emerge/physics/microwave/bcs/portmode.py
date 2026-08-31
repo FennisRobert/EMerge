@@ -57,9 +57,9 @@ class PortMode(Saveable):
 
         efunc = self.E_function
         gamma_m = 1j * self.beta
-        print(
-            f"Computing Kappa for mode k0={self.k0:.3f} and beta={self.beta:.3f}, norm_factor = {self.norm_factor:.3f}"
-        )
+        # print(
+        #     f"Computing Kappa for mode k0={self.k0:.3f} and beta={self.beta:.3f}, norm_factor = {self.norm_factor:.3f}"
+        # )
 
         def integrand(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
             Etm = efunc.calcExy(xs, ys, zs)

@@ -689,6 +689,38 @@ class WavePortIH(ModalPort, Saveable):
         self.voltage_integration_line: list[Line] = []
         self.current_integration_line: list[Line] = []
 
+    def get_Uinc(
+        self,
+        x_global: np.ndarray,
+        y_global: np.ndarray,
+        z_global: np.ndarray,
+        k0: float,
+        mode_nr: int = 1,
+    ) -> np.ndarray:
+        """Excitation field for the WPBC, transverse-only (E_z excluded).
+
+        The dense WPBC matrix term (assemble_wpbc) is built from mprof =
+        gamma*Et - grad(Ez), so it explicitly includes the mode's E_z
+        content. The generic PortBC.get_Uinc pulls the full field (which
+        also carries E_z) and relies on E_z projecting cleanly onto the
+        discarded local-normal component during triangle-local-frame
+        assembly -- an assumption that isn't safe to rely on. Requesting
+        the Exy-only field here removes that assumption for the excitation
+        vector specifically, matching assemble_wpbc's own G_xy/bvec2 (the
+        normal path -- assembler.py routes the matrix's own precomputed
+        bvec2 into the excitation directly and never actually calls this;
+        it's kept as a correct fallback for whenever that doesn't apply,
+        e.g. bc._assemble_matrix=False or a PML-backed WPBC).
+        """
+        return (
+            -2
+            * 1j
+            * self.get_beta(k0)
+            * self.port_mode_3d_global(
+                x_global, y_global, z_global, k0, which="Exy", mode_nr=mode_nr
+            )
+        )
+
     def get_modepf_kappa(
         self, k0: float, nodes: np.ndarray, tris: np.ndarray
     ) -> tuple[Callable, complex]:

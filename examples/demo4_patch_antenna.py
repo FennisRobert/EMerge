@@ -1,5 +1,3 @@
-from emerge_config import config
-config.set_acc_threads(10)
 import emerge as em
 import numpy as np
 from emerge.plot import plot_sp, smith, plot_ff_polar, plot_ff
@@ -36,7 +34,7 @@ f1 = 1.545e9  # start frequency
 f2 = 1.605e9  # stop frequency
 
 # --- Create simulation object -------------------------------------------
-model = em.Simulation("PatchAntenna", loglevel='INFO', write_log=True)
+model = em.Simulation("PatchAntenna")
 model.check_version("3.0.0")  # Checks version compatibility.
 
 # --- Define geometry primitives -----------------------------------------

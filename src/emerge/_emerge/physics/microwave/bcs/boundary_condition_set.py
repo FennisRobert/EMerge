@@ -131,7 +131,17 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
             if bc.port_number == port_number:
                 return bc
         return None
-    
+
+    def get_ports(self) -> tuple[PortBC]:
+        """Returns a tuple of all port boundary conditions
+
+        Returns:
+            tuple[PortBC]: _description_
+        """
+        ports = [bc for bc in self.oftype(PortBC)]
+        ports = sorted(ports, key=lambda x: x.port_number)
+        return ports
+
     def floquet_port(self, poly: GeoSurface, port_number: int) -> FloquetPort:
         if self._cell is None:
             raise ValueError("Periodic cel must be defined for this simulation.")

@@ -77,14 +77,14 @@ feed, slot, stub = pcb.compile_paths()
 pcb.determine_bounds(20, 20, 0, 0)
 
 # We add a ground plane on the bottom.
-ground = pcb.plane(pcb.z(0))
+ground = pcb.plane(0)
 
 # We remove the slot line and circle from the ground plane
 em.geo.subtract(ground, em.geo.unite(slot, disc))
 
 # We add two modal port surfaces at the nodes p1 and p2
-mp1 = pcb.modal_port(pcb.load("p1"), 1, 5.0)
-mp2 = pcb.modal_port(pcb.load("p2"), 2, height=(5.0, 5.0), width_multiplier=15)  # Wthe slot port width is 15 times the slot width.
+mp1 = pcb.modal_port("p1", 1, 5.0)
+mp2 = pcb.modal_port("p2", 2, height=(5.0, 5.0), width_multiplier=15)  # Wthe slot port width is 15 times the slot width.
 
 # Finally we generate the PCB, top air and bottom air.
 diel = pcb.generate_pcb()
@@ -110,8 +110,8 @@ model.view(plot_mesh=True)
 #                    BOUNDARY CONDITIONS                   #
 ############################################################
 
-p1 = model.mw.bc.get_port(1)
-p2 = model.mw.bc.get_port(2)
+# In 3.0, ports a configured automatically after calling .commit_geometry(). Here we just extract the created ports.
+p1, p2 = model.mw.bc.get_ports()
 
 p2.align_modes(em.YAX)
 
@@ -137,7 +137,7 @@ model.adaptive_mesh_refinement(max_steps=8, frequency=5.5e9)
 model.view(plot_mesh=True, volume_mesh=False)
 
 # Finally we start our solve with 4 parallel workers
-data = model.mw.run_sweep(True, n_workers=4)
+data = model.mw.run_sweep()
 
 
 ############################################################

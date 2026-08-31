@@ -140,7 +140,7 @@ port = pcbl.lumped_port(pcbl.load("pin"), 1)
 # We manually define the X,Y bounds of the PCB because the vivaldi taper is not part of our PCB itself.
 pcbl.set_bounds(xmin=-25, xmax=70, ymin=-30, ymax=30)
 pcb = pcbl.generate_pcb()  # we generate the PCB delectricum
-ground = pcbl.plane(-th)  # And ground
+ground = pcbl.plane(0)  # And ground
 
 model.view(use_gmsh=True)
 

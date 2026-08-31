@@ -233,7 +233,13 @@ class BoundaryConditionSet(Saveable):
                         logger.debug(f'Removed the {excluded} tags from object with dimension {bc.dim} BC {existing_bc}')
                 else:
                     bc.exclude_bc(existing_bc)
-        logger.info(f'Adding {type(bc).__name__} to domain tags {bc.tags}(dim = {bc.dim})')
+        dname = {
+            0: 'point',
+            1: 'edge',
+            2: 'surface',
+            3: 'domain',
+        }
+        logger.info(f'Adding {type(bc).__name__} to {dname[bc.dim]} tags {bc.tags}(dim = {bc.dim})')
         self._overwrite = True
         self.boundary_conditions.append(bc)
 

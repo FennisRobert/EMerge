@@ -82,6 +82,7 @@ from ._emerge.elements.dofsets import ElementSpace, DoFSet
 from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
 from . import optycal
 
+
 howto = _HowtoClass()
 
 from ._emerge.install_check import run_installation_checks

@@ -42,7 +42,7 @@ pcb.new(0, 0, w0, (1, 0), 1)["p1"].straight(10)\
     .straight(10)\
     .turn(90)\
     .straight(10)["p2"]
-
+pcb.add_vias()
 # Notice the champher corner type. This champher minimizes reflections when going around the corner.
 
 # As usual we compile the traces as a merger of polygons

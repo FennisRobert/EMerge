@@ -112,7 +112,7 @@ class Simulation:
         save_file: bool = False,
         write_log: bool = False,
         path_suffix: str = ".EMResults",
-        store_system: Literal["msgpack", "joblib"] = "joblib",
+        store_system: Literal["msgpack", "joblib"] = "msgpack",
     ):
         """Generate a Simulation class object.
 

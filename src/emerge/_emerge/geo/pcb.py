@@ -1629,6 +1629,10 @@ class PCB:
         self.stored_striplines: dict[str, RouteElement] = dict()
         self._checkpoint: list[StripPath] = []
 
+        self.board_outline_xs: list[float] | None = None
+        self.board_outline_ys: list[float] | None = None
+        
+        
         self.calc: PCBCalculator = PCBCalculator(
             self._zs, [layer.mat for layer in self._stack], self.unit
         )
@@ -1750,6 +1754,7 @@ class PCB:
             )
             ptags.append(gmsh.model.occ.addPoint(px, py, pz))
             self._embedded_points.append((px,py,pz))
+        
         ltags = []
         for t1, t2 in zip(ptags[:-1], ptags[1:]):
             ltags.append(gmsh.model.occ.addLine(t1, t2))
@@ -1929,6 +1934,13 @@ class PCB:
         self.length = maxy - miny + mt + mb
         self.origin = np.array([-ml + minx, -mb + miny, 0])
 
+        # Record the equivalent rectangular outline as a polygon so that
+        # generate_pcb() has a single, uniform representation to extrude,
+        # whether the board is rectangular or a custom shape.
+        ox, oy = self.origin[0], self.origin[1]
+        self.board_outline_xs = [ox, ox + self.width, ox + self.width, ox]
+        self.board_outline_ys = [oy, oy, oy + self.length, oy + self.length]
+
     def set_bounds(self, xmin: float, ymin: float, xmax: float, ymax: float) -> None:
         """Define the bounds of the PCB
 
@@ -1942,79 +1954,95 @@ class PCB:
         self.width = xmax - xmin
         self.length = ymax - ymin
 
+        self.board_outline_xs = [xmin, xmax, xmax, xmin]
+        self.board_outline_ys = [ymin, ymin, ymax, ymax]
+
+    def set_board_outline(self, xs: list[float], ys: list[float]) -> None:
+        """Define a custom (non-rectangular) board outline polygon.
+
+        This overrides whatever rectangle determine_bounds() or set_bounds()
+        would otherwise produce. The bounding box (self.width, self.length,
+        self.origin) is still kept in sync, since plane() and generate_air()
+        rely on it for their default rectangular sizing.
+
+        Args:
+            xs (list[float]): The outline x-coordinates, in order, open (not repeating the first point).
+            ys (list[float]): The outline y-coordinates, in order, open (not repeating the first point).
+        """
+        if len(xs) != len(ys):
+            raise ValueError(
+                "xs and ys must be the same length to define a board outline polygon."
+            )
+        if len(xs) < 3:
+            raise ValueError("A board outline polygon requires at least 3 points.")
+
+        self.board_outline_xs = list(xs)
+        self.board_outline_ys = list(ys)
+
+        minx, maxx = min(xs), max(xs)
+        miny, maxy = min(ys), max(ys)
+        self.width = maxx - minx
+        self.length = maxy - miny
+        self.origin = np.array([minx, miny, 0.0])
+        
     def plane(
         self,
-        z: float,
+        layer: int,
         width: float | None = None,
         height: float | None = None,
         origin: tuple[float, float] | Anchor | None = None,
         alignment: Alignment = Alignment.CORNER,
         material: Material | None = None,
-        name: str | None = None,
+        name: str | None = "Plane",
     ) -> GeoSurface | GeoVolume:
         """Generates a generic rectangular plate in the XY grid.
         If no size is provided, it defaults to the entire PCB size assuming that the bounds are determined.
 
         Args:
-            z (float): The Z-height for the plate.
+            layer (int): The Layer at which to place the plane object
             width (float, optional): The width of the plate. Defaults to None.
             height (float, optional): The height of the plate. Defaults to None.
             origin (tuple[float, float], optional): The origin of the plate. Defaults to None.
-            alignment (['corner','center], optional): The alignment of the plate. Defaults to 'corner'.
+            alignment (['corner','center'], optional): The alignment of the plate. Defaults to 'corner'.
             material (Material, optional): The optional plane material. Defaults to the trace material specified.
         Returns:
             GeoSurface: The resultant GeoSurface of the plane
         """
-        if width is not None and height is not None:
-            self.xs.append(origin[0] / self.unit)
-            self.xs.append(origin[0] / self.unit + width)
-            self.ys.append(origin[1] / self.unit)
-            self.ys.append(origin[1] / self.unit + height)
-
         if width is None or height is None or origin is None:
             if self.width is None or self.length is None or self.origin is None:
                 raise RouteException(
                     "Cannot define a plane with no possible definition of its size."
                 )
-            width = self.width
-            height = self.length
-            origin = (self.origin[0], self.origin[1])
+            width = width if width is not None else self.width
+            height = height if height is not None else self.length
+            origin = origin if origin is not None else (self.origin[0], self.origin[1])
 
         if material is None:
             material = self.trace_material
 
-        origin = tuple(_parse_vector(origin))
-        origin: tuple[float, ...] = origin + (z,)  # type: ignore
-        origin = tuple([param*self.unit for param in origin])
+        origin_parsed = tuple(_parse_vector(origin))
+        ox, oy = origin_parsed[0], origin_parsed[1]
+
         if alignment is Alignment.CENTER:
-            origin = (
-                origin[0] - width * self.unit / 2,
-                origin[1] - height * self.unit / 2,
-                origin[2],
-            )
+            ox -= width / 2
+            oy -= height / 2
 
-        if self._thick_traces:
-            plane = Box(
-                width * self.unit,
-                height * self.unit,
-                self.trace_thickness,
-                position=origin,
-                name=name,
-            ).set_material(material)
-        else:
-            plane = Plate(
-                origin, (width * self.unit, 0, 0), (0, height * self.unit, 0), name=name
-            )  # type: ignore
-            plane.properties += FiniteThickness(self.thickness) + material
-            plane = change_coordinate_system(plane, self.cs)  # type: ignore
-
+        # Track bounding coordinates in raw (user-facing) units
+        self.xs.extend([ox, ox + width])
+        self.ys.extend([oy, oy + height])
+        
+        xys = [(ox, oy),(ox, oy+height), (ox+width, oy+height), (ox+width, oy)]
+        
+        plane_obj = self._gen_poly(xys, layer, name)
+        plane_obj = change_coordinate_system(plane_obj, self.cs)
+        
         # subtract via holes:
         holes = []
         for via_hole in self.via_holes:
             holes.append(self._gen_poly(via_hole.xys, via_hole.layer, name=via_hole.name))
         if len(holes) > 0:
-            plane = remove(plane, unite(*holes))
-        return plane  # type: ignore
+            plane_obj = remove(plane_obj, unite(*holes))
+        return plane_obj  # type: ignore
 
     def radial_stub(
         self,
@@ -2079,22 +2107,19 @@ class PCB:
 
         n_materials = len(set([id(layer.mat) for layer in self._stack]))
 
+        bxs = [x*self.unit for x in self.board_outline_xs]
+        bys = [y*self.unit for y in self.board_outline_ys]
+        
         if split_z and self._zs.shape[0] > 2 or n_materials > 1:
             boxes: list[GeoVolume] = []
             for i, (z1, z2, layer) in enumerate(
                 zip(self._zs[:-1], self._zs[1:], self._stack)
             ):
                 h = z2 - z1
-                box = Box(
-                    self.width * self.unit,
-                    self.length * self.unit,
-                    h * self.unit,
-                    position=(x0, y0, z0 + z1 * self.unit),
-                    name=layer.name,
-                )
+                box = XYPolygon(bxs, bys).extrude(h, GCS.displace(0,0,z1))
                 box.properties += layer.mat
-                box = change_coordinate_system(box, self.cs)
                 box.prio_set(self.dielectric_priority)
+                box = change_coordinate_system(box, self.cs)
                 boxes.append(box)
             
             if merge and n_materials == 1:
@@ -2102,16 +2127,10 @@ class PCB:
                 return box
             return boxes  # type: ignore
 
-        box = Box(
-            self.width * self.unit,
-            self.length * self.unit,
-            self.thickness * self.unit,
-            position=(x0, y0, z0 - self.thickness * self.unit),
-            name=f"{self.name}_diel",
-        )
+        box = XYPolygon(bxs, bys).extrude(self.thickness*self.unit, self.cs)
         box.properties += self._stack[0].mat
         box.prio_set(self.dielectric_priority)
-        box = change_coordinate_system(box, self.cs)
+        box = change_coordinate_system(box, GCS.displace(0,0,-self.thickness*self.unit))
         return box  # type: ignore
 
     def generate_air(
@@ -2552,8 +2571,8 @@ class PCB:
             poly = self._gen_poly(holepoly.xys, holepoly.layer, name=holepoly.name)
             holes.append(poly)
 
-        self.xs = allx
-        self.ys = ally
+        self.xs.extend(allx)
+        self.ys.extend(ally)
 
         self.traces = polys
 

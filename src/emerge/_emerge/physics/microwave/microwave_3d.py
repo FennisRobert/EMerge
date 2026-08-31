@@ -1503,7 +1503,7 @@ class Microwave3D(GenericPhysics3D):
                 elif impedance_type == "VI":
                     mode.Z0 = np.abs(voltage) / np.abs(current)
 
-                logger.info(f"Port Z0 = {mode.Z0} Ω ({impedance_type})")
+                logger.info(f"Port Z0 = {mode.Z0:.1f} Ω ({impedance_type})")
 
         # Sort the port modes on propagation constant.
         port.sort_modes()

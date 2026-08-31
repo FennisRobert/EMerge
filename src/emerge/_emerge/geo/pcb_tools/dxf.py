@@ -579,7 +579,7 @@ def pcb_to_dxf(pcb: PCBNew, filename: str) -> None:
         # make sure the last point is the same as the first
         if poly[0] != poly[-1]:
             poly.append(poly[0])
-        layers[pcbpoly.z].append(poly)
+        layers[pcbpoly.layer].append(poly)
     
     for z in layers:
         doc = ezdxf.new(dxfversion='R2010')
@@ -592,10 +592,23 @@ def pcb_to_dxf(pcb: PCBNew, filename: str) -> None:
         if len(fname_parts) == 2:
             fname = f'{fname_parts[0]}_z{z:.3f}.{fname_parts[1]}'
         else:
-            fname = f'{filename}_z{z:.3f}.dxf'
+            fname = f'{filename}_layer{z}.dxf'
             
         doc.saveas(fname)
 
+    bxs = pcb.board_outline_xs
+    bys = pcb.board_outline_ys
+
+    doc = ezdxf.new(dxfversion='R2010')
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(x,y) for x,y in zip(bxs,bys)], close=True)
+    fname_parts = filename.rsplit('.', maxsplit=1)
+    if len(fname_parts) == 2:
+        fname = f'{fname_parts[0]}_outline.{fname_parts[1]}'
+    else:
+        fname = f'{filename}_outline.dxf'
+    doc.saveas(fname)
+    
 def export_dxf(simulation: Simulation, filename: str, z_height: float | list[float], selection: list[Selection | GeoObject] = None) -> None:
     """Exports all 2D Geometries on a single or multiple  z-heights to a DXF file.
 

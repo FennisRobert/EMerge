@@ -758,6 +758,7 @@ class FloquetPort(PortBC, Saveable):
         face: FaceSelection | GeoSurface,
         port_number: int,
         cs: CoordinateSystem | None = None,
+        polarization_deg: float = 0.0,
         power: float = 1.0,
         er: float = 1.0,
     ):
@@ -772,9 +773,9 @@ class FloquetPort(PortBC, Saveable):
         self.cs: CoordinateSystem = cs
         self.scan_theta: float = 0
         self.scan_phi: float = 0
+        self.polarization_deg: float = polarization_deg
         self.port_modes: dict[int, tuple[complex, complex]] = {
             1: (1.0 + 0.0j, 0.0 + 0.0j),
-            2: (0.0 + 0.0j, 1.0 + 0.0j),
         }
         self.area: float = 1
         self.width: float | None = None
@@ -794,6 +795,19 @@ class FloquetPort(PortBC, Saveable):
         """Return the out of plane propagation constant. βz."""
         return k0 * np.cos(self.scan_theta)
 
+    def set_polarization(self, polarization_deg: float) -> None:
+        """Set the polarization angle from 0deg = S to 90deg = P
+
+        Args:
+            polarization_deg (float): _description_
+        """
+        self.polarization_deg = polarization_deg
+        S = np.cos(polarization_deg * np.pi/180)
+        P = np.sin(polarization_deg * np.pi/180)
+        self.port_modes = {
+            1: (S + 0.0j, P + 0.0j)
+        }
+
     def get_gamma(self, k0: float) -> complex:
         """Computes the γ-constant for matrix assembly. This constant is required for the Robin boundary condition.
 
@@ -803,7 +817,11 @@ class FloquetPort(PortBC, Saveable):
         Returns:
             complex: The γ-constant
         """
-        return 1j * self.get_beta(k0)
+        S, P = self.port_modes[1]
+        beta = self.get_beta(k0)
+        gamma_te = beta
+        gamma_tm = k0**2 / beta
+        return 1j * (abs(S)**2 * gamma_te + abs(P)**2 * gamma_tm)
 
     def get_Uinc(
         self,
@@ -815,8 +833,7 @@ class FloquetPort(PortBC, Saveable):
     ) -> np.ndarray:
         return (
             -2
-            * 1j
-            * self.get_beta(k0)
+            * self.get_gamma(k0)
             * self.port_mode_3d_global(
                 x_global, y_global, z_global, k0, mode_nr=mode_nr
             )

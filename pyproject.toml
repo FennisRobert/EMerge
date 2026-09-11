@@ -49,6 +49,11 @@ dxf = [
 gerber = [
   "pygerber"
 ]
+spyder = [
+  "trame-pyvista",
+  "nest_asyncio2",
+  "ipywidgets",
+]
 
 [build-system]
 requires = ["hatchling"]

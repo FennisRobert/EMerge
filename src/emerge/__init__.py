@@ -47,14 +47,20 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", NTHREADS)
 os.environ.setdefault("NUMEXPR_NUM_THREADS", NTHREADS)
 os.environ.setdefault("NUMBA_NUM_THREADS", "4")
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
+os.environ.setdefault("RSLAB_NUM_THREADS", "1")
 
 ############################################################
 #                      IMPORT MODULES                     #
 ############################################################
 
 from loguru import logger
-logger.info(f'EMerge v{__version__}')
-logger.debug('Importing modules')
+import multiprocessing as _mp
+
+_is_main_process = _mp.current_process().name == "MainProcess"
+
+if _is_main_process:
+    logger.info(f'EMerge v{__version__}')
+    logger.debug('Importing modules')
 
 import gmsh
 from ._emerge.simmodel import Simulation
@@ -66,7 +72,7 @@ from ._emerge import geo
 from ._emerge.selection import Selection, FaceSelection, DomainSelection, EdgeSelection
 from ._emerge.geometry import select, _GeometryManager, _KeyGenerator
 from ._emerge.mth.common_functions import norm, coax_rout, coax_rin, dot, cross, lumped_element_material
-from ._emerge.periodic import RectCell, HexCell
+from ._emerge.periodic import RectCell, HexCell, CustomCell2D, CustomCell1D
 from ._emerge.mesher import Algorithm2D, Algorithm3D
 from ._emerge.howto import _HowtoClass
 from ._emerge.emerge_update import update_emerge
@@ -74,15 +80,13 @@ from . import integrals as intf
 from .auxilliary.touchstone import TouchstoneData
 from emsutil import isola, rogers, const, lib
 from emsutil.material import Material, MatProperty, FreqDependent, CoordDependent, FreqCoordDependent
-import emsutil.plot as plot
 from emsutil import EMergeTheme
 from emsutil import themes
 from emsutil.lib import C0, MU0, EPS0, Z0
 from ._emerge.elements.dofsets import ElementSpace, DoFSet
 from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
 from . import optycal
-
-
+from . import plot 
 howto = _HowtoClass()
 
 from ._emerge.install_check import run_installation_checks
@@ -107,6 +111,7 @@ GLOBALHANDLER.pcbmanager = _PCBManager()
 GLOBALHANDLER.simstates = _SimStateManager()
 GLOBALHANDLER.selector = Selector()
 GLOBALHANDLER.logcontroller = LogController()
+GLOBALHANDLER.logcontroller.set_default()
 GLOBALHANDLER.debugcollector = DebugCollector()
 # Install global states
 
@@ -118,3 +123,16 @@ CENTER = geo.Alignment.CENTER
 CORNER = geo.Alignment.CORNER
 EISO = lib.EISO
 EOMNI = lib.EOMNI
+
+
+############################################################
+#                   PYVISTA SPYDER CHECK                  #
+############################################################
+
+import os
+
+if any(key.startswith('SPY') for key in os.environ):
+    logger.info(f'Spyder Kernel detected, setting Pyvista backends')
+    import pyvista as pv
+    pv.global_theme.notebook = False
+    pv.set_jupyter_backend("none")

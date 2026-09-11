@@ -99,6 +99,7 @@ class RobinBC(BoundaryCondition, Saveable):
         self._assemble_matrix: bool = True
         self.abctype: str = "A"
         self.material: Material = AIR
+        self.material_correction: bool = False
 
     def dont_assemble(self) -> None:
         """Prevent this port boundary condition from being assembled in the
@@ -284,12 +285,12 @@ class AbsorbingBoundary(RobinBC, Saveable):
         f = k0 * C0 / (2 * np.pi)
         
         if self.order == 1: 
-            return 1j * k0 * self.material.neff(f)
+            return 1j * k0 
 
         if self._coeffset is not None:
             c1 = self._coeffset[0]
-            return 1j * k0 * c1 * self.material.neff(f)
-        return 1j * k0 * self.o2coeffs[self.abctype][0] * self.material.neff(f)
+            return 1j * k0 * c1
+        return 1j * k0 * self.o2coeffs[self.abctype][0]
 
 
 class ScatteredField(RobinBC, Saveable):
@@ -298,7 +299,7 @@ class ScatteredField(RobinBC, Saveable):
     _include_force: bool = True
     _isabc: bool = True
     _color: str = "#be9f11"
-    _name: str = "UserDefined"
+    _name: str = "ScatteredField"
     _texture: str = "tex5.png"
     skip_fields = ("_fex", "_fey", "_fez", "_fkz")
     dim: int = 2
@@ -308,6 +309,7 @@ class ScatteredField(RobinBC, Saveable):
         face: FaceSelection | GeoSurface,
         power_density: float = 1.0 / (2 * Z0),
         definition: Literal['EA','SPH'] = 'SPH',
+        material_correction: bool = False,
         cs: CoordinateSystem | None = None,
     ):
         """Creates a user defined port field
@@ -354,6 +356,7 @@ class ScatteredField(RobinBC, Saveable):
         self.E0: float = (power_density * 2 * Z0) ** 0.5
         self.defintion: bf.DEFINITIONS = definition
         self.bf: type[bf.BackgroundField] = bf.BackgroundField
+        self.material_correction = material_correction
 
     def get_basis(self) -> np.ndarray:
         return self.cs._basis

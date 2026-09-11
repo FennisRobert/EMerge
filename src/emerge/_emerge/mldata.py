@@ -13,7 +13,7 @@ no point writing them out 50 times.
 from __future__ import annotations
 
 import numpy as np
-from scipy.sparse import csc_matrix, issparse
+from scipy.sparse import csc_matrix, csr_matrix, issparse
 
 FORMAT_VERSION = 1
 
@@ -46,6 +46,8 @@ class MLPreconData:
         mesh_tris: np.ndarray | None = None,
         dof_types: np.ndarray | None = None,
         dof_coords: np.ndarray | None = None,
+        grad: "csc_matrix | None" = None,
+        pi: "csc_matrix | None" = None,
         name: str = "",
     ):
         self.filename = filename
@@ -87,6 +89,27 @@ class MLPreconData:
                 raise ValueError(f"dof_coords shape {dof_coords.shape} doesn't contain a "
                                   f"dimension of size {n} (E.shape[0]).")
         self.dof_coords = dof_coords
+
+        # Discrete gradient G : Legrange2 -> Nedelec2, shape (n, n_nodes + n_edges).
+        # The standard auxiliary-space-Maxwell (AMS) input; see
+        # physics/microwave/assembly/discrete_gradient.py. Cannot be recovered
+        # from E/B, so it has to travel with them.
+        if grad is not None:
+            if not issparse(grad):
+                raise TypeError("grad must be a scipy.sparse matrix.")
+            if grad.shape[0] != n:
+                raise ValueError(f"grad has {grad.shape[0]} rows, expected {n} (E.shape[0]).")
+        self.grad = grad
+
+        # Nedelec-2 interpolation operator Pi : (Legrange2)^3 -> Nedelec2,
+        # shape (n, 3*(n_nodes + n_edges)). The companion of `grad`; see
+        # physics/microwave/assembly/ams_export/interpolation.py.
+        if pi is not None:
+            if not issparse(pi):
+                raise TypeError("pi must be a scipy.sparse matrix.")
+            if pi.shape[0] != n:
+                raise ValueError(f"pi has {pi.shape[0]} rows, expected {n} (E.shape[0]).")
+        self.pi = pi
 
         self.name = name
         self.solution: np.ndarray | None = None
@@ -161,6 +184,18 @@ class MLPreconData:
                 payload["dof_types"] = self.dof_types
             if self.dof_coords is not None:
                 payload["dof_coords"] = self.dof_coords
+            if self.grad is not None:
+                G = self.grad.tocsr()
+                payload["G_data"] = G.data
+                payload["G_indices"] = G.indices
+                payload["G_indptr"] = G.indptr
+                payload["G_shape"] = np.array(G.shape)
+            if self.pi is not None:
+                PI = self.pi.tocsr()
+                payload["PI_data"] = PI.data
+                payload["PI_indices"] = PI.indices
+                payload["PI_indptr"] = PI.indptr
+                payload["PI_shape"] = np.array(PI.shape)
 
         if not filename.endswith(".npz"):
             filename = filename + ".npz"
@@ -191,6 +226,10 @@ class MLPreconData:
                 mesh_tris=f["mesh_tris"] if "mesh_tris" in f else None,
                 dof_types=f["dof_types"] if "dof_types" in f else None,
                 dof_coords=f["dof_coords"] if "dof_coords" in f else None,
+                grad=(csr_matrix((f["G_data"], f["G_indices"], f["G_indptr"]),
+                                 shape=tuple(f["G_shape"])) if "G_data" in f else None),
+                pi=(csr_matrix((f["PI_data"], f["PI_indices"], f["PI_indptr"]),
+                               shape=tuple(f["PI_shape"])) if "PI_data" in f else None),
                 name=str(f["name"]) if "name" in f else "",
             )
 

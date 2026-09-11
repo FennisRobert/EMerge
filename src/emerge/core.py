@@ -54,8 +54,13 @@ os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 #                      IMPORT MODULES                     #
 ############################################################
 from loguru import logger
-logger.info(f'EMerge v{__version__}')
-logger.debug('Importing modules')
+import multiprocessing as _mp
+
+_is_main_process = _mp.current_process().name == "MainProcess"
+
+if _is_main_process:
+    logger.info(f'EMerge v{__version__}')
+    logger.debug('Importing modules')
 
 import gmsh
 from ._emerge.simmodel import Simulation
@@ -111,6 +116,7 @@ GLOBALHANDLER.pcbmanager = _PCBManager()
 GLOBALHANDLER.simstates = _SimStateManager()
 GLOBALHANDLER.selector = Selector()
 GLOBALHANDLER.logcontroller = LogController()
+GLOBALHANDLER.logcontroller.set_default()
 GLOBALHANDLER.debugcollector = DebugCollector()
 # Install global states
 

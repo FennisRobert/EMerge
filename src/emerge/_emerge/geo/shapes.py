@@ -310,6 +310,7 @@ class Cylinder(GeoVolume):
                  height: float,
                  cs: CoordinateSystem = GCS,
                  Nsections: int | None = None,
+                 compensate_radius: bool = False,
                  name: str | None = None):
         """Generates a Cylinder object in 3D space.
         The cylinder will always be placed in the origin of the provided CoordinateSystem.
@@ -329,6 +330,11 @@ class Cylinder(GeoVolume):
         """
         ax = cs.zax.np
 
+        if compensate_radius:
+            C_comp = np.pi/ (Nsections*np.sin(np.pi/Nsections))
+            A_comp = ((2*np.pi)/(Nsections*np.sin(2*np.pi/Nsections)))**0.5
+            radius = radius * C_comp
+            print(C_comp)
         if Nsections:
             from .polybased import XYPolygon
             cyl = XYPolygon.circle(radius, Nsections=Nsections).extrude(height, cs)

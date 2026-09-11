@@ -2151,7 +2151,7 @@ class PCB:
             height_air_bottom (float | None, optional): _description_. Defaults to None.
 
         Returns:
-            tuple[GeoVolume, list[GeoVolume], list[GeoVolume]]: _description_
+            tuple[GeoVolume, list[GeoVolume], list[GeoVolume]]: PCB, Air, Vias
         """
         pcb = self.generate_pcb(merge=merge)
 

@@ -15,6 +15,7 @@ class Config:
         numba: int | None = None,
         numba_layer: str | None = None,
         rayon: str | None = None,
+        rslab: str | None = None,
     ) -> None:
         """Set individual threading variables by friendly name."""
         _map = {
@@ -27,6 +28,7 @@ class Config:
             "NUMBA_NUM_THREADS": numba,
             "NUMBA_THREADING_LAYER": numba_layer,
             "RAYON_NUM_THREADS": rayon,
+            "RSLAB_NUM_THREADS": rslab,
         }
         for key, val in _map.items():
             if val is not None:
@@ -40,6 +42,10 @@ class Config:
         """Tuned for ACC assembly (OpenMP-heavy)."""
         self.set_threads(veclib_max=n, veclib=1)
 
+    def set_rslab_threads(self, n: int) -> None:
+        """ Tuned for RS-lab solver"""
+        self.set_threads(rslab=n)
+        
     def set_mumps_threads(self, n: int) -> None:
         """Tuned for MUMPS solver (balanced OMP + MKL)."""
         self.set_threads(omp=n)

@@ -313,6 +313,17 @@ class Selection(Saveable):
         return [_glob_getCenterOfMass(self.dim, tag) for tag in self.tags]
 
     @property
+    def getCAs(self) -> list[tuple[tuple[float,float,float], float]]:
+        """Generates a list of boundingboxes for each tag in the slection object
+
+        Raises:
+            ValueError: _description_
+
+        Returns:
+            list[tuple[float,...]]: _description_
+        """
+        return [(_glob_getCenterOfMass(self.dim, tag), _glob_getArea(tag)) for tag in self.tags]
+    @property
     def _metal(self) -> bool:
         """A property needed for the graphic library in order to generally ask if something
         should be rendered as a metal as it could be called on both Selection objects or Geometry objects.

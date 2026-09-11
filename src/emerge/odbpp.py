@@ -251,6 +251,7 @@ class ODBImport:
                  copper_placement: Literal['bottom', 'center', 'top'] = 'center',
                  centralize: bool = True,
                  thick_traces: bool = False,
+                 trace_material: em.Material = em.lib.COPPER,
                  cache_path: str | None = None,
                  plot: bool = False,
                  config: ODBImportConfig | None = None):
@@ -302,6 +303,7 @@ class ODBImport:
         self.config: ODBImportConfig = config if config is not None else ODBImportConfig()
         self.zmin: float | None = None
         self.zmax: float | None = None
+        self.trace_material: em.Material = trace_material
 
         if cache_path is not None and Path(cache_path).exists():
             logger.debug(f"ODBImport: loading cached geometry from '{cache_path}'")
@@ -386,7 +388,7 @@ class ODBImport:
 
         # Physical Z-stack (copper + dielectric slabs)
         for z1, z2, material in self.pcbd.iter_pcb_layers():
-            if material != "DIELECTRIC":
+            if material not in ('FR-4',"DIELECTRIC"):
                 continue
             zs.extend([z1, z2])
             poly = em.geo.XYPolygon(xs, ys).extrude(z2 - z1, em.cs(origin=(0, 0, z1))).set_material(self.pcb_material)
@@ -468,7 +470,7 @@ class ODBImport:
                 post_simplify=post_simplify, post_simplify_delta=post_simplify_delta,
                 merge_tol=merge_tol,
             ):
-                polygons.append(parse_polygon(poly, layer.z1, material=em.lib.COPPER))
+                polygons.append(parse_polygon(poly, layer.z1, material=self.trace_material))
 
         logger.debug(f"generate_traces: {len(polygons)} solid(s)/surface(s) built")
         return polygons
@@ -518,7 +520,7 @@ class ODBImport:
                 n = segments if segments is not None else cfg.segments_for_via(hole.diameter)
                 via = em.geo.Cylinder(
                     hole.diameter / 2, hole.z2 - hole.z1, em.cs(origin=(hole.x, hole.y, hole.z1)), Nsections=n
-                ).set_material(em.lib.COPPER)
+                ).set_material(self.trace_material)
                 vias.append(via)
             logger.debug(f"generate_vias: {len(vias)} solid(s) built (plain-cylinder path)")
             return vias
@@ -556,7 +558,7 @@ class ODBImport:
             for poly in wall_polygons:
                 poly.simplify(cfg.via_post_simplify_delta)
                 via_solids.append(
-                    parse_polygon(poly, z1, material=em.lib.COPPER, extrusion=z2 - z1).set_material(em.lib.COPPER)
+                    parse_polygon(poly, z1, material=self.trace_material, extrusion=z2 - z1).set_material(self.trace_material)
                 )
         logger.debug(f"generate_vias: {len(via_solids)} solid(s) built (wall-joined path)")
         return via_solids

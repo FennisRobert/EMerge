@@ -39,19 +39,19 @@ def _rotnorm(v: np.ndarray) -> np.ndarray:
     ax = ax/np.linalg.norm(ax)
     return ax
 
-def _pair_selection(f1: Selection, 
-                    f2: Selection, 
+def _pair_selection(f1: FaceSelection, 
+                    f2: FaceSelection, 
                     translation: tuple[float, float, float]):
     if len(f1.tags) == 1:
         return [f1,], [f2,]
-    c1s = [np.array(c) for c in f1.centers]
-    c2s = [np.array(c) for c in f2.centers]
+    cA1s = [(np.array(c),A) for c,A in f1.getCAs]
+    cA2s = [(np.array(c),A) for c,A in f2.getCAs]
     ds = np.array(translation)
     f1s = []
     f2s = []
-    for t1, c1 in zip(f1.tags, c1s):
-        for t2, c2 in zip(f2.tags, c2s):
-            if np.linalg.norm((c1 + ds)-c2) < 1e-8:
+    for t1, (c1,A1) in zip(f1.tags, cA1s):
+        for t2, (c2,A2) in zip(f2.tags, cA2s):
+            if np.linalg.norm((c1 + ds)-c2) < 1e-8 and abs(A1-A2)<1e-8:
                 f1s.append(FaceSelection([t1,]))
                 f2s.append(FaceSelection([t2,]))
     return f1s, f2s
@@ -350,4 +350,48 @@ class HexCell(PeriodicCell):
         poly = XYPolygon(xs3, ys3)
         length = z2-z1
         return poly.extrude(length, cs=GCS.displace(0,0,z1))
-    
+
+class CustomCell1D(PeriodicCell):
+
+    def __init__(self, 
+                 u: tuple[float,float,float],
+                 ou: tuple[float,float,float]):
+        self.u: np.ndarray = np.array(u)
+        self.ou: np.ndarray = np.array(ou)
+        super().__init__([self.ou, ],[self.u])
+
+    def cell_data(self):
+
+        tol = 1e-8
+        f1s = _GlobalHandler.active().selector.inplane(*self.ou, self.u, tolerance=tol)
+        f2s = _GlobalHandler.active().selector.inplane(*(self.ou+self.u), self.u, tolerance=tol)
+        for f1, f2 in zip(*_pair_selection(f1s, f2s, self.u)):
+            yield f1, f2, self.u
+
+class CustomCell2D(PeriodicCell):
+
+    def __init__(self, 
+                 u: tuple[float,float,float],
+                 ou: tuple[float,float,float],
+                 v: tuple[float,float,float],
+                 ov: tuple[float,float,float]):
+        self.u: np.ndarray = np.array(u)
+        self.ou: np.ndarray = np.array(ou)
+        self.v: np.ndarray = np.array(v)
+        self.ov: np.ndarray = np.array(ov)
+        super().__init__([self.ou, self.ov],[self.u, self.v])
+        self.width: float = np.linalg.norm(self.u)
+        self.height: float = np.linalg.norm(self.v)
+
+    def cell_data(self):
+
+        tol = 1e-8
+        f1s = _GlobalHandler.active().selector.inplane(*self.ou, self.u, tolerance=tol)
+        f2s = _GlobalHandler.active().selector.inplane(*(self.ou+self.u), self.u, tolerance=tol)
+        for f1, f2 in zip(*_pair_selection(f1s, f2s, self.u)):
+            yield f1, f2, self.u
+
+        f1s = _GlobalHandler.active().selector.inplane(*self.ov, self.v, tolerance=tol)
+        f2s = _GlobalHandler.active().selector.inplane(*(self.ov+self.v), self.v, tolerance=tol)
+        for f1, f2 in zip(*_pair_selection(f1s, f2s, self.v)):
+            yield f1, f2, self.v

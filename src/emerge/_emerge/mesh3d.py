@@ -844,14 +844,26 @@ class Mesh3D(Mesh, Saveable):
         # Triangle -> Edge and Edge -> Tri
         # -----------------------------------------------------------------------------
 
-        _edge_lookup_mat = np.full((nN, nN), _MISSING_ID, dtype=np.int32)
-        _edge_lookup_mat[self.edges[0], self.edges[1]] = np.arange(nE)
-        _edge_lookup_mat[self.edges[1], self.edges[0]] = np.arange(nE)
+        _edge_keys = (
+            np.minimum(self.edges[0], self.edges[1]).astype(np.int64) * nN
+            + np.maximum(self.edges[0], self.edges[1])
+        )
+        _key_order = np.argsort(_edge_keys, kind="stable")
+        _sorted_keys = _edge_keys[_key_order]
+        _sorted_edge_ids = _key_order  # edge id at each position in the sorted key array
+
+        def _lookup_edge(a, b):
+            """Vectorized replacement for _edge_lookup_mat[a, b]."""
+            key = np.minimum(a, b).astype(np.int64) * nN + np.maximum(a, b)
+            pos = np.searchsorted(_sorted_keys, key)
+            pos = np.clip(pos, 0, len(_sorted_keys) - 1)
+            found = _sorted_keys[pos] == key
+            return np.where(found, _sorted_edge_ids[pos], _MISSING_ID)
 
         self.tri_to_edge = np.zeros((3, self.tris.shape[1]), dtype=int)
-        self.tri_to_edge[0] = _edge_lookup_mat[_sorted_tris[0], _sorted_tris[1]]
-        self.tri_to_edge[1] = _edge_lookup_mat[_sorted_tris[1], _sorted_tris[2]]
-        self.tri_to_edge[2] = _edge_lookup_mat[_sorted_tris[0], _sorted_tris[2]]
+        self.tri_to_edge[0] = _lookup_edge(_sorted_tris[0], _sorted_tris[1])
+        self.tri_to_edge[1] = _lookup_edge(_sorted_tris[1], _sorted_tris[2])
+        self.tri_to_edge[2] = _lookup_edge(_sorted_tris[0], _sorted_tris[2])
 
         # This algorithm is optimized with help of Claude code.
         # Because each edge may be part of multiple triangles, an efficient algorithm

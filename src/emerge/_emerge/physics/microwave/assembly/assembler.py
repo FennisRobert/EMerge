@@ -35,6 +35,7 @@ from ....elements.nedelec2 import Nedelec2
 from ....elements.nedleg2 import NedelecLegrange2
 from ....elements.dofsets import DoFSet
 from ....mth.csc_cast import CSCMapping
+from ....mesh3d import Mesh3D
 from ....settings import Settings
 from scipy.sparse import csc_matrix
 from .matrix_add import csc_axpy_same_pattern
@@ -496,8 +497,9 @@ class Assembler:
     def _assemble_robin_terms(
         self,
         field: Nedelec2,
-        mesh,
+        mesh: Mesh3D,
         K0: float,
+        er: np.ndarray,
         robin_bcs: list[RobinBC],
         thin_conductor_bcs: list[ThinConductor],
         force_callback=None,
@@ -546,8 +548,14 @@ class Assembler:
             logger.trace(f"   - Implementing {bc}")
             tri_ids = mesh.get_triangles(bc.tags)
 
-            gamma = bc.get_gamma(K0)
-            logger.trace(f"    - robin bc γ={gamma:.3f}")
+            if bc.material_correction:
+                tet_ids = mesh.tri_to_tet[0,tri_ids]
+                eravg = (er[0,0,tet_ids] + er[1,1,tet_ids] + er[2,2,tet_ids])/3
+                gamma = bc.get_gamma(K0) * np.sqrt(eravg)
+            else:
+                gamma = bc.get_gamma(K0) * np.ones_like(tri_ids, dtype=np.complex128)
+
+            logger.trace(f"    - robin bc γ={np.mean(gamma):.3f}")
 
             is_pml = getattr(bc, "pml", False)
             wpbc_bvec = None
@@ -614,7 +622,7 @@ class Assembler:
             linked_tris = pair_coordinates(mesh.tri_centers, tri_ids_1, tri_ids_2, dv, _PBC_DSMAX)
             linked_edges = pair_coordinates(mesh.edge_centers, edge_ids_1, edge_ids_2, dv, _PBC_DSMAX)
             phi = pbc.phi(K0)
-            logger.trace(f"    - \u03d5={phi} rad/m")
+            logger.trace(f"    - ϕ={phi} rad/m")
             Pmat, rows = gen_periodic_matrix(
                 tri_ids_1,
                 edge_ids_1,
@@ -839,16 +847,19 @@ class Assembler:
                 logger.trace(f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}")
 
         B_matrix_robin, B_matrix_robin_2, B_matrix_wpbc = self._assemble_robin_terms(
-            field, mesh, K0, robin_bcs, thin_conductor_bcs, force_callback
+            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, force_callback
         )
 
         if B_matrix_robin is not None:
             #add_coo_to_csc(K, B_matrix_robin, field._rows, field._cols)
-            K += csc_matrix((B_matrix_robin, (field._rows, field._cols)), dtype=np.complex128, shape=K.shape)
+            K_add = csc_matrix((B_matrix_robin, (field._rows, field._cols)), dtype=np.complex128, shape=K.shape)
+            
             if B_matrix_robin_2 is not None:
                 logger.debug("    - Assembling opposite side matrix entries.")
                 rows, cols = field.empty_tri_rowcol(other_side=True)
-                K += field.generate_csc(B_matrix_robin_2, (rows, cols))
+                K_add += field.generate_csc(B_matrix_robin_2, (rows, cols))
+
+            K += K_add
 
         if B_matrix_wpbc is not None:
             logger.debug("    - Assembling dense Wave Port Boundary Condition matrix entries.")
@@ -877,7 +888,21 @@ class Assembler:
                 Emat = self.cached_cscmap.to_csc(Evec)
                 Bmat = self.cached_cscmap.to_csc(Bvec)
 
-            mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords())
+            Bmat = Bmat - K_add/K0**2
+
+            # Discrete gradient G : Legrange2 -> Nedelec2. Exported alongside
+            # E/B because it cannot be reconstructed from them, and an
+            # auxiliary-space Maxwell preconditioner needs it to separate the
+            # gradient (curl-free) modes from the rest.
+            from .ams_export import (assemble_discrete_gradient,
+                                     assemble_nedelec_interpolation)
+            t_grad = time.time()
+            Gmat = assemble_discrete_gradient(field)
+            Pimat = assemble_nedelec_interpolation(field)
+            logger.debug(f"  - AMS operators: G {Gmat.shape} nnz={Gmat.nnz:,}, "
+                         f"Pi {Pimat.shape} nnz={Pimat.nnz:,} ({time.time() - t_grad:.1f}s)")
+
+            mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords(), grad=Gmat, pi=Pimat)
         else:
             mldataset = None
 
@@ -973,7 +998,7 @@ class Assembler:
                 logger.debug(f".. Background field {bf} {np.linalg.norm(b_p):.3f}")
 
         B_matrix_robin, B_matrix_robin_2, B_matrix_wpbc = self._assemble_robin_terms(
-            field, mesh, K0, robin_bcs, thin_conductor_bcs, force_callback
+            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, force_callback
         )
 
         if B_matrix_robin is not None:
@@ -990,6 +1015,7 @@ class Assembler:
 
         if len(periodic_bcs) > 0:
             logger.debug("Implementing Periodic Boundary Conditions.")
+            
         Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(field, mesh, K0, periodic_bcs)
 
         mask = np.ones(NF, dtype=bool)
@@ -1069,7 +1095,7 @@ class Assembler:
 
         # No force_callback: eigenmode assembly has no excitation vectors.
         B_matrix_robin, B_matrix_robin_2, B_matrix_wpbc = self._assemble_robin_terms(
-            field, mesh, k0, robin_bcs, thin_conductor_bcs, force_callback=None
+            field, mesh, k0, er, robin_bcs, thin_conductor_bcs, force_callback=None
         )
 
         if B_matrix_robin is not None:

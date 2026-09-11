@@ -47,6 +47,7 @@ from emsutil import Material
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from typing import Callable, Literal, Any
+from contextlib import nullcontext
 import multiprocessing as mp
 from cmath import sqrt as csqrt
 from itertools import product
@@ -124,8 +125,16 @@ def _solve_krylov(
 ############################################################
 
 
+_worker_routine: SolveRoutine | None = None
+
+
 def run_job_multi(job: SimJob) -> SimJob:
     """The job launcher for Multi-Processing environements
+
+    The solve routine (and the solver objects it owns, e.g. SolverSuperLU's
+    cached METIS ordering) is built once per worker process and reused across
+    jobs, instead of being rebuilt from scratch for every job - mirroring the
+    thread-local caching used by the multi-threaded dispatch path.
 
     Args:
         job (SimJob): The Simulation Job
@@ -133,10 +142,12 @@ def run_job_multi(job: SimJob) -> SimJob:
     Returns:
         SimJob: The solved SimJob
     """
-    nr = int(mp.current_process().name.split("-")[1])
-    routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
+    global _worker_routine
+    if _worker_routine is None:
+        nr = int(mp.current_process().name.split("-")[1])
+        _worker_routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
-    solution, report = routine.solve(A, bmat, ids, matrix_type=job.mtype, id=job.id)
+    solution, report = _worker_routine.solve(A, bmat, ids, matrix_type=job.mtype, id=job.id)
     report.add(**aux)
     job.submit_solution(solution, report)
     return job
@@ -985,10 +996,18 @@ class Microwave3D(GenericPhysics3D):
         parallel: bool,
         multi_processing: bool,
         n_workers: int,
+        pool: "mp.pool.Pool | None" = None,
     ) -> list[SimJob]:
         """Runs a batch of already-assembled SimJobs, choosing between
         single-threaded, multi-threaded, and multi-process dispatch. This is
         the shared core of run_sweep / run_scattered's group-solve step.
+
+        For multi-processing, `pool` is normally supplied by the caller (see
+        `_run_frequency_domain`) so that the same worker processes - and the
+        per-worker `_worker_routine` they cache (e.g. AASDS's symbolic
+        factorization) - are reused across every frequency group of a sweep
+        instead of being torn down and rebuilt after each one. If no pool is
+        supplied, a one-off pool is created for just this batch of jobs.
         """
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
@@ -1032,16 +1051,32 @@ class Microwave3D(GenericPhysics3D):
             thread_local.__dict__.clear()
             return results
 
+        logger.info(
+            f"Starting distributed solve of {len(jobs)} jobs with {n_workers} processes in parallel"
+        )
+        if pool is not None:
+            return pool.map(run_job_multi, jobs)
+
+        with self._open_worker_pool(n_workers) as owned_pool:
+            return owned_pool.map(run_job_multi, jobs)
+
+    def _open_worker_pool(self, n_workers: int) -> "mp.pool.Pool":
+        """Opens a multiprocessing pool for solving SimJobs.
+
+        Callers that dispatch multiple batches of jobs (e.g. several
+        frequency groups in one sweep) should open one pool here and reuse
+        it across all batches, rather than opening/closing a pool per batch.
+        Worker processes cache their own SolveRoutine (see `_worker_routine`
+        in `run_job_multi`), so keeping the pool alive across batches lets
+        that per-worker state - including a solver's cached symbolic
+        factorization - survive between them.
+        """
         if not _called_from_main_function():
             raise SimulationError(
                 "Multiprocess support must be launched from your "
                 "if __name__ == '__main__' guard in the top-level script."
             )
-        logger.info(
-            f"Starting distributed solve of {len(jobs)} jobs with {n_workers} processes in parallel"
-        )
-        with mp.Pool(processes=n_workers) as pool:
-            return pool.map(run_job_multi, jobs)
+        return mp.Pool(processes=n_workers)
 
     def _run_frequency_domain(
         self,
@@ -1077,33 +1112,48 @@ class Microwave3D(GenericPhysics3D):
         # I am not sure if this is supposed to be there
         self._compute_modes(sum(self.frequencies) / len(self.frequencies))
 
-        for i_group, fgroup in enumerate(freq_groups):
-            logger.info(f"Precomputing group {i_group}.")
-            jobs = []
+        # Frequency groups only exist to cap peak memory (one group's worth of
+        # assembled matrices is held at a time); the solve side should still
+        # behave like one continuous sweep. So for multi-processing, open a
+        # single worker pool that spans every group instead of one per group -
+        # otherwise the worker processes (and any per-worker solver state they
+        # cache, e.g. AASDS's symbolic factorization) get discarded and
+        # rebuilt from scratch after every group.
+        pool_ctx = (
+            self._open_worker_pool(n_workers)
+            if parallel and multi_processing
+            else nullcontext()
+        )
+        with pool_ctx as pool:
+            for i_group, fgroup in enumerate(freq_groups):
+                logger.info(f"Precomputing group {i_group}.")
+                jobs = []
 
-            for freq in fgroup:
-                logger.debug(f"Simulation frequency = {_format_freq(freq)}")
+                for freq in fgroup:
+                    logger.debug(f"Simulation frequency = {_format_freq(freq)}")
 
-                if automatic_modal_analysis:
-                    self._compute_modes(freq)
+                    if automatic_modal_analysis:
+                        self._compute_modes(freq)
 
-                job, mats = assemble_fn(
-                    self.basis,
-                    self.mat_assy,
-                    self.bc.boundary_conditions,
-                    freq,
-                    cache_matrices=self.cache_matrices,
+                    job, mats = assemble_fn(
+                        self.basis,
+                        self.mat_assy,
+                        self.bc.boundary_conditions,
+                        freq,
+                        cache_matrices=self.cache_matrices,
+                    )
+                    if cache_harddisk:
+                        job.store_if_needed(harddisc_path)
+
+                    job.id = job_counter
+                    job_counter += 1
+                    jobs.append(job)
+                    material_set.append(mats)
+
+                group_results = self._dispatch_jobs(
+                    jobs, parallel, multi_processing, n_workers, pool=pool
                 )
-                if cache_harddisk:
-                    job.store_if_needed(harddisc_path)
-
-                job.id = job_counter
-                job_counter += 1
-                jobs.append(job)
-                material_set.append(mats)
-
-            group_results = self._dispatch_jobs(jobs, parallel, multi_processing, n_workers)
-            simulation_jobs.extend(group_results)
+                simulation_jobs.extend(group_results)
 
         return simulation_jobs, material_set
 

@@ -650,6 +650,7 @@ class PVDisplay(EMergeDisplay):
         rmax: float | None = None,
         offset: tuple[float, float, float] = (0, 0, 0),
         opacity: float | None = None,
+        cmap: cmap_names | None = None,
     ):
         surfobj = farfield_obj.surfplot(
             component,
@@ -665,6 +666,7 @@ class PVDisplay(EMergeDisplay):
             clim=surfobj.clim,
             opacity=self.parse_opacity(opacity, "EMERGE-FFSURF"),
             _fieldname=surfobj.name,
+            cmap=cmap,
             **self.set.theme.farfield_3d_kwarg,
         )
 

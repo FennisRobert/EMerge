@@ -161,6 +161,10 @@ class Simulation:
         self.hc: HeatConduction3D = HeatConduction3D(
             self.state, self.mesher, self.settings
         )
+        # AutomaticRoutine is a process-wide singleton, so a new Simulation must
+        # explicitly clear any solver state (e.g. cached METIS orderings) left
+        # behind by a previous, unrelated Simulation in this process.
+        self.mw.solveroutine.reset()
         self._geo_scale_factor: float = 1.0
 
         self._mw_active: bool = True
@@ -1077,7 +1081,7 @@ class Simulation:
             self.mesher._configure_mesh_size(lambda x: diagmax / 10, 1.0)
 
         # Remove orphaned surfaces
-        self._cleanup_entities()
+        #self._cleanup_entities()
         logger.info("Calling GMSH mesher")
         
         try:

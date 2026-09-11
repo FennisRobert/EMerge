@@ -404,7 +404,7 @@ def ned2_tri_stiff(glob_vertices, gamma, dofcodes):
 
 
 @njit(
-    c16[:](f8[:, :], i8[:, :], c16[:], i8[:], c16, i8[:]),
+    c16[:](f8[:, :], i8[:, :], c16[:], i8[:], c16[:], i8[:]),
     cache=True,
     nogil=True,
     parallel=False,
@@ -417,7 +417,7 @@ def compute_bc_entries(vertices, tris, Bmat, surf_triangle_indices, gamma, dofco
         itri = surf_triangle_indices[i]
 
         vertex_ids = tris[:, itri]
-        Bsub = ned2_tri_stiff(vertices[:, vertex_ids], gamma, dofcodes)
+        Bsub = ned2_tri_stiff(vertices[:, vertex_ids], gamma[i], dofcodes)
 
         Bmat[itri * N : (itri + 1) * N] = Bmat[itri * N : (itri + 1) * N] + Bsub.ravel()
     return Bmat

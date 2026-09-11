@@ -515,10 +515,14 @@ def _export_dxf_single(simulation: Simulation, filename: str, z_height: float, s
     
     poly_triset = []
     for geo in simulation.all_geos():
-        if geo.dim != 2:
+        if geo.dim==3:
+            sel = geo.boundary()
+        elif geo.dim==2:
+            sel = geo.selection
+        else:
             continue
         
-        tags = [tag for tag in geo.tags if tag in selected_tags]
+        tags = [tag for tag in sel.tags if tag in selected_tags]
         if not tags:
             continue
         tri_ids = mesh.get_triangles(tags)
@@ -549,7 +553,7 @@ def _export_dxf_single(simulation: Simulation, filename: str, z_height: float, s
     for poly in final_polies:
         # add as solid region
         
-        msp.add_lwpolyline(poly, close=True, dxfattribs={'layer': 'F.Cu'})
+        msp.add_lwpolyline(poly, close=True)
     # add .dxf if it is not thetere
     if not filename.lower().endswith('.dxf'):
         filename += '.dxf'

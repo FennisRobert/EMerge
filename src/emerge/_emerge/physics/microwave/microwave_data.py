@@ -940,58 +940,119 @@ class MWField(Saveable):
         ehfield.structure = DataStructure.TRISURF
         return ehfield
 
-    def current_boundary(self, selection: FaceSelection) -> EHField:
-        """Interpolate the field on the node coordinates of the surface."""
+    def current_boundary(
+        self,
+        selection: FaceSelection,
+        eps: float = 1e-6,
+        n_samples: int = 3,
+    ) -> EHField:
+        """Estimate surface current density on a boundary.
+
+        Uses:
+            Js = n x (H_plus - H_minus)
+
+        evaluated at triangle centers using small offsets along the face normal.
+        Triangle currents are projected onto the tangent plane and transferred
+        to nodes using area-weighted averaging.
+        """
+
         boundary = self.mesh.boundary_surface(selection.tags)
-        ns = boundary.normals
-        cs = (
-            boundary.nodes[:, boundary.tris[0, :]]
-            + boundary.nodes[:, boundary.tris[1, :]]
-            + boundary.nodes[:, boundary.tris[2, :]]
-        ) / 3
 
-        nx = ns[0, :]
-        ny = ns[1, :]
-        nz = ns[2, :]
-        cx = cs[0, :]
-        cy = cs[1, :]
-        cz = cs[2, :]
+        tris = boundary.tris
+        nodes = boundary.nodes
+        ns = boundary.normals.astype(float, copy=False)
 
-        eps = 1e-6
+        # Normalize face normals.
+        nmag = np.linalg.norm(ns, axis=0)
+        nmag[nmag == 0.0] = 1.0
+        ns = ns / nmag[None, :]
 
-        ehfield_1 = self.interpolate(cx - nx * eps, cy - ny * eps, cz - nz * eps, False)
-        ehfield_2 = self.interpolate(cx + nx * eps, cy + ny * eps, cz + nz * eps, False)
+        # Triangle vertices.
+        p0 = nodes[:, tris[0, :]]
+        p1 = nodes[:, tris[1, :]]
+        p2 = nodes[:, tris[2, :]]
 
-        dHx = ehfield_2.Hx - ehfield_1.Hx
-        dHy = ehfield_2.Hy - ehfield_1.Hy
-        dHz = ehfield_2.Hz - ehfield_1.Hz
+        # Triangle centers.
+        cs = (p0 + p1 + p2) / 3.0
 
-        Jsx = ny * dHz - nz * dHy
-        Jsy = nz * dHx - nx * dHz
-        Jsz = nx * dHy - ny * dHx
+        # Triangle areas.
+        cross = np.cross((p1 - p0).T, (p2 - p0).T).T
+        areas = 0.5 * np.linalg.norm(cross, axis=0)
 
-        Jst = np.array([Jsx, Jsy, Jsz])
+        # Estimate H jump. Averaging over several offsets usually gives
+        # less noisy results than relying on one exact epsilon.
+        dH = np.zeros((3, boundary.n_tris), dtype=np.complex128)
 
-        Js = np.zeros_like(boundary.nodes, dtype=np.complex128)
-        Js_counter = np.zeros((boundary.n_nodes,), dtype=np.int8)
+        offsets = eps * np.linspace(0.75, 1.25, n_samples)
 
-        ehfield = self.interpolate(
-            boundary.nodes[0, :], boundary.nodes[1, :], boundary.nodes[2, :], False
-        )
+        for offset in offsets:
+            p_minus = cs - ns * offset
+            p_plus = cs + ns * offset
+
+            h_minus = self.interpolate(
+                p_minus[0],
+                p_minus[1],
+                p_minus[2],
+                False,
+            )
+
+            h_plus = self.interpolate(
+                p_plus[0],
+                p_plus[1],
+                p_plus[2],
+                False,
+            )
+
+            dH += np.vstack(
+                (
+                    h_plus.Hx - h_minus.Hx,
+                    h_plus.Hy - h_minus.Hy,
+                    h_plus.Hz - h_minus.Hz,
+                )
+            )
+
+        dH /= len(offsets)
+
+        # Js = n x ΔH
+        Jst = np.cross(ns.T, dH.T).T
+
+        # Numerical cleanup: Js should be purely tangential.
+        normal_component = np.sum(Jst * ns, axis=0)
+        Jst -= ns * normal_component[None, :]
+
+        # Transfer triangle values to nodes using area-weighted averaging.
+        Js = np.zeros_like(nodes, dtype=np.complex128)
+        weights = np.zeros(boundary.n_nodes, dtype=float)
 
         for i in range(boundary.n_tris):
-            nids = boundary.tris[:, i]
-            Js[:, nids] += Jst[:, i]
-            Js_counter[nids] += 1
+            nids = tris[:, i]
+            w = areas[i]
 
-        Js_counter[Js_counter == 0] = 1
+            Js[:, nids] += Jst[:, i, None] * w
+            weights[nids] += w
 
-        Js = Js / Js_counter
+        valid = weights > 0.0
+        Js[:, valid] /= weights[None, valid]
+
+        # Interpolate remaining E/H data at boundary nodes.
+        ehfield = self.interpolate(
+            nodes[0, :],
+            nodes[1, :],
+            nodes[2, :],
+            False,
+        )
 
         ehfield._Js = Js
-        ehfield.aux["tris"] = boundary.tris
+        ehfield.aux["tris"] = tris
         ehfield.aux["boundary"] = True
+
+        # Useful for debugging / plotting the unsmoothed result.
+        ehfield.aux["Js_faces"] = Jst
+        ehfield.aux["face_centers"] = cs
+        ehfield.aux["face_areas"] = areas
+
         ehfield.structure = DataStructure.TRISURF
+
         return ehfield
 
     def cutplane(
@@ -1438,15 +1499,14 @@ class MWField(Saveable):
             tags = faces.tags
 
         center = np.mean(self.mesh.nodes, axis=1).squeeze()
-        surface = self.basis.mesh.boundary_surface(tags, center)
+        surface = self.basis.mesh.boundary_surface(tags, False, center)
         field = self.interpolate(*surface.exyz)
         vertices = surface.nodes
         triangles = surface.tris
-        origin = surface._origin
         E = field.E
         H = field.H
         k0 = self.k0
-        return vertices, triangles, E, H, origin, k0
+        return vertices, triangles, surface.normals, E, H, k0
 
     def optycal_antenna(
         self,

@@ -118,6 +118,7 @@ pip install emerge[cudss]
 ```bash
 pip install https://gmsh.info/python-packages-dev/gmsh/gmsh-5.0.0.dev1-py2.py3-none-macosx_12_0_arm64.whl --force-reinstall
 ```
+
 ## Required libraries
 
 To run this FEM library you need the following libraries

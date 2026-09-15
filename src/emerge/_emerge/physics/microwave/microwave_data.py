@@ -502,6 +502,7 @@ class MWField(Saveable):
         self._Sp: np.ndarray | None = None
         self._Texcite: np.ndarray = 1.0
         self._silent: bool = False
+        self.vars: dict[str, float | complex] = dict()
 
         # Ports embedded via embed_external_component are marked inactive
         # here rather than removed -- the port list, _Sp, and _Texcite
@@ -1503,10 +1504,11 @@ class MWField(Saveable):
         field = self.interpolate(*surface.exyz)
         vertices = surface.nodes
         triangles = surface.tris
+        edges = surface.edges
         E = field.E
         H = field.H
         k0 = self.k0
-        return vertices, triangles, surface.normals, E, H, k0
+        return vertices, triangles, edges, surface.normals, E, H, k0
 
     def optycal_antenna(
         self,
@@ -1906,7 +1908,8 @@ class MWScalar(Saveable):
         self._portmap: dict[int | float, int] = dict()
         self._portnumbers: list[int | float] = []
         self.port_modes: list[PortProperties] = []
-
+        self.vars: dict[str, float | complex] = dict()
+        
     def init_sp(self, portnumbers: list[int | float]) -> None:
         """Initialize the S-parameter dataset with the given number of ports."""
         self._portnumbers = portnumbers

@@ -25,7 +25,6 @@ from ...selection import (
     DomainSelection,
     EdgeSelection,
     Selection,
-    encode_data,
 )
 from .... import __version__
 from ...physics.microwave.bcs import PortBC, ModalPort
@@ -35,7 +34,7 @@ from ...coord import Line
 from pathlib import Path
 from importlib.resources import files
 
-from emsutil.pyvista import EMergeDisplay, setdefault, cmap_names, _AnimObject
+from emsutil.pyvista import EMergeDisplay, cmap_names
 from emsutil import themes
 from emsutil.emdata import EHFieldFF
 
@@ -104,7 +103,6 @@ def _print_coords(x1, y1, x2, y2, z):
 class PVDisplay(EMergeDisplay):
     def __post_init__(self, state: SimState):
         self._state: SimState = state
-        self._selector._set_encoder_function(encode_data)
         self._plot.add_key_event("l", self.activate_line_selector)
         self._plot.add_key_event("n", self.activate_point_selector)
         self._selectable_edges = []

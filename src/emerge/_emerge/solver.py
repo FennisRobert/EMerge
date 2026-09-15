@@ -59,6 +59,7 @@ _MUMPS_AVAILABLE = False
 _AASDS_AVAILABLE = False
 _SKSP_AVAILABLE = False
 _RSLAB_AVAILABLE = False
+_SPARTA_AVAILABLE = False
 
 """ Check if the PC runs on a non-ARM architechture
 If so, attempt to import PyPardiso (if its installed)
@@ -114,13 +115,22 @@ except ImportError as e:
     logger.debug("Tried to import an installed AASDS solver on a non Darwin system.")
 
 ############################################################
-#                          AASDS                           #
+#                          RSLAB                           #
 ############################################################
 try:
     import rslab  # type: ignore
     _RSLAB_AVAILABLE = True
 except ModuleNotFoundError as e:
     logger.trace("RSLAB Interface not found. (not harmful)")
+
+############################################################
+#                         SPARTA                           #
+############################################################
+try:
+    import sparta  # type: ignore
+    _SPARTA_AVAILABLE = True
+except ModuleNotFoundError as e:
+    logger.trace("SPARTA Interface not found. (not harmful)")
 
 
 ############################################################
@@ -1165,6 +1175,63 @@ class SolverRSLAB(Solver):
         return x, SolveReport(solver=str(self), exit_code=0, aux=None)
 
 
+class SolverSparta(Solver):
+    """Implements the UMFPACK Sparse SP solver."""
+
+    req_sorter = False
+    real_only = False
+    stype = SolverType.SINGLE_MP
+    name = "Sparta"
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        logger.trace(self.pre + "Creating Sparta solver")
+        self.A: np.ndarray = None
+        self.b: np.ndarray = None
+        self._csym: bool = True
+        self.factor = None
+        self.sym = None
+        self.initalized = False
+        self.gpu: bool = False
+
+    def initialize(self):
+        if self.initalized:
+            return
+        logger.trace(self.pre + "Initializing SPARTA Solver")
+        self.initalized = True
+
+    def reset(self) -> None:
+        logger.trace(self.pre + "Resetting SPARTA solver state")
+        self.fact_symb = False
+
+    def set_symmetry(self, complex_symmetric: bool) -> None:
+        self._csym = complex_symmetric
+
+    def duplicate(self) -> Solver:
+        new_solver = self.__class__(self.pre)
+        return new_solver
+
+    def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
+        
+        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver.")
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        
+        path = 'lu'
+        kwargs = dict()#max_front=2048)
+        if self._csym:
+            path = 'ldlt'
+            
+        if self.sym is None:
+            self.sym = sparta.analyze(A, path=path, ordering='metis', **kwargs)
+        self.factor = self.sym.factor(A, **kwargs)
+
+
+        logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
+        x = self.factor.solve_many(b)
+        
+        return x, SolveReport(solver=str(self), exit_code=0, aux=None)
+
+
 class SolverMUMPS(Solver):
     """Implements the MUMPS Sparse SP solver."""
 
@@ -1713,6 +1780,7 @@ class EMSolver(Enum):
     CG = 11
     CHOLMOD = 12
     RSLAB = 13
+    SPARTA = 14
 
     def create_solver(self, pre: str) -> Solver | EigSolver | None:
         """Create a solver class instance or None if the solver is not available."""
@@ -1724,11 +1792,13 @@ class EMSolver(Enum):
             return None
         elif self == EMSolver.MUMPS and not _MUMPS_AVAILABLE:
             return None
-        if self == EMSolver.CUDSS and not _CUDSS_AVAILABLE:
+        elif self == EMSolver.CUDSS and not _CUDSS_AVAILABLE:
             return None
-        if self == EMSolver.CHOLMOD and not _SKSP_AVAILABLE:
+        elif self == EMSolver.CHOLMOD and not _SKSP_AVAILABLE:
             return None
-        if self == EMSolver.RSLAB and not _RSLAB_AVAILABLE:
+        elif self == EMSolver.RSLAB and not _RSLAB_AVAILABLE:
+            return None
+        elif self == EMSolver.SPARTA and not _SPARTA_AVAILABLE:
             return None
         return self._clss(pre)
 
@@ -1749,6 +1819,7 @@ class EMSolver(Enum):
             11: SolverCG,
             12: SolverCHOLMOD,
             13: SolverRSLAB,
+            14: SolverSparta
         }
         return mapper.get(self.value, None)
 

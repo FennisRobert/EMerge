@@ -440,14 +440,14 @@ class ScatteredField(RobinBC, Saveable):
             phis (np.ndarray | float, optional): The phi angles. Defaults to 0.0.
             polarizations (np.ndarray | float, optional): The polarizaiton angles. Defaults to 0.0.
         """
-        t, p, pol = np.broadcast_arrays(thetas, phis, polarizations)
+        t, p, pol = np.meshgrid(thetas, phis, polarizations, indexing='ij')
         t = t * np.pi / 180
         p = p * np.pi / 180
         pol = pol * np.pi / 180
         # Convert to list if that is your preferred storage format
-        self.thetas = t.tolist()
-        self.phis = p.tolist()
-        self.polarizations = pol.tolist()
+        self.thetas = t.flatten().tolist()
+        self.phis = p.flatten().tolist()
+        self.polarizations = pol.flatten().tolist()
         if not isinstance(self.thetas, list):
             self.thetas = [
                 self.thetas,

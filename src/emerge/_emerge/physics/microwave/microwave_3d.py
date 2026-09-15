@@ -2420,12 +2420,14 @@ class Microwave3D(GenericPhysics3D):
             scalardata.k0 = k0
             scalardata.freq = freq
             scalardata.init_sp(matrix_indices)  # type: ignore
+            scalardata.vars = self._params
 
             fielddata = self.data.field.new(freq=freq, **self._params)
             fielddata.freq = freq
             fielddata._der = np.squeeze(er_scal)
             fielddata._dur = np.squeeze(ur_scal)
             fielddata._dsig = np.squeeze(cond_scal)
+            fielddata.vars = self._params
 
             logger.info(f"Post Processing simulation frequency = {freq / 1e9:.3f} GHz")
 
@@ -2567,7 +2569,8 @@ class Microwave3D(GenericPhysics3D):
             scalardata = self.data.scalar.new(freq=freq, **self._params)
             scalardata.k0 = k0
             scalardata.freq = freq
-
+            scalardata.vars = self._params
+            
             fielddata = self.data.field.new(freq=freq, **self._params)
             fielddata.freq = freq
             fielddata._der = np.squeeze(er_scal)
@@ -2575,7 +2578,7 @@ class Microwave3D(GenericPhysics3D):
             fielddata._dsig = np.squeeze(cond_scal)
             fielddata._fields = job._solutions_dict
             fielddata.basis = self.basis
-
+            fielddata.vars = self._params
             logger.info(f"Post Processing simulation frequency = {freq / 1e9:.3f} GHz")
 
             # Recording port information

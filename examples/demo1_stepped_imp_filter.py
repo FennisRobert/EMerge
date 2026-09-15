@@ -28,7 +28,7 @@ pcbmat = em.Material(er=er, color="#217627", opacity=0.2)
 
 # We start by creating our simulation object.
 
-model = em.Simulation("SteppedImpedanceFilter", loglevel='INFO')
+model = em.Simulation("SteppedImpedanceFilter", loglevel='DEBUG')
 model.check_version("3.0.0")  # Checks version compatibility.
 
 # To accomodate PCB routing we make use of the PCBLayouter class. To use it we need to
@@ -93,7 +93,6 @@ model.generate_mesh()
 model.view(bc=True)
 
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
-
 sol = model.mw.run_sweep()
 
 # Our "sol" variable is of type MWData (Microwave Data). This contains a set of scalar data

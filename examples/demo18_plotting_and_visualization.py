@@ -242,7 +242,7 @@ dp.show()
 # Plotting fields on the surface of an object is also possible.
 dp.add_objects(*m.all_geos())
 dp.add_field(
-    field.boundary(abc).scalar("Ex", "abs"), clim=(0, 600)
+    field.boundary(abc).scalar("Ex", "abs")
 )  # we don't unpack here because of how this method is designed.
 dp.show()
 

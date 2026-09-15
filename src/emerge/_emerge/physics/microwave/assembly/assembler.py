@@ -1022,17 +1022,18 @@ class Assembler:
         mask[list(pec_ids)] = False
         solve_ids = np.flatnonzero(mask)
 
+        is_symmetric=True
         if has_periodic:
             matrix_fem, solve_ids = self._apply_periodic_reduction(
                 matrix_fem, solve_ids, Pmat, keep_indices, NF, background_fields
             )
-
+            is_symmetric = False
         logger.debug(f"Number of tets: {mesh.n_tets:,}")
         logger.debug(f"Number of DoF: {matrix_fem.shape[0]:,}")
         logger.debug(f"Number of non-zero: {matrix_fem.nnz:,}")
 
         simjob = SimJob(
-            matrix_fem, background_fields, K0 * 299792458 / (2 * np.pi), symmetric=True
+            matrix_fem, background_fields, K0 * 299792458 / (2 * np.pi), symmetric=is_symmetric
         )
 
         simjob.solve_ids = solve_ids

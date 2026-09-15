@@ -36,7 +36,7 @@ class Config:
 
     def set_pardiso_threads(self, n: int) -> None:
         """Tuned for PARDISO solver (MKL-heavy)."""
-        self.set_threads(mkl=n)
+        self.set_threads(mkl=n, omp=n)
 
     def set_acc_threads(self, n: int) -> None:
         """Tuned for ACC assembly (OpenMP-heavy)."""

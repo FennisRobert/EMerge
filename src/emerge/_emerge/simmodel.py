@@ -347,7 +347,18 @@ class Simulation:
         self.state.store_geometry_data()
         logger.trace(f"Parsed geometries = {self.state.current_geo_state}")
         self.mesher.submit_objects(self.state.current_geo_state)
-        self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
+        self._add_facetags_to_display()
+
+    def _add_facetags_to_display(self) -> None:
+        """ Adds facetags to the current display."""
+        from collections import defaultdict
+        tag_container = defaultdict(list)
+        for obj in self.state.all3d:
+            for face in obj.all_faces():
+                for tag in face.tags:
+                    tag_container[tag].append(f'{obj.name}<{face.name}>')
+
+        self.display._facetags = {key: ', '.join(names) for key,names in tag_container.items()}
 
     def _apply_size_scaling(self) -> None:
         """Applies size scaling factor
@@ -901,7 +912,7 @@ class Simulation:
             geo._cache_gmsh()
 
         self.state._geometry_committed = True
-        self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
+        self._add_facetags_to_display()
 
         if self._mw_active:
             self.mw._autogenerate_bcs()

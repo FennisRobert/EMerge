@@ -1176,7 +1176,7 @@ class SolverRSLAB(Solver):
 
 
 class SolverSparta(Solver):
-    """Implements the UMFPACK Sparse SP solver."""
+    """Implements the SPARTA Sparse Metal based GPU solver."""
 
     req_sorter = False
     real_only = False
@@ -1193,6 +1193,10 @@ class SolverSparta(Solver):
         self.sym = None
         self.initalized = False
         self.gpu: bool = False
+        self.settings: dict = dict(
+            ordering=sparta.Ordering.METIS, 
+            refinement_steps=0,
+        )
 
     def initialize(self):
         if self.initalized:
@@ -1213,18 +1217,18 @@ class SolverSparta(Solver):
 
     def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
         
-        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver.")
+        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver (GPU).")
         logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
         
-        path = 'lu'
-        kwargs = dict()#max_front=2048)
+        mtype = sparta.MatrixType.COMPLEX_STRUCTURALLY_SYMMETRIC
+
         if self._csym:
-            path = 'ldlt'
+            mtype = sparta.MatrixType.COMPLEX_SYMMETRIC
             
         if self.sym is None:
-            self.sym = sparta.analyze(A, path=path, ordering='metis', **kwargs)
-        self.factor = self.sym.factor(A, **kwargs)
-
+            self.sym = sparta.analyze(A, mtype=mtype, **self.settings)
+        
+        self.factor = self.sym.factorize(A, mtype=mtype, **self.settings)
 
         logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
         x = self.factor.solve_many(b)

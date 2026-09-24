@@ -94,7 +94,6 @@ port_obj = model.mw.bc.LumpedPort(
 )  # lumped port (Z-axis)
 
 # --- Solve frequency sweep ---------------------------------------------------
-
 data = model.mw.run_sweep()
 
 # --- S-parameters: access and plots -----------------------------------------

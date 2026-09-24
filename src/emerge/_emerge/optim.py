@@ -82,12 +82,15 @@ class Optimizer:
     @property
     def last(self) -> tuple[float, ...]:
         return tuple([x for x in self.last_iter])
-    
+
     @property
     def params(self) -> dict[str, float]:
         return {p[0]: value for p, value in zip(self._param_data, self.last_iter)}
     
-    
+    def print_python(self) -> None:
+        for param,value in self.best[0].items():
+            print(f'{param} = {value}')
+
     @property
     def N(self):
         return len(self.value_cache)

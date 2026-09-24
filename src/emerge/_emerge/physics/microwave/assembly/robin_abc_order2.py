@@ -229,18 +229,22 @@ def _abc_order_2_terms(tri_vertices, cf, dofcodes):
     parallel=True,
 )
 def _matrix_builder(nodes, tris, edges, tri_to_field, tri_ids, coeff, dofcodes):
-    """Numba optimized loop over each face triangle."""
-    ntritot = tris.shape[1]
+    """Numba optimized loop over each face triangle.
+
+    Writes into a COMPACT Mat sized (Ntris*nsq,) -- position itri_sub (the
+    local loop index), not the global triangle id -- so the caller only has
+    to allocate space for the triangles actually passed in, not the whole
+    mesh.
+    """
     n = dofcodes.shape[0]
     nsq = (n**2)
-    nnz = ntritot * nsq
-
-    Mat = np.zeros(nnz, dtype=np.complex128)
 
     Ntris = tri_ids.shape[0]
+    Mat = np.zeros(Ntris * nsq, dtype=np.complex128)
+
     for itri_sub in prange(Ntris):  # type: ignore
         itri = tri_ids[itri_sub]
-        p = itri * nsq
+        p = itri_sub * nsq
 
         # Construct the local edge map
         tri_nodes = nodes[:, tris[:, itri]]
@@ -258,7 +262,7 @@ def _matrix_builder(nodes, tris, edges, tri_to_field, tri_ids, coeff, dofcodes):
 
 def abc_order_2_matrix(
     field: Nedelec2, surf_triangle_indices: np.ndarray, coeff: complex
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Computes the second order absorbing boundary condition correction terms.
 
     Args:
@@ -267,7 +271,8 @@ def abc_order_2_matrix(
         coeff (complex): The integral coefficient jp2/k0
 
     Returns:
-        np.ndarray: The resultant matrix items
+        tuple[np.ndarray, np.ndarray, np.ndarray]: Compact (data, rows, cols)
+        triplet, sized to just the given triangles.
     """
     Mat = _matrix_builder(
         field.mesh.nodes,
@@ -278,4 +283,5 @@ def abc_order_2_matrix(
         coeff,
         field.dofcodes2d
     )
-    return Mat
+    rows, cols = field.tri_rowcol(surf_triangle_indices)
+    return Mat, rows, cols

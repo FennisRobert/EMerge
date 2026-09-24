@@ -1192,7 +1192,7 @@ class SolverSparta(Solver):
         self.factor = None
         self.sym = None
         self.initalized = False
-        self.gpu: bool = False
+        self.cpu: bool = False
         self.settings: dict = dict(
             ordering=sparta.Ordering.METIS, 
             refinement_steps=0,
@@ -1206,6 +1206,12 @@ class SolverSparta(Solver):
 
     def reset(self) -> None:
         logger.trace(self.pre + "Resetting SPARTA solver state")
+        if self.factor is not None:
+            self.factor.destroy()
+            self.factor = None
+        if self.sym is not None:
+            self.sym.destroy()
+            self.sym = None
         self.fact_symb = False
 
     def set_symmetry(self, complex_symmetric: bool) -> None:
@@ -1216,8 +1222,11 @@ class SolverSparta(Solver):
         return new_solver
 
     def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
-        
-        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver (GPU).")
+
+        device = 'GPU'
+        if self.cpu:
+            device = 'CPU'
+        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver ({device}).")
         logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
         
         mtype = sparta.MatrixType.COMPLEX_STRUCTURALLY_SYMMETRIC
@@ -1226,9 +1235,11 @@ class SolverSparta(Solver):
             mtype = sparta.MatrixType.COMPLEX_SYMMETRIC
             
         if self.sym is None:
-            self.sym = sparta.analyze(A, mtype=mtype, **self.settings)
+            self.sym = sparta.analyze(A, force_cpu=self.cpu, mtype=mtype, **self.settings)
         
-        self.factor = self.sym.factorize(A, mtype=mtype, **self.settings)
+        self.factor = self.sym.factorize(A, force_cpu=self.cpu, mtype=mtype, **self.settings)
+        if not self.factor.quality.usable:
+            logger.warning('Matrix is so singular that it is broken on single precision. Use a double-precision CPU solver instead.')
 
         logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
         x = self.factor.solve_many(b)

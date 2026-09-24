@@ -410,7 +410,10 @@ def ned2_tri_stiff(glob_vertices, gamma, dofcodes):
     parallel=False,
 )
 def compute_bc_entries(vertices, tris, Bmat, surf_triangle_indices, gamma, dofcodes):
-
+    """Writes into a COMPACT Bmat sized (Niter*N,) -- position i (the local
+    loop index), not the global triangle id -- so the caller only has to
+    allocate space for the triangles actually passed in, not the whole mesh.
+    """
     N = dofcodes.shape[0]**2
     Niter = surf_triangle_indices.shape[0]
     for i in prange(Niter):  # type: ignore
@@ -419,7 +422,7 @@ def compute_bc_entries(vertices, tris, Bmat, surf_triangle_indices, gamma, dofco
         vertex_ids = tris[:, itri]
         Bsub = ned2_tri_stiff(vertices[:, vertex_ids], gamma[i], dofcodes)
 
-        Bmat[itri * N : (itri + 1) * N] = Bmat[itri * N : (itri + 1) * N] + Bsub.ravel()
+        Bmat[i * N : (i + 1) * N] = Bmat[i * N : (i + 1) * N] + Bsub.ravel()
     return Bmat
 
 
@@ -450,17 +453,21 @@ def assemble_robin_bc_bvec(
 
 def assemble_robin_bc(
     field: Nedelec2,
-    Bmat: np.ndarray,
     surf_triangle_indices: np.ndarray,
     gamma: np.ndarray,
-):
-
+    other_side: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compact (data, rows, cols) triplet for a Robin BC, sized to just the
+    given triangles instead of the whole mesh.
+    """
     vertices = field.mesh.nodes
+    N = field.n_tri_dofs ** 2
+    Bmat = np.zeros(surf_triangle_indices.shape[0] * N, dtype=np.complex128)
     Bmat = compute_bc_entries(
         vertices, field.mesh.tris, Bmat, surf_triangle_indices, gamma, field.dofcodes2d
     )
-
-    return Bmat
+    rows, cols = field.tri_rowcol(surf_triangle_indices, other_side=other_side)
+    return Bmat, rows, cols
 
 
 ############################################################

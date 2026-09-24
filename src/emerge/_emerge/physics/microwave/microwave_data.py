@@ -509,7 +509,9 @@ class MWField(Saveable):
         # always keep their original full size, so port labels are
         # permanent and never need renumbering or remapping.
         self._active_ports: set[int | float] | None = None
-
+        self._cache_surface = None
+        self._cache_mapping: bool = False
+        self._mapping: np.ndarray | None = None
         self._bstags = None
         self._bssurf = None
 
@@ -543,6 +545,11 @@ class MWField(Saveable):
         return self.basis.mesh
 
     @property
+    def cache(self) -> MWField:
+        self._cache_mapping = True
+        return self
+    
+    @property
     def k0(self) -> float:
         return self.freq * 2 * np.pi / 299792458
 
@@ -567,7 +574,7 @@ class MWField(Saveable):
             return sum(
                 [
                     self.excitation[mode] * self._fields[mode]
-                    for mode in self.background_fields
+                    for mode in self.background_fields if self.excitation[mode] != 0.0
                 ]
             )
 
@@ -683,7 +690,7 @@ class MWField(Saveable):
         return self
 
     def interpolate(
-        self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, usenan: bool = True
+        self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, usenan: bool = True, mapping: np.ndarray | None = None
     ) -> EHField:
         """Interpolate the dataset in the provided xs, ys, zs values"""
         # fmt: off
@@ -703,9 +710,18 @@ class MWField(Saveable):
             logger.info(f"Interpolating {xf.shape[0]} field points")
         logger.debug('Finding tet_mapping')
 
-        mapping = self.basis.interpolate_index(
-            xf, yf, zf, usenan=usenan
-        )
+        if mapping is None:
+            if self._cache_mapping:
+                if self._mapping is None:
+                    self._mapping = self.basis.interpolate_index(
+                        xf, yf, zf, usenan=usenan
+                    )
+                mapping = self._mapping
+            else:
+                mapping = self.basis.interpolate_index(
+                        xf, yf, zf, usenan=usenan
+                    )
+                
         logger.debug("Index Interpolation complete")
         Ex, Ey, Ez = self.basis.interpolate(
             self._field, xf, yf, zf, mapping, usenan=usenan
@@ -1431,11 +1447,19 @@ class MWField(Saveable):
 
         from .sc import stratton_chu
 
+        if self._cache_mapping:
+            if self._cache_surface is None:
+                self._cache_surface = self.basis.mesh.boundary_surface(
+                    faces.tags, inward_normal=False, origin=origin
+                )
+            surface = self._cache_surface
+        else:
+            surface = self.basis.mesh.boundary_surface(
+                faces.tags, inward_normal=False, origin=origin
+            )
 
-        surface = self.basis.mesh.boundary_surface(
-            faces.tags, inward_normal=False, origin=origin
-        )
         ehfield = self.interpolate(*surface.exyz)
+
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
 
         Ptot = np.sum(

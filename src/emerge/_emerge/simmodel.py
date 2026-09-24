@@ -1024,12 +1024,13 @@ class Simulation:
 
         return orphans
 
-    def generate_mesh(self, regenerate: bool = False) -> None:
+    def generate_mesh(self, regenerate: bool = False, remove_orphans: bool = False) -> None:
         """Generate the mesh.
         This can only be done after commit_geometry(...) is called and if frequencies are defined.
 
         Args:
-            name (str, optional): The mesh file name. Defaults to "meshname.msh".
+            regenerate (bool, optional): If the mesh should be regenerated, discarding old information
+            remove_orphans (bool, optional): If orphan geometries should be removed.
 
         Raises:
             ValueError: ValueError if no frequencies are defined.
@@ -1092,7 +1093,8 @@ class Simulation:
             self.mesher._configure_mesh_size(lambda x: diagmax / 10, 1.0)
 
         # Remove orphaned surfaces
-        #self._cleanup_entities()
+        if remove_orphans:
+            self._cleanup_entities()
         logger.info("Calling GMSH mesher")
         
         try:

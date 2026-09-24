@@ -42,6 +42,14 @@ class Config:
         """Tuned for ACC assembly (OpenMP-heavy)."""
         self.set_threads(veclib_max=n, veclib=1)
 
+    def set_sparta_threads(self, n: int) -> None:
+        """Set the number of threads for the SPARTA GPU solver
+
+        Args:
+            n (int): _description_
+        """
+        self.set_threads(rayon=n)
+        
     def set_rslab_threads(self, n: int) -> None:
         """ Tuned for RS-lab solver"""
         self.set_threads(rslab=n)

@@ -21,7 +21,6 @@ from ..mesh3d import Mesh3D
 import numpy as np
 from typing import Callable
 from emsutil import Saveable
-from scipy.sparse import csc_matrix  # type: ignore
 
 class FEMBasis(Saveable):
     def __init__(self, mesh: Mesh3D):
@@ -43,7 +42,6 @@ class FEMBasis(Saveable):
 
         self._rows: np.ndarray = np.array([])
         self._cols: np.ndarray = np.array([])
-        self._cached_csc_ids = None
 
     def empty_tet_matrix(self) -> np.ndarray:
         nnz = self.n_tets * self.n_tet_dofs**2
@@ -66,15 +64,27 @@ class FEMBasis(Saveable):
         self._cols = cols
         return rows, cols
 
-    def empty_tri_rowcol(
-        self, other_side: bool = False
+    def tri_rowcol(
+        self, tri_ids: np.ndarray | None = None, other_side: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Row/col DOF index pairs for the given triangles.
+
+        With tri_ids=None (default), returns the pairs for every triangle in
+        the mesh -- e.g. for the field._rows/_cols cache built once at basis
+        construction. Passing a subset returns a correspondingly compact
+        result, e.g. for a boundary condition that only touches a handful of
+        the mesh's triangles.
+        """
         N = self.n_tri_dofs
         t2f = self.tri_to_field_os if other_side else self.tri_to_field
+        if tri_ids is not None:
+            t2f = t2f[:, tri_ids]
 
         rows = np.repeat(t2f, N, axis=0).ravel(order="F").astype(np.int64, copy=False)
         cols = np.tile(t2f, (N, 1)).ravel(order="F").astype(np.int64, copy=False)
         return rows, cols
+
+    empty_tri_rowcol = tri_rowcol
 
     def tetslice(self, itet: int) -> slice:
         N = self.n_tet_dofs**2
@@ -83,22 +93,6 @@ class FEMBasis(Saveable):
     def trislice(self, itri: int) -> slice:
         N = self.n_tri_dofs**2
         return slice(itri * N, (itri + 1) * N)
-
-    def generate_csc(
-        self, data: np.ndarray, rowcol: tuple[np.ndarray, np.ndarray] | None = None
-    ):
-        if rowcol is None:
-            rows, cols = self._rows, self._cols
-        else:
-            rows, cols = rowcol
-
-        if self._cached_csc_ids is None:
-            self._cached_csc_ids = np.argwhere(data != 0)[:, 0]
-
-        return csc_matrix(
-            (data[self._cached_csc_ids], (rows[self._cached_csc_ids], cols[self._cached_csc_ids])),
-            shape=(self.n_field, self.n_field),
-        )
 
     ############################################################
     #                         INTERPOLATORS                    #

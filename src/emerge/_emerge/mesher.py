@@ -220,7 +220,7 @@ class Mesher:
                 )
         self.periodic_cell = cell
 
-    def _set_size_in_domain(self, tags: list[int], max_size: float) -> None:
+    def _set_size_in_domain(self, tags: list[int], max_size: float, set_max: bool = False) -> None:
         """Define the size of the mesh inside a domain
 
         Args:
@@ -230,7 +230,12 @@ class Mesher:
         ctag = gmsh.model.mesh.field.add("Constant")
         gmsh.model.mesh.field.set_numbers(ctag, "VolumesList", tags)
         gmsh.model.mesh.field.set_number(ctag, "VIn", max_size)
-        self.mesh_fields.append(ctag)
+        if not set_max:
+            self.mesh_fields.append(ctag)
+        else:
+            gmsh.model.mesh.field.set_number(ctag, "IncludeBoundary", 0)
+            gmsh.model.mesh.field.set_number(ctag, "VOut", 1e-9)
+            self.max_mesh_fields.append(ctag)
 
     def _set_size_on_face(
         self, tags: list[int], max_size: float, set_max: bool = False
@@ -603,13 +608,26 @@ class Mesher:
         if size < 0:
             size = self.max_size
         if obj.dim != 2:
-            logger.warning("Provided object is not a surface.")
-            if obj.dim == 3:
-                logger.warning("Forwarding to set_domain_size")
-                self.set_face_size(obj, size)
+            raise MeshError("Provided object is not a surface.")
 
+            
         logger.debug(f"Setting PEC size {size * 1000:.3f}mm for face {obj}")
         self._set_size_on_face(obj.tags, size, True)
+
+    def set_pec_domain(self, obj: GeoObject | Selection, size: float = -1) -> None:
+            """Sets the size on PEC faces to be very coarse to save computational time.
+    
+            Args:
+                obj (GeoObject | Selection): The volumetric domain
+                size (float): The maximum size
+            """
+            if size < 0:
+                size = self.max_size
+            if obj.dim != 3:
+                raise MeshError("Provided object is not a domain.")
+    
+            logger.debug(f"Setting PEC size {size * 1000:.3f}mm for face {obj}")
+            self._set_size_in_domain(obj.tags, size, True)
 
     def set_size(self, obj: GeoObject, size: float) -> None:
         """Manually set the size in or on an object

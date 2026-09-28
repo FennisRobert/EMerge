@@ -1,6 +1,3 @@
-from emerge_config import config
-config.set_acc_threads(10)
-
 import emerge as em
 import numpy as np
 from emerge.plot import plot_sp, smith, plot_ff_polar, plot_ff
@@ -117,7 +114,7 @@ abc = model.mw.bc.AbsorbingBoundary(boundary_selection)
 # --- Run frequency-domain solver ----------------------------------------
 model.view(plot_mesh=True, volume_mesh=False)
 model.view(bc=True)
-
+model.set_solver(em.EMSolver.SPARTA)
 data = model.mw.run_sweep()
 
 # --- Post-process S-parameters ------------------------------------------

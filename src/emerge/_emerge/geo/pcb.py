@@ -2095,6 +2095,30 @@ class PCB:
         xs, ys = zip(*points)
         self.add_poly(xs, ys, layer, material, name)
 
+    def _generate_pcb_outline_geo(self,
+                                  z1: float,
+                                  z2: float,
+                                  material: Material) -> GeoVolume:
+        """Helper function for generic PCB Layer generation
+
+        Args:
+            z1 (float): _description_
+            z2 (float): _description_
+            material (Material): _description_
+
+        Returns:
+            GeoVolume: _description_
+        """
+        bxs = [x*self.unit for x in self.board_outline_xs]
+        bys = [y*self.unit for y in self.board_outline_ys]
+
+        h = z2 - z1
+        box = XYPolygon(bxs, bys).extrude(h * self.unit, GCS.displace(0,0,z1* self.unit))
+        box.properties += material
+        box.prio_set(self.dielectric_priority)
+        box = change_coordinate_system(box, self.cs)
+        return box
+    
     def generate_pcb(
         self, split_z: bool = True, merge: bool = True
     ) -> list[GeoVolume] | GeoVolume:
@@ -2107,23 +2131,14 @@ class PCB:
         Returns:
             GeoVolume | List[GeoVolume]: The PCB Block or blocks
         """
-        x0, y0, z0 = self.origin * self.unit
-
         n_materials = len(set([id(layer.mat) for layer in self._stack]))
 
-        bxs = [x*self.unit for x in self.board_outline_xs]
-        bys = [y*self.unit for y in self.board_outline_ys]
-        
         if split_z and self._zs.shape[0] > 2 or n_materials > 1:
             boxes: list[GeoVolume] = []
             for i, (z1, z2, layer) in enumerate(
                 zip(self._zs[:-1], self._zs[1:], self._stack)
             ):
-                h = z2 - z1
-                box = XYPolygon(bxs, bys).extrude(h * self.unit, GCS.displace(0,0,z1* self.unit))
-                box.properties += layer.mat
-                box.prio_set(self.dielectric_priority)
-                box = change_coordinate_system(box, self.cs)
+                box = self._generate_pcb_outline_geo(z1, z2, layer.mat)
                 boxes.append(box)
             
             if merge and n_materials == 1:
@@ -2131,10 +2146,7 @@ class PCB:
                 return box
             return boxes  # type: ignore
 
-        box = XYPolygon(bxs, bys).extrude(self.thickness*self.unit, self.cs)
-        box.properties += self._stack[0].mat
-        box.prio_set(self.dielectric_priority)
-        box = change_coordinate_system(box, GCS.displace(0,0,-self.thickness*self.unit))
+        box = self._generate_pcb_outline_geo(-self.thickness, 0, self._stack[0].mat)
         return box  # type: ignore
 
     def generate_all(self, 
@@ -2195,6 +2207,44 @@ class PCB:
         )
         box = change_coordinate_system(box, self.cs)
         return box  # type: ignore
+
+    def generate_silkscreen(self,
+                            material: Material,
+                            thickenss_top: float = 0.0,
+                            thickness_bottom: float = 0.0,
+                            ) -> GeoVolume | tuple[GeoVolume, GeoVolume]:
+        """Generates a silkscreen over the entire PCB with the provided material and thickness.
+        If a thickness is empty, no geometry is generated for that side of the PCB.
+
+        Thickness should be provided in the PCB unit.
+        Args:
+            material (Material): The material of the Silkscreen
+            thickenss_top (float, optional): The thickness of the Top layer. Defaults to 0.0.
+            thickness_bottom (float, optional): The thickness of the bottom layer. Defaults to 0.0.
+
+        Returns:
+            GeoVolume | tuple[GeoVolume, GeoVolume]: Either a single layer or both layers (bottom, top)
+        """
+
+        if thickenss_top == 0.0 and thickness_bottom == 0.0:
+            raise ValueError("At least the top or bottom layer thickness must be provided.")
+
+        th_top = thickenss_top
+        th_bot = thickness_bottom
+
+        sk_top = None
+        sk_bot = None
+        if th_top > 0.0:
+            sk_top = self._generate_pcb_outline_geo(0, th_top, material)
+        if th_bot > 0.0:
+            sk_bot = self._generate_pcb_outline_geo(-self.thickness-th_bot, -self.thickness, material)
+
+        if sk_top is None:
+            return sk_bot
+        if sk_bot is None:
+            return sk_top
+        return sk_bot, sk_top
+        
 
     def new(
         self,

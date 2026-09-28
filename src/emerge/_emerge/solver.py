@@ -1226,7 +1226,7 @@ class SolverSparta(Solver):
         device = 'GPU'
         if self.cpu:
             device = 'CPU'
-        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver ({device}).")
+        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver ({device}, {sparta.__version__}).")
         logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
         
         mtype = sparta.MatrixType.COMPLEX_STRUCTURALLY_SYMMETRIC

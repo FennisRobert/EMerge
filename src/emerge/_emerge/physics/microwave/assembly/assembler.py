@@ -505,28 +505,26 @@ class Assembler:
         er: np.ndarray,
         robin_bcs: list[RobinBC],
         thin_conductor_bcs: list[ThinConductor],
-        force_callback=None,
-    ) -> tuple[np.ndarray | None]:
+        port_vectors: dict[int | float, np.ndarray] | None = None,
+        background_fields: dict | None = None,
+    ) -> csc_matrix | int:
         """Assembles the Robin-BC matrix contribution shared by all three
         frequency-based assembly paths.
 
         Handles: PEC-dof removal for SurfaceImpedance/ThinConductor, the
         opposite-side thin-conductor matrix term, PML skip (matrix term only
-        -- force_callback still runs, so a ScatteredField behind a PML still
-        gets its excitation), the order-2 ABC correction (always via
+        -- the excitation is still assembled, so a ScatteredField behind a
+        PML still gets its excitation), the order-2 ABC correction (always via
         bc.get_abccorr(K0), applied per-BC inside the loop), and the dense
         Wave Port Boundary Condition term (do_assemble_wpbc(bc)) which
         replaces the scalar-gamma matrix term with the rank-1 modal overlap
         term from assemble_wpbc instead.
 
-        force_callback(bc, tri_ids, precomputed_bvec), if given, is invoked
-        once per BC after the matrix term so each caller can assemble its
-        own excitation vector (port_vectors vs. background_fields vs. none)
-        without duplicating this loop. For a WPBC bc, precomputed_bvec is
-        assemble_wpbc's own excitation vector (reusing the same mprof/G_xy
-        already computed for the matrix term, instead of recomputing it via
-        the generic get_Uinc path); it is None for every other bc, in which
-        case the caller falls back to its own Ufunc-based computation.
+        Excitation vectors are accumulated in place into whichever of
+        port_vectors (driven ports) or background_fields (scattered field)
+        is given; eigenmode assembly passes neither. For a WPBC bc the port
+        excitation reuses assemble_wpbc's own vector (same mprof/G_xy already
+        computed for the matrix term) instead of recomputing it via Ufunc.
 
         Returns (B_matrix_robin, B_matrix_robin_2, B_matrix_wpbc) as small
         csc_matrix objects (or None where not applicable) sized only to the
@@ -584,8 +582,10 @@ class Assembler:
                         d2, r2, c2_ = assemble_robin_bc(field, tri_ids, gamma, other_side=True)
                         data2.append(d2); rows2.append(r2); cols2.append(c2_)
 
-            if force_callback is not None:
-                force_callback(bc, tri_ids, wpbc_bvec)
+            if port_vectors is not None:
+                self._add_port_force(field, bc, tri_ids, K0, port_vectors, wpbc_bvec)
+            if background_fields is not None:
+                self._add_background_force(field, bc, tri_ids, K0, background_fields)
 
             if bc._isabc and bc.order == 2:
                 logger.debug("    - Implementing second order ABC correction.")
@@ -600,6 +600,54 @@ class Assembler:
             B_matrix_robin += _to_csc(wpbc_data, wpbc_rows, wpbc_cols, field.n_field)
 
         return B_matrix_robin
+
+    def _add_port_force(
+        self,
+        field: Nedelec2,
+        bc: RobinBC,
+        tri_ids: np.ndarray,
+        K0: float,
+        port_vectors: dict[int | float, np.ndarray],
+        wpbc_bvec: np.ndarray | None = None,
+    ) -> None:
+        """Adds the driven-port excitation of bc into port_vectors (in place)."""
+        from .robinbc import assemble_robin_bc_bvec
+
+        if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
+            return
+        if wpbc_bvec is not None:
+            port_vectors[bc.port_number] += wpbc_bvec
+            logger.trace(f"    - included WPBC force vector term with norm {np.linalg.norm(wpbc_bvec):.3f}")
+            return
+        for number, Ufunc in bc._iter_modes(K0):
+            b_p = assemble_robin_bc_bvec(field, tri_ids, Ufunc)
+            port_vectors[number] += b_p
+            logger.trace(f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}")
+
+    def _add_background_force(
+        self,
+        field: Nedelec2,
+        bc: RobinBC,
+        tri_ids: np.ndarray,
+        K0: float,
+        background_fields: dict,
+    ) -> None:
+        """Adds the incident-field excitation of a ScatteredField bc into
+        background_fields (in place). Assembled regardless of the PML flag,
+        since the PML only suppresses the absorbing matrix term.
+        """
+        from .robinbc import assemble_robin_bc_bvec_scat
+
+        if not isinstance(bc, ScatteredField):
+            return
+        normals = field.mesh.outward_normals(tri_ids)
+        for bf in bc._iter_fields(K0):
+            b_p = assemble_robin_bc_bvec_scat(field, tri_ids, bf.Uinc, bf.Uinc_curl, normals)
+            if bf in background_fields:
+                background_fields[bf] += b_p
+            else:
+                background_fields[bf] = b_p
+            logger.debug(f".. Background field {bf} {np.linalg.norm(b_p):.3f}")
 
     def _assemble_periodic_terms(
         self, field: Nedelec2, mesh, K0: float, periodic_bcs: list[Periodic]
@@ -794,7 +842,6 @@ class Assembler:
             SimJob: The resultant SimJob object
         """
         from .curlcurl import tet_mass_stiffness_matrices
-        from .robinbc import assemble_robin_bc_bvec
 
         logger.debug(f'Assembling frequency = {_format_freq(frequency)}')
 
@@ -840,23 +887,10 @@ class Assembler:
         logger.debug(" - Implementing PEC Boundary Conditions.")
         pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
-        def force_callback(bc, tri_ids, precomputed_bvec=None):
-            if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
-                return
-            if precomputed_bvec is not None:
-                port_vectors[bc.port_number] += precomputed_bvec
-                logger.trace(f"    - included WPBC force vector term with norm {np.linalg.norm(precomputed_bvec):.3f}")
-                return
-            for number, Ufunc in bc._iter_modes(K0):
-                b_p = assemble_robin_bc_bvec(field, tri_ids, Ufunc)
-                port_vectors[number] += b_p
-                logger.trace(f"    - included force vector term with norm {np.linalg.norm(b_p):.3f}")
-
         B_matrix_robin = self._assemble_robin_terms(
-            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, force_callback
+            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, port_vectors=port_vectors
         )
         K += B_matrix_robin
-        
 
         if len(periodic_bcs) > 0:
             logger.debug("  - Implementing Periodic Boundary Conditions.")
@@ -939,7 +973,6 @@ class Assembler:
             SimJob: The resultant SimJob object
         """
         from .curlcurl import tet_mass_stiffness_matrices
-        from .robinbc import assemble_robin_bc_bvec_scat
 
         W0 = 2 * np.pi * frequency
         K0 = W0 / C0
@@ -974,24 +1007,8 @@ class Assembler:
 
         background_fields: dict[tuple[float, float], np.ndarray] = {}
 
-        def force_callback(bc, tri_ids, precomputed_bvec=None):
-            # ScatteredField is both the Robin absorbing term (handled by the
-            # shared matrix path above, subject to the pml skip) and the
-            # excitation for the incident field -- assembled here regardless
-            # of whether this BC is flagged as being backed by a PML.
-            if not isinstance(bc, ScatteredField):
-                return
-            normals = field.mesh.outward_normals(tri_ids)
-            for bf in bc._iter_fields(K0):
-                b_p = assemble_robin_bc_bvec_scat(field, tri_ids, bf.Uinc, bf.Uinc_curl, normals)
-                if bf in background_fields:
-                    background_fields[bf] += b_p
-                else:
-                    background_fields[bf] = b_p
-                logger.debug(f".. Background field {bf} {np.linalg.norm(b_p):.3f}")
-
         B_matrix_robin = self._assemble_robin_terms(
-            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, force_callback
+            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, background_fields=background_fields
         )
         matrix_fem += B_matrix_robin
 
@@ -1076,9 +1093,9 @@ class Assembler:
         logger.debug("Implementing PEC Boundary Conditions.")
         pec_ids, _ = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
-        # No force_callback: eigenmode assembly has no excitation vectors.
+        # Eigenmode assembly has no excitation vectors.
         B_matrix_robin = self._assemble_robin_terms(
-            field, mesh, k0, er, robin_bcs, thin_conductor_bcs, force_callback=None
+            field, mesh, k0, er, robin_bcs, thin_conductor_bcs
         )
         matrix_mass += B_matrix_robin / (k0**2)
 

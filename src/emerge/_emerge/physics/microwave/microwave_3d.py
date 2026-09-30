@@ -485,8 +485,7 @@ class Microwave3D(GenericPhysics3D):
 
         self.basis: FEMBasis = None
         self.solveroutine.reset()
-        self.assembler.cached_matrices = None
-        self.assembler.cached_cscmap = None
+        self.assembler.reset_cache()
 
     @property
     def nports(self) -> int:

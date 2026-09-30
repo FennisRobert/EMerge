@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 import numpy as np
-from numba import njit, prange, i8, c16, f8, types
+from numba import njit, prange, i8, types
 from scipy.sparse import csc_matrix
 from dataclasses import dataclass, field
 
@@ -52,15 +52,18 @@ class CSCMapping:
     def from_rowcol(rows, cols, N) -> CSCMapping:
         return CSCMapping(*precompute_csc_pattern(rows, cols, N), N)
     
-    def to_csc(self, data: np.ndarray) -> csc_matrix:
+    def scatter(self, data: np.ndarray) -> np.ndarray:
+        """Sums the COO values into a CSC data array aligned with self.indices/self.indptr."""
         if np.iscomplexobj(data):
             data_csc = np.zeros(self.nnz, dtype=np.complex128)
             scatter_to_csc_c16(data, self.perm, self.target_csc, self.col_offsets, self._gather_buffer_c16, data_csc)
         else:
             data_csc = np.zeros(self.nnz, dtype=np.float64)
             scatter_to_csc_f8(data, self.perm, self.target_csc, self.col_offsets, self._gather_buffer_f8, data_csc)
-            
-        return csc_matrix((data_csc, self.indices, self.indptr), shape=(self.N, self.N))
+        return data_csc
+
+    def to_csc(self, data: np.ndarray) -> csc_matrix:
+        return csc_matrix((self.scatter(data), self.indices, self.indptr), shape=(self.N, self.N))
 
 @njit(types.Tuple((i8[:], i8[:], i8[:], i8[:], i8[:]))(i8[:], i8[:], i8), nogil=True, cache=True, parallel=True)
 def precompute_csc_pattern(rows, cols, N) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

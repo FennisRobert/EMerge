@@ -21,7 +21,6 @@ import numpy as np
 from ....elements import Nedelec2
 from ....mth.optimized import local_mapping, matinv
 from ....mth.csc_cast import CSCMapping
-from ....mth.csr_cast import CSRMapping
 from ....compiled.ccbf import (
     _eval_f_3d, _eval_curl_f_3d, parse_dofcode
 )
@@ -224,8 +223,8 @@ def tet_mass_stiffness_matrices(
     er: np.ndarray,
     ur: np.ndarray,
     conductor_tets: np.ndarray,
-    cscmap: CSRMapping | None = None,
-) -> tuple[np.ndarray, np.ndarray, CSRMapping]:
+    cscmap: CSCMapping | None = None,
+) -> tuple[np.ndarray, np.ndarray, CSCMapping]:
     """Computes the curl-curl Nedelec-2 mass and stiffness matrices
 
     Args:
@@ -276,8 +275,8 @@ def tet_mass_stiffness_matrices_subdom(
     ur: np.ndarray,
     domain_tets: np.ndarray,
     conductor_tets: np.ndarray,
-    cscmap: CSRMapping | None = None,
-) -> tuple[np.ndarray, np.ndarray, CSRMapping]:
+    cscmap: CSCMapping | None = None,
+) -> tuple[np.ndarray, np.ndarray, CSCMapping]:
     """Computes the curl-curl Nedelec-2 mass and stiffness matrices
 
     Args:

@@ -24,7 +24,6 @@ from ..bcs import (
     RobinBC,
     PortBC,
     MWBoundaryConditionSet,
-    ThinConductor,
     SurfaceImpedance,
     WavePortIH,
     Void,
@@ -34,15 +33,16 @@ from ....periodic import Periodic
 from ....elements.nedelec2 import Nedelec2
 from ....elements.nedleg2 import NedelecLegrange2
 from ....elements.dofsets import DoFSet
-from ....mth.csc_cast import CSCMapping
 from ....mesh3d import Mesh3D
 from ....settings import Settings
 from scipy.sparse import csc_matrix
-from .matrix_add import csc_axpy_same_pattern
+from .system_pattern import (SystemPattern, product_pattern, copy_onto_pattern,
+                             bc_has_matrix_term, bc_has_abc2_term)
 from loguru import logger
 from ..simjob import SimJob
 from ....const import EPS0, C0
 import time
+import hashlib
 from typing import Generator
 _PBC_DSMAX = 1e-15
 
@@ -63,14 +63,11 @@ def _format_freq(freq: float) -> str:
     scaled_freq = freq / (1000.0 ** i)
     return f"{scaled_freq:.2f} {units[i]}"
 
-def _to_csc(data_list, rows_list, cols_list, n_field):
-    if not data_list:
-        return None
-    return csc_matrix(
-        (np.concatenate(data_list), (np.concatenate(rows_list), np.concatenate(cols_list))),
-        dtype=np.complex128,
-        shape=(n_field, n_field),
-    )
+def _pattern_hash(M: csc_matrix) -> str:
+    hasher = hashlib.sha1()
+    hasher.update(M.indptr.tobytes())
+    hasher.update(M.indices.tobytes())
+    return hasher.hexdigest()
 
 def select_bc(bcs: list[BoundaryCondition], bctype: type[BoundaryCondition]) -> Generator[BoundaryCondition,None,None]:
     for bc in bcs:
@@ -190,104 +187,6 @@ def diagnose_matrix(mat: csc_matrix, basis: "Nedelec2", solve_ids: np.ndarray) -
 
     print("Diagnostics Passed: Matrix is structurally sound.")
 
-def diagnose_robin_matrix(
-    field: "Nedelec2",
-    B_matrix_robin,
-    tri_ids: np.ndarray,
-) -> list[dict]:
-    """Checks whether the DOFs a Robin BC (SurfaceImpedance/ThinConductor)
-    re-includes from pec_ids actually received a matrix contribution from
-    assemble_robin_bc, rather than checking the whole system.
- 
-    ASSUMPTION (unverified against assemble_robin_bc's actual source):
-    B_matrix_robin is a flat values array, same length as field._rows /
-    field._cols, where entry i contributes to global position
-    (field._rows[i], field._cols[i]) in K -- matching the "precomputed
-    across all triangles in the mesh" sparsity pattern add_coo_to_csc
-    consumes. If B_matrix_robin's actual shape/type doesn't match this,
-    this will error immediately rather than silently mislead -- tell me
-    what it says if so.
- 
-    Returns a list of problem-point dicts (same shape as
-    list_problem_points), one per DOF that should have gotten a Robin
-    contribution but didn't.
-    """
-    rows = np.asarray(field._rows)
-    cols = np.asarray(field._cols)
-    vals = np.asarray(B_matrix_robin)
- 
-    if vals.shape != rows.shape:
-        raise ValueError(
-            f"B_matrix_robin shape {vals.shape} doesn't match field._rows "
-            f"shape {rows.shape} -- the flat-values-array assumption this "
-            f"diagnostic is built on doesn't hold here. Check assemble_robin_bc's "
-            f"actual return type before trusting anything below."
-        )
- 
-    nnz_mask = np.abs(vals) > 0
-    print(f"B_matrix_robin: {nnz_mask.sum()} / {vals.size} entries nonzero "
-          f"(sum |val| = {np.sum(np.abs(vals)):.6g})")
-    if nnz_mask.sum() == 0:
-        print("B_matrix_robin is ENTIRELY ZERO -- assemble_robin_bc produced "
-              "no contribution at all for this call. Check tri_ids and gamma "
-              "before looking at individual DOFs.")
- 
-    # The DOFs this BC un-excludes from pec_ids -- exactly what
-    # _assemble_robin_terms computes for SurfaceImpedance/ThinConductor.
-    expected_dofs = sorted(set(field.tri_to_field[:, tri_ids].flatten().tolist()))
-    print(f"\nChecking {len(expected_dofs)} DOFs expected to receive Robin contributions...")
- 
-    has_any_local = {d: False for d in expected_dofs}
-    has_diag_local = {d: False for d in expected_dofs}
- 
-    nz_rows = rows[nnz_mask]
-    nz_cols = cols[nnz_mask]
-    expected_set = set(expected_dofs)
- 
-    for r, c in zip(nz_rows, nz_cols):
-        r, c = int(r), int(c)
-        if r in expected_set:
-            has_any_local[r] = True
-            if r == c:
-                has_diag_local[r] = True
-        if c in expected_set and c != r:
-            has_any_local[c] = True
- 
-    never_touched = [d for d in expected_dofs if not has_any_local[d]]
-    touched_no_diag = [d for d in expected_dofs if has_any_local[d] and not has_diag_local[d]]
- 
-    print(f" - {len(never_touched)} DOFs got NO contribution at all "
-          f"(row or col) from B_matrix_robin")
-    print(f" - {len(touched_no_diag)} DOFs got off-diagonal contributions "
-          f"but NO diagonal entry (exactly the zero-diagonal singularity pattern)")
-    print(f" - {len(expected_dofs) - len(never_touched) - len(touched_no_diag)} DOFs look fine")
- 
-    problem_dofs: dict[int, list[str]] = {}
-    for d in never_touched:
-        problem_dofs.setdefault(d, []).append("robin: no contribution at all")
-    for d in touched_no_diag:
-        problem_dofs.setdefault(d, []).append("robin: off-diagonal only, no diagonal")
- 
-    points = list_problem_points(problem_dofs, field)
- 
-    if points:
-        print(f"\n--- {len(points)} Robin-Problem DOF(s) ---")
-        for p in points:
-            print(
-                f"  dof={p['dof']:>8}  type={p['type']:<8}  "
-                f"reasons={','.join(p['reasons']):<40}  "
-                f"xyz=({p['x']:.6g}, {p['y']:.6g}, {p['z']:.6g})"
-            )
-        xs_lit = ", ".join(f"{p['x']:.6g}" for p in points)
-        ys_lit = ", ".join(f"{p['y']:.6g}" for p in points)
-        zs_lit = ", ".join(f"{p['z']:.6g}" for p in points)
-        print("\n--- Copy-paste for model.display.add_scatter(xs, ys, zs) ---")
-        print(f"xs = [{xs_lit}]")
-        print(f"ys = [{ys_lit}]")
-        print(f"zs = [{zs_lit}]")
- 
-    return points
-
 class MatrixDiagnosisError(RuntimeError):
     """Same as RuntimeError, but carries the resolved problem-point list so
     a caller can catch it and use the points directly (e.g. to visualize
@@ -373,24 +272,6 @@ def plane_basis_from_points(points: np.ndarray) -> np.ndarray:
 #                    THE ASSEMBLER CLASS                   #
 ############################################################
 
-class TimeLogger:
-
-    def __init__(self):
-        self.ctr: int = 1
-        self.last_time = time.time()
-        self.active = True
-
-    def __call__(self, ref: str = ''):
-        if not self.active:
-            return
-        logger.info(f'{ref}: {self.ctr}: \u0394T = {(time.time()-self.last_time)*1000:.2f}ms')
-        self.last_time = time.time()
-        self.ctr += 1
-
-
-_TMR = TimeLogger()
-
-
 class Assembler:
     """The assembler class is responsible for FEM EM problem assembly.
 
@@ -399,13 +280,15 @@ class Assembler:
 
     def __init__(self, settings: Settings):
 
-        self.cached_matrices = None
-        self.cached_cscmap: CSCMapping | None = None
+        self._system: SystemPattern | None = None
+        self._periodic_patterns: tuple[tuple, csc_matrix, csc_matrix] | None = None
         self.settings: Settings = settings
-        self.SELECT_INDEX: int = None
-        self._partitioned: bool = False
         self.mldata_filename: str | None = None
-        self._surf_imp_conductivity_limit: float = 1e4
+
+    def reset_cache(self) -> None:
+        """Discards the cached sparsity pattern, boundary matrices and volume matrices."""
+        self._system = None
+        self._periodic_patterns = None
 
     # ------------------------------------------------------------------
     # Shared helpers (used by assemble_freq_matrix / assemble_scattering_matrix
@@ -497,109 +380,120 @@ class Assembler:
         return pec_ids_set, pec_tris
 
 
+    def _prepare_system(
+        self,
+        field: Nedelec2,
+        er: np.ndarray,
+        ur: np.ndarray,
+        conductor_tets: np.ndarray,
+        robin_bcs: list[RobinBC],
+        use_cache: bool,
+    ) -> tuple[SystemPattern, np.ndarray, np.ndarray]:
+        """Returns the system pattern and the volume matrices E, B as data
+        arrays on that pattern.
+
+        The pattern (and the geometry-only boundary matrices it holds) is
+        reused for as long as the field, the set of conductor tets and the
+        Robin BC structure stay the same. With use_cache, E and B are stored
+        on the pattern and reused as well.
+        """
+        from .curlcurl import tet_mass_stiffness_matrices
+
+        key = SystemPattern.compute_key(field, conductor_tets, robin_bcs)
+        system = self._system if (self._system is not None and self._system.key == key) else None
+
+        if system is not None and use_cache and system.cached_E is not None:
+            logger.debug(" - Using cached matrices.")
+            return system, system.cached_E, system.cached_B
+
+        logger.debug(" - Calling matrix assembler...")
+        t0 = time.time()
+        Evec, Bvec, volume_coo_to_csc = tet_mass_stiffness_matrices(
+            field, er, ur, conductor_tets, None if system is None else system.volume_coo_to_csc
+        )
+        t1 = time.time()
+        logger.debug(f' - Assembly speed: {(field.ntets - len(conductor_tets)) / (t1 - t0):.1f} tets/s')
+
+        if system is None:
+            if self._system is not None:
+                logger.debug(" - Mesh, conductors or boundary conditions changed: rebuilding the sparsity pattern.")
+            system = SystemPattern(key, field, volume_coo_to_csc, robin_bcs)
+            self._system = system
+            self._periodic_patterns = None
+
+        E = system.volume_coo_to_system_data(Evec)
+        del Evec
+        B = system.volume_coo_to_system_data(Bvec)
+        del Bvec
+
+        if use_cache:
+            system.cached_E, system.cached_B = E, B
+        return system, E, B
+
     def _assemble_robin_terms(
         self,
+        system: SystemPattern,
+        out: np.ndarray,
         field: Nedelec2,
         mesh: Mesh3D,
         K0: float,
         er: np.ndarray,
         robin_bcs: list[RobinBC],
-        thin_conductor_bcs: list[ThinConductor],
+        scale: complex = 1.0,
         port_vectors: dict[int | float, np.ndarray] | None = None,
         background_fields: dict | None = None,
-    ) -> csc_matrix | int:
-        """Assembles the Robin-BC matrix contribution shared by all three
-        frequency-based assembly paths.
+    ) -> None:
+        """Adds scale * (all Robin BC matrix terms) into the system data array
+        `out` in place, and accumulates the excitation vectors.
 
-        Handles: PEC-dof removal for SurfaceImpedance/ThinConductor, the
-        opposite-side thin-conductor matrix term, PML skip (matrix term only
-        -- the excitation is still assembled, so a ScatteredField behind a
-        PML still gets its excitation), the order-2 ABC correction (always via
-        bc.get_abccorr(K0), applied per-BC inside the loop), and the dense
-        Wave Port Boundary Condition term (do_assemble_wpbc(bc)) which
-        replaces the scalar-gamma matrix term with the rank-1 modal overlap
-        term from assemble_wpbc instead.
+        Each Robin/ABC term is a cached geometry-only matrix on the system
+        pattern times a coefficient (bc.get_gamma(K0), bc.get_abccorr(K0)).
+        The dense Wave Port BC block is recomputed per frequency (the port
+        mode changes) but always covers the same DoFs. PML BCs skip the
+        matrix term only -- their excitation is still assembled.
 
         Excitation vectors are accumulated in place into whichever of
         port_vectors (driven ports) or background_fields (scattered field)
         is given; eigenmode assembly passes neither. For a WPBC bc the port
-        excitation reuses assemble_wpbc's own vector (same mprof/G_xy already
-        computed for the matrix term) instead of recomputing it via Ufunc.
-
-        Returns (B_matrix_robin, B_matrix_robin_2, B_matrix_wpbc) as small
-        csc_matrix objects (or None where not applicable) sized only to the
-        triangles that actually carry a Robin/ABC/WPBC term -- not to the
-        whole mesh -- since each contributor already returns a compact
-        (data, rows, cols) triplet restricted to its own triangles.
+        excitation reuses assemble_wpbc's own vector (same mode overlap
+        already computed for the matrix term).
         """
-        from .robinbc import assemble_robin_bc
-        from .robin_abc_order2 import abc_order_2_matrix
         from .wpbc import assemble_wpbc
-
-        if len(robin_bcs) == 0:
-            return 0
-
-        logger.debug(" - Assembling Robin Boundary Conditions.")
-
-        
-
-        data, rows, cols = [], [], []
-        data2, rows2, cols2 = [], [], []
-        wpbc_data, wpbc_rows, wpbc_cols = [], [], []
 
         for bc in robin_bcs:
             logger.trace(f"   - Implementing {bc}")
             tri_ids = mesh.get_triangles(bc.tags)
+            gamma_bc = bc.get_gamma(K0)
 
             if bc.material_correction:
-                tet_ids = mesh.tri_to_tet[0,tri_ids]
-                eravg = (er[0,0,tet_ids] + er[1,1,tet_ids] + er[2,2,tet_ids])/3
-                gamma = bc.get_gamma(K0) * np.sqrt(eravg)
+                tet_ids = mesh.tri_to_tet[0, tri_ids]
+                eravg = (er[0, 0, tet_ids] + er[1, 1, tet_ids] + er[2, 2, tet_ids]) / 3
+                gamma = gamma_bc * np.sqrt(eravg)
             else:
-                gamma = bc.get_gamma(K0) * np.ones_like(tri_ids, dtype=np.complex128)
+                gamma = gamma_bc * np.ones_like(tri_ids, dtype=np.complex128)
 
             logger.trace(f"    - robin bc γ={np.mean(gamma):.3f}")
 
-            is_pml = getattr(bc, "pml", False)
             wpbc_bvec = None
-            if bc._assemble_matrix and not is_pml:
+            if bc_has_matrix_term(bc):
                 if isinstance(bc, WavePortIH):
                     logger.debug("    - Assembling dense Wave Port Boundary Condition.")
-                    mprof, mode_xy, kappa_m = bc.get_modepf_kappa(
-                        K0, mesh.nodes, mesh.tris[:, tri_ids]
+                    mprof, mode_xy, kappa_m = bc.get_modepf_kappa(K0, mesh.nodes, mesh.tris[:, tri_ids])
+                    values, wpbc_bvec = assemble_wpbc(
+                        field, tri_ids, system.wave_port_dofs(bc), mprof, mode_xy, kappa_m, gamma_bc, K0
                     )
-                    d, r, c, wpbc_bvec = assemble_wpbc(
-                        field, tri_ids, mprof, mode_xy, kappa_m, gamma, K0, bc.cs.zax.vector
-                    )
-                    wpbc_data.append(d)
-                    wpbc_rows.append(r)
-                    wpbc_cols.append(c)
+                    system.add_wave_port_term(out, bc, values, scale)
                 else:
-                    d, r, c = assemble_robin_bc(field, tri_ids, gamma)
-                    data.append(d); rows.append(r); cols.append(c)
-
-                    if isinstance(bc, ThinConductor):
-                        d2, r2, c2_ = assemble_robin_bc(field, tri_ids, gamma, other_side=True)
-                        data2.append(d2); rows2.append(r2); cols2.append(c2_)
+                    system.add_robin_term(out, bc, gamma, scale)
 
             if port_vectors is not None:
                 self._add_port_force(field, bc, tri_ids, K0, port_vectors, wpbc_bvec)
             if background_fields is not None:
                 self._add_background_force(field, bc, tri_ids, K0, background_fields)
 
-            if bc._isabc and bc.order == 2:
+            if bc_has_abc2_term(bc):
                 logger.debug("    - Implementing second order ABC correction.")
-                c2 = bc.get_abccorr(K0)
-                d, r, c = abc_order_2_matrix(field, tri_ids, c2)
-                data.append(d); rows.append(r); cols.append(c)
-
-        B_matrix_robin = _to_csc(data, rows, cols, field.n_field)
-        if len(thin_conductor_bcs) > 0:
-            B_matrix_robin += _to_csc(data2, rows2, cols2, field.n_field)
-        if len(wpbc_data) > 0:
-            B_matrix_robin += _to_csc(wpbc_data, wpbc_rows, wpbc_cols, field.n_field)
-
-        return B_matrix_robin
+                system.add_abc2_term(out, bc, bc.get_abccorr(K0), scale)
 
     def _add_port_force(
         self,
@@ -650,10 +544,14 @@ class Assembler:
             logger.debug(f".. Background field {bf} {np.linalg.norm(b_p):.3f}")
 
     def _assemble_periodic_terms(
-        self, field: Nedelec2, mesh, K0: float, periodic_bcs: list[Periodic]
+        self, system: SystemPattern, field: Nedelec2, mesh: Mesh3D, K0: float, periodic_bcs: list[Periodic]
     ) -> tuple[csc_matrix | None, np.ndarray | None, bool]:
         """Builds the combined periodic reduction matrix P and the set of
         retained DOF indices. Returns (Pmat, keep_indices, has_periodic).
+
+        P and the reduced system P^H K P are put on structural patterns that
+        are computed once (from all-positive copies, so nothing can cancel),
+        which keeps the reduced pattern identical at every frequency.
         """
         from ....mth.pairing import pair_coordinates
         from .periodicbc import gen_periodic_matrix
@@ -692,38 +590,37 @@ class Assembler:
             Pmats.append(Pmat)
 
         logger.trace(f"  - periodic bc removes {len(remove)} boundary DoF")
+        keep_indices = np.setdiff1d(np.arange(field.n_field), np.sort(np.unique(list(remove))))
+
+        key = (system.key, keep_indices.tobytes(), tuple(_pattern_hash(P) for P in Pmats))
+        if self._periodic_patterns is None or self._periodic_patterns[0] != key:
+            P_struct = product_pattern(*Pmats)[:, keep_indices].tocsc()
+            K_struct = system.as_csc_matrix(np.ones(system.nnz))
+            S_struct = product_pattern(P_struct.T, K_struct, P_struct)
+            self._periodic_patterns = (key, P_struct, S_struct)
+
         Pmat = Pmats[0]
         for P2 in Pmats[1:]:
             Pmat = Pmat @ P2
-        keep_indices = np.setdiff1d(np.arange(field.n_field), np.sort(np.unique(list(remove))))
-        Pmat = Pmat[:, keep_indices]
+        Pmat = copy_onto_pattern(Pmat[:, keep_indices], self._periodic_patterns[1])
         return Pmat, keep_indices, True
 
-    def _apply_periodic_reduction(
-        self,
-        K: csc_matrix,
-        solve_ids: np.ndarray,
-        Pmat: csc_matrix,
-        keep_indices: np.ndarray,
-        NF: int,
-        vectors: dict | None = None,
-    ) -> tuple[csc_matrix, np.ndarray]:
-        """Projects K (and optionally a dict of excitation vectors) through
-        the periodic reduction matrix P, and remaps solve_ids into the
-        reduced DOF numbering.
-        """
-        mask = np.zeros((NF,))
-        mask[solve_ids] = 1
-        mask = mask[keep_indices]
-        solve_ids = np.argwhere(mask == 1).flatten()
+    def _reduce_periodic(self, M: csc_matrix, Pmat: csc_matrix) -> csc_matrix:
+        """P^H M P on the cached reduced pattern."""
+        return copy_onto_pattern(Pmat.getH() @ M @ Pmat, self._periodic_patterns[2])
 
-        Pd = Pmat.getH()
-        K = (Pd @ K @ Pmat).tocsc()
-        if vectors is not None:
-            for key, b in list(vectors.items()):
-                vectors[key] = Pd @ b
+    @staticmethod
+    def _periodic_solve_ids(solve_ids: np.ndarray, keep_indices: np.ndarray, NF: int) -> np.ndarray:
+        """Remaps solve_ids into the reduced periodic DOF numbering."""
+        mask = np.zeros(NF, dtype=bool)
+        mask[solve_ids] = True
+        return np.flatnonzero(mask[keep_indices])
 
-        return K, solve_ids
+    @staticmethod
+    def _solve_ids(NF: int, pec_ids: set[int]) -> np.ndarray:
+        mask = np.ones(NF, dtype=bool)
+        mask[list(pec_ids)] = False
+        return np.flatnonzero(mask)
 
     # ------------------------------------------------------------------
     # Boundary mode analysis (unchanged -- different field type / shape,
@@ -828,7 +725,7 @@ class Assembler:
         bcs: list[BoundaryCondition],
         frequency: float,
         cache_matrices: bool = False,
-    ) -> SimJob:
+    ) -> tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Assembles the frequency domain FEM matrix
 
         Args:
@@ -839,14 +736,11 @@ class Assembler:
             cache_matrices (bool, optional): Whether to use and cache matrices. Defaults to False.
 
         Returns:
-            SimJob: The resultant SimJob object
+            tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]: The SimJob and the (er, ur, cond) material tensors
         """
-        from .curlcurl import tet_mass_stiffness_matrices
-
         logger.debug(f'Assembling frequency = {_format_freq(frequency)}')
 
-        W0 = 2 * np.pi * frequency
-        K0 = W0 / C0
+        K0 = 2 * np.pi * frequency / C0
         mesh = field.mesh
         NF = field.n_field
 
@@ -854,31 +748,14 @@ class Assembler:
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
         logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
 
-        full_caching = cache_matrices and not is_frequency_dependent
-        if full_caching and self.cached_matrices is not None:
-            logger.debug(" - Using cached matricies.")
-            Emat, Bmat = self.cached_matrices
-            K: csc_matrix = csc_axpy_same_pattern(Emat, Bmat, (-K0 ** 2))
-        else:
-            logger.debug(" - Calling matrix assembler...")
-            t0 = time.time()
-            Evec, Bvec, cscmap = tet_mass_stiffness_matrices(
-                field, er, ur, conductor_tets, self.cached_cscmap
-            )
-            t1 = time.time()
-            logger.debug(f' - Assembly speed: {(field.ntets - len(conductor_tets)) / (t1 - t0):.1f} tets/s')
-            self.cached_cscmap = cscmap
-
-            K: csc_matrix = self.cached_cscmap.to_csc(Evec - Bvec * (K0 ** 2))
-
-            if full_caching:
-                self.cached_matrices = (self.cached_cscmap.to_csc(Evec), self.cached_cscmap.to_csc(Bvec))
-
-        thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         port_bcs: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
-        
+
+        system, E, B = self._prepare_system(
+            field, er, ur, conductor_tets, robin_bcs, cache_matrices and not is_frequency_dependent
+        )
+
         port_vectors: dict[int | float, np.ndarray] = {}
         for port in sorted(port_bcs, key=lambda x: x.port_number):
             for mat_index, mode_nr in port._iter_port_numbers():
@@ -887,21 +764,19 @@ class Assembler:
         logger.debug(" - Implementing PEC Boundary Conditions.")
         pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
-        B_matrix_robin = self._assemble_robin_terms(
-            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, port_vectors=port_vectors
-        )
-        K += B_matrix_robin
+        K_data = system.a_plus_alpha_b(E, B, -K0 ** 2)
+        if len(robin_bcs) > 0:
+            logger.debug(" - Assembling Robin Boundary Conditions.")
+        self._assemble_robin_terms(system, K_data, field, mesh, K0, er, robin_bcs, port_vectors=port_vectors)
+        K = system.as_csc_matrix(K_data)
 
-        if len(periodic_bcs) > 0:
-            logger.debug("  - Implementing Periodic Boundary Conditions.")
-        Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(field, mesh, K0, periodic_bcs)
-
-        mask = np.ones(NF, dtype=bool)
-        mask[list(pec_ids)] = False
-        solve_ids = np.flatnonzero(mask)
-        
+        solve_ids = self._solve_ids(NF, pec_ids)
+        Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(system, field, mesh, K0, periodic_bcs)
         if has_periodic:
-            K, solve_ids = self._apply_periodic_reduction(K, solve_ids, Pmat, keep_indices, NF, port_vectors)
+            K = self._reduce_periodic(K, Pmat)
+            solve_ids = self._periodic_solve_ids(solve_ids, keep_indices, NF)
+            for key, b in port_vectors.items():
+                port_vectors[key] = Pmat.getH() @ b
 
         logger.debug(f"  - Number of tets: {mesh.n_tets:,}")
         logger.debug(f"  - Number of DoF: {K.shape[0]:,}")
@@ -909,13 +784,9 @@ class Assembler:
 
         if self.mldata_filename is not None:
             from ....mldata import MLPreconData
-            if self.cached_matrices is not None:
-                Emat, Bmat = self.cached_matrices
-            else:
-                Emat = self.cached_cscmap.to_csc(Evec)
-                Bmat = self.cached_cscmap.to_csc(Bvec)
-
-            Bmat = Bmat - B_matrix_robin/K0**2
+            Emat = system.as_csc_matrix(E)
+            # K = E - k0^2 (B - R/k0^2): the boundary terms folded into the mass matrix.
+            Bmat = system.as_csc_matrix((E - K_data) / K0 ** 2)
 
             # Discrete gradient G : Legrange2 -> Nedelec2. Exported alongside
             # E/B because it cannot be reconstructed from them, and an
@@ -959,7 +830,7 @@ class Assembler:
         bcs: list[BoundaryCondition],
         frequency: float,
         cache_matrices: bool = False,
-    ) -> SimJob:
+    ) -> tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Assembles the scattered-field frequency domain FEM matrix
 
         Args:
@@ -970,69 +841,47 @@ class Assembler:
             cache_matrices (bool, optional): Whether to use and cache matrices. Defaults to False.
 
         Returns:
-            SimJob: The resultant SimJob object
+            tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]: The SimJob and the (er, ur, cond) material tensors
         """
-        from .curlcurl import tet_mass_stiffness_matrices
-
-        W0 = 2 * np.pi * frequency
-        K0 = W0 / C0
+        K0 = 2 * np.pi * frequency / C0
         mesh = field.mesh
         NF = field.n_field
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
 
-        if cache_matrices and not is_frequency_dependent and self.cached_matrices is not None:
-            logger.debug("Using cached matricies.")
-            matrix_stiff_coo, matrix_mass_coo = self.cached_matrices
-        else:
-            logger.debug("Assembling matrices")
-            matrix_stiff_coo, matrix_mass_coo, cscmap = tet_mass_stiffness_matrices(
-                field, er, ur, conductor_tets, self.cached_cscmap
-            )
-            self.cached_cscmap = cscmap
-            self.cached_matrices = (matrix_stiff_coo, matrix_mass_coo)
-
-        matrix_fem: csc_matrix = self.cached_cscmap.to_csc(
-            matrix_stiff_coo - matrix_mass_coo * (K0 ** 2)
-        )
-
-        thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
-        pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
+
+        system, E, B = self._prepare_system(
+            field, er, ur, conductor_tets, robin_bcs, cache_matrices and not is_frequency_dependent
+        )
 
         logger.debug("Implementing PEC Boundary Conditions.")
         pec_ids, pec_tris = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
         background_fields: dict[tuple[float, float], np.ndarray] = {}
 
-        B_matrix_robin = self._assemble_robin_terms(
-            field, mesh, K0, er, robin_bcs, thin_conductor_bcs, background_fields=background_fields
+        K_data = system.a_plus_alpha_b(E, B, -K0 ** 2)
+        self._assemble_robin_terms(
+            system, K_data, field, mesh, K0, er, robin_bcs, background_fields=background_fields
         )
-        matrix_fem += B_matrix_robin
+        matrix_fem = system.as_csc_matrix(K_data)
 
-        if len(periodic_bcs) > 0:
-            logger.debug("Implementing Periodic Boundary Conditions.")
-
-        Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(field, mesh, K0, periodic_bcs)
-
-        mask = np.ones(NF, dtype=bool)
-        mask[list(pec_ids)] = False
-        solve_ids = np.flatnonzero(mask)
-
-        is_symmetric=True
+        solve_ids = self._solve_ids(NF, pec_ids)
+        Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(system, field, mesh, K0, periodic_bcs)
         if has_periodic:
-            matrix_fem, solve_ids = self._apply_periodic_reduction(
-                matrix_fem, solve_ids, Pmat, keep_indices, NF, background_fields
-            )
-            is_symmetric = False
+            matrix_fem = self._reduce_periodic(matrix_fem, Pmat)
+            solve_ids = self._periodic_solve_ids(solve_ids, keep_indices, NF)
+            for key, b in background_fields.items():
+                background_fields[key] = Pmat.getH() @ b
+
         logger.debug(f"Number of tets: {mesh.n_tets:,}")
         logger.debug(f"Number of DoF: {matrix_fem.shape[0]:,}")
         logger.debug(f"Number of non-zero: {matrix_fem.nnz:,}")
 
         simjob = SimJob(
-            matrix_fem, background_fields, K0 * 299792458 / (2 * np.pi), symmetric=is_symmetric
+            matrix_fem, background_fields, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic
         )
 
         simjob.solve_ids = solve_ids
@@ -1053,7 +902,7 @@ class Assembler:
         mat_assy: MaterialAssignment,
         bcs: list[BoundaryCondition],
         frequency: float,
-    ) -> SimJob:
+    ) -> tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Assembles the eigenmode analysis matrix
 
         The assembly process is frequency dependent because the frequency-dependent properties
@@ -1067,52 +916,36 @@ class Assembler:
             frequency (float): The compilation frequency (for material properties only)
 
         Returns:
-            SimJob: The resultant simulation job
+            tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]: The SimJob and the (er, ur, cond) material tensors
         """
-        from .curlcurl import tet_mass_stiffness_matrices
-
         mesh = field.mesh
         k0 = 2 * np.pi * frequency / C0
+        NF = field.n_field
 
         er, ur, cond, _ = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
 
-        logger.debug("Assembling matrices")
-        stiff, mass, cscmap = tet_mass_stiffness_matrices(field, er, ur, conductor_tets)
-        matrix_stiff = cscmap.to_csc(stiff)
-        matrix_mass = cscmap.to_csc(mass)
-        self.cached_matrices = (matrix_stiff, matrix_mass)
-
-        NDoF = matrix_stiff.shape[0]
-
-        thin_conductor_bcs: list[ThinConductor] = [bc for bc in bcs if isinstance(bc, ThinConductor)]
-        pec_bcs: list[PEC] = [bc for bc in bcs if isinstance(bc, PEC)]
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
+
+        logger.debug("Assembling matrices")
+        system, E, B = self._prepare_system(field, er, ur, conductor_tets, robin_bcs, use_cache=False)
 
         logger.debug("Implementing PEC Boundary Conditions.")
         pec_ids, _ = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)
 
         # Eigenmode assembly has no excitation vectors.
-        B_matrix_robin = self._assemble_robin_terms(
-            field, mesh, k0, er, robin_bcs, thin_conductor_bcs
-        )
-        matrix_mass += B_matrix_robin / (k0**2)
+        mass_data = B.copy()
+        self._assemble_robin_terms(system, mass_data, field, mesh, k0, er, robin_bcs, scale=-1 / k0 ** 2)
+        matrix_stiff = system.as_csc_matrix(E)
+        matrix_mass = system.as_csc_matrix(mass_data)
 
-        if len(periodic_bcs) > 0:
-            logger.debug("Implementing Periodic Boundary Conditions.")
-        Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(field, mesh, k0, periodic_bcs)
-
-        solve_ids = np.array([i for i in range(NDoF) if i not in pec_ids])
-
+        solve_ids = self._solve_ids(NF, pec_ids)
+        Pmat, keep_indices, has_periodic = self._assemble_periodic_terms(system, field, mesh, k0, periodic_bcs)
         if has_periodic:
-            mask = np.zeros((NDoF,))
-            mask[solve_ids] = 1
-            mask = mask[keep_indices]
-            solve_ids = np.argwhere(mask == 1).flatten()
-            Pd = Pmat.getH()
-            matrix_stiff = Pd @ matrix_stiff @ Pmat
-            matrix_mass = Pd @ matrix_mass @ Pmat
+            matrix_stiff = self._reduce_periodic(matrix_stiff, Pmat)
+            matrix_mass = self._reduce_periodic(matrix_mass, Pmat)
+            solve_ids = self._periodic_solve_ids(solve_ids, keep_indices, NF)
 
         logger.debug(f"Number of tets: {mesh.n_tets}")
         logger.debug(f"Number of DoF: {matrix_stiff.shape[0]}")

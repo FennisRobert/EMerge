@@ -91,7 +91,7 @@ air = pcb.generate_air(Hair)  # surrounding air block
 
 # Add all geometry to simulation
 model.commit_geometry()
-model.view(use_gmsh=True)
+
 # --- Solver and mesh settings -------------------------------------------
 model.mw.set_frequency_range(0.05e9, 0.3e9, 31)  # 50–300 MHz sweep
 model.mesher.set_boundary_size(traces, 1 * mm)

@@ -100,8 +100,8 @@ ff_data = data.field[0].farfield_2d((1, 0, 0), (0, 1, 0), radiation_boundary, (-
 plot_ff(ff_data.ang * 180 / np.pi, ff_data.gain.norm, dB=True, ylabel="Gain [dBi]")
 
 # --- Visualization ------------------------------------------------------
-model.display.add_object(horn_vol, opacity=0.1)
-model.display.add_object(feed, opacity=0.1)
+model.display.add_object(horn_vol)
+model.display.add_object(feed)
 model.display.add_farfield3d(
     data.field[0].farfield_3d(radiation_boundary),
     component="gain.norm",

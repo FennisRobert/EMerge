@@ -111,10 +111,10 @@ data = model.mw.run_sweep()
 
 model.display.add_object(waveguide)
 model.display.add_object(box)
-model.display.cbar("Ey").add_field(
-    data.field[0].cutplane(3 * mm, y=0).scalar("Ey", "real"), symmetrize=True
+model.display.animate().cbar("Ey").add_field(
+    data.field[0].cutplane(3 * mm, y=0).scalar("Ey", "complex"), symmetrize=True
 )
-model.display.cbar("Ey").add_field(
-    data.field[0].cutplane(3 * mm, x=0).scalar("Ey", "real"), symmetrize=True
+model.display.animate().cbar("Ey").add_field(
+    data.field[0].cutplane(3 * mm, x=0).scalar("Ey", "complex"), symmetrize=True
 )
 model.display.show()

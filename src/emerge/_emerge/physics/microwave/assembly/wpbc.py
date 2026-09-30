@@ -30,35 +30,46 @@ from .robinbc import assemble_robin_bc_bvec
 ############################################################
 
 
+def wpbc_dofs(field: Nedelec2, surf_triangle_indices: np.ndarray) -> np.ndarray:
+    """All DoFs on the port surface triangles.
+
+    The mode overlap vector G can only be non-zero on these DoFs. Using this
+    (frequency independent) set instead of the non-zero entries of G keeps the
+    sparsity pattern of the dense WPBC block identical at every frequency.
+    """
+    return np.unique(field.tri_to_field[:, surf_triangle_indices])
+
+
+def wpbc_rowcol(active_dof_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Row/col indices of the dense WPBC block, in the order of assemble_Bmatrix_entries."""
+    cols_grid, rows_grid = np.meshgrid(active_dof_ids, active_dof_ids)
+    return rows_grid.ravel(), cols_grid.ravel()
+
+
 def assemble_Bmatrix_entries(
     G_global: np.ndarray,
     constant: complex,
     active_dof_ids: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Builds the dense rank-1 boundary matrix update constant * G Gᵀ.
+) -> np.ndarray:
+    """Builds the values of the dense rank-1 boundary matrix update constant * G Gᵀ.
 
-    Only the DoFs with a non-zero mode overlap (active_dof_ids) are expanded,
-    so the result can be scattered directly into a sparse COO matrix.
+    Only the active_dof_ids are expanded; the matching row/col indices are
+    given by wpbc_rowcol(active_dof_ids).
     """
     G_active = G_global[active_dof_ids]
-
-    Bdense = constant * np.outer(G_active, G_active)
-
-    cols_grid, rows_grid = np.meshgrid(active_dof_ids, active_dof_ids)
-
-    return Bdense.ravel(), rows_grid.ravel(), cols_grid.ravel()
+    return (constant * np.outer(G_active, G_active)).ravel()
 
 
 def assemble_wpbc(
     field: Nedelec2,
     surf_triangle_indices: np.ndarray,
+    active_dof_ids: np.ndarray,
     mprof: Callable,
     mode_xy: Callable,
     kappa_m: complex,
     gamma_m: complex,
     k0: float,
-    port_normal: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Assembles the dense (full modal) Wave Port Boundary Condition.
 
     The port mode overlap vector G = ∫ (γ_m e_tm - ∇e_zm) · N dS is computed by
@@ -71,22 +82,20 @@ def assemble_wpbc(
     Args:
         field (Nedelec2): The Nedelec2 field object.
         surf_triangle_indices (np.ndarray): Indices of the port surface triangles.
+        active_dof_ids (np.ndarray): The port DoFs to expand the block over (see wpbc_dofs).
         mprof (Callable): The effective mode profile function γ_m e_tm - ∇e_zm.
         mode_xy (Callable): The transverse mode field function e_tm.
         kappa_m (complex): The port mode kappa coefficient.
         gamma_m (complex): The port mode propagation constant (j*beta).
         k0 (float): The free space wavenumber.
-        port_normal (np.ndarray): The port face normal (kept for interface
-            compatibility; the overlap integral is orientation independent).
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The dense B-matrix
-        data, rows and cols (COO format) and the excitation vector.
+        tuple[np.ndarray, np.ndarray]: The dense B-matrix values (ordered as
+        wpbc_rowcol(active_dof_ids)) and the excitation vector.
     """
     G = assemble_robin_bc_bvec(field, surf_triangle_indices, mprof)
     G_xy = assemble_robin_bc_bvec(field, surf_triangle_indices, mode_xy)
 
-    ids = np.argwhere(G != 0).ravel()
     w0 = C0 * k0
-    Bvec, rows, cols = assemble_Bmatrix_entries(G, -1.0 / (1j * w0 * MU0 * kappa_m), ids)
-    return Bvec, rows, cols, - 2 * gamma_m * G_xy
+    Bvec = assemble_Bmatrix_entries(G, -1.0 / (1j * w0 * MU0 * kappa_m), active_dof_ids)
+    return Bvec, - 2 * gamma_m * G_xy

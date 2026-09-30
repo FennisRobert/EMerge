@@ -145,6 +145,7 @@ cavity_lengths = (
 
 # --- Build and simulate full filter -------------------------------------
 with em.Simulation("FullFilter") as model_final:
+    
     # Input feed section
     feed1 = em.geo.Box(wga, Lfeed, wgb, (-wga / 2, -Lfeed, 0))
     # Create cavities and irises sequentially
@@ -180,7 +181,7 @@ with em.Simulation("FullFilter") as model_final:
     p2 = model_final.mw.bc.RectangularWaveguide(feed2.back, 2)
 
     # Run frequency-domain sweep and extract S-parameters
-    data = model_final.mw.run_sweep(parallel=True, n_workers=3, frequency_groups=9)
+    data = model_final.mw.run_sweep()
     grid = data.scalar.grid
     freqs = grid.freq
     fdense = np.linspace(freqs[0], freqs[-1], 2001)
@@ -193,19 +194,15 @@ with em.Simulation("FullFilter") as model_final:
     plot_sp(fdense, [S11, S21], labels=["S11", "S21"])
 
     # Visualize geometry and mode shapes
-    model_final.display.add_object(feed1, opacity=0.1)
-    model_final.display.add_object(feed2, opacity=0.1)
+    model_final.display.add_object(feed1)
+    model_final.display.add_object(feed2)
     for obj in irises + cavities:
-        model_final.display.add_object(obj, opacity=0.1)
+        model_final.display.add_object(obj)
     # Show electric field cut-plane at center frequency
-    cut = data.field.find(freq=f0).cutplane(1 * mm, z=wgb / 2)
-    # model_final.display.animate().add_field(
-    #     cut.scalar("Ez", "complex"), symmetrize=True
-    # )
-    model_final.display.add_particle_lines(
-        data.field.find(freq=f0).trace_poynting_lines(seed_surface=feed1.front, max_steps=200, verbose=True),
-        tube_radius=0.0001,
-        arrow_scale=0.0001)
+    cut = data.field.find(freq=f0).grid(N=100_000)
+    model_final.display.animate().add_field(
+        cut.scalar("Ez", "complex"), symmetrize=True
+    )
     model_final.display.add_portmode(p1, k0=data.field.find(freq=f0).k0)
     model_final.display.add_portmode(p2, k0=data.field.find(freq=f0).k0)
     model_final.display.show()

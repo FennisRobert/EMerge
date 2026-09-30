@@ -2,6 +2,10 @@
 # Copyright (C) 2025  Robert Fennis.
 # ... (license header unchanged)
 
+# NOTE: The domain decomposition (CNOSDD) assembler is currently an UNSUPPORTED code path.
+# It is not kept in sync with the main assembler (e.g. the Robin and second order ABC
+# assembly signatures have changed) and is expected to fail.
+
 import numpy as np
 from ..bcs import (
     PEC,

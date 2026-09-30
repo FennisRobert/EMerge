@@ -91,7 +91,7 @@ p1 = model.mw.bc.LumpedPort(lp1, 1)
 p2 = model.mw.bc.LumpedPort(lp2, 2)
 
 # Finally we run the simulation!
-data = model.mw.run_sweep(True, n_workers=4, frequency_groups=8)
+data = model.mw.run_sweep()
 
 freq = data.scalar.grid.dense_f(1001)
 S11 = data.scalar.grid.model_S(1, 1, freq)

@@ -67,6 +67,37 @@ class Void(BoundaryCondition, Saveable):
     dim: int = 3
     pass
 
+def _fit_tm_o2(c1: float, theta_max_deg: float) -> float:
+    """Fits the TM (surface divergence) second order ABC coefficient.
+
+    For a plane wave at angle θ (u = cos θ, s² = sin² θ) the second order ABC imposes
+    n×∇×E = jk·(c1 + b·s²)·E_t on the TE part and jk·(c1 + d·s²)·E_t on the TM part,
+    while the exact values are jk·u (TE) and jk/u (TM). The zeroth order c1 is shared
+    through the Robin term, so the TE fit (c1, b) says nothing about 1/u. This returns
+    the d that minimizes the worst TM reflection |(1 - u·p)/(1 + u·p)|, p = c1 + d·s²,
+    over [0, θ_max].
+
+    Args:
+        c1 (float): The zeroth order (Robin) coefficient.
+        theta_max_deg (float): The maximum angle of incidence in degrees.
+
+    Returns:
+        float: The TM coefficient d.
+    """
+    theta_max = np.radians(min(theta_max_deg, 89.0))
+    u = np.cos(np.linspace(0.0, theta_max, 181))
+    s2 = 1.0 - u**2
+
+    def worst(ds: np.ndarray) -> np.ndarray:
+        up = u[None, :] * (c1 + ds[:, None] * s2[None, :])
+        return np.max(np.abs((1 - up) / (1 + up)), axis=1)
+
+    ds = np.linspace(0.0, 10.0, 1001)
+    d0 = ds[np.argmin(worst(ds))]
+    ds = np.linspace(max(d0 - 0.01, 0.0), d0 + 0.01, 201)
+    return float(ds[np.argmin(worst(ds))])
+
+
 class RobinBC(BoundaryCondition, Saveable):
     _color: str = "#e7c736"
     _name: str = "RobinBC"
@@ -125,11 +156,26 @@ class RobinBC(BoundaryCondition, Saveable):
         raise NotImplementedError("get_Uinc not implemented for Port class")
 
     def _get_o2(self) -> float:
+        """The TE (surface curl) second order coefficient b in u ≈ c1 + b·sin²θ."""
         return self.o2coeffs[self.abctype][1]
-    
-    def get_abccorr(self, k0: float) -> float:
+
+    def _get_o2_tm(self) -> float:
+        """The TM (surface divergence) second order coefficient d in 1/u ≈ c1 + d·sin²θ.
+
+        Defaults to -b, which is the exact second order Taylor expansion for type A.
+        """
+        return -self._get_o2()
+
+    def get_abccorr(self, k0: float) -> tuple[complex, complex]:
+        """The second order ABC coefficients (c_curl, c_div).
+
+        The correction added to the system matrix is c_curl * ∫curl_t(F)curl_t(E)dS
+        + c_div * ∫div_t(F)div_t(E)dS, which absorbs the TE and TM parts of the field
+        with independent coefficients.
+        """
         f = k0 * C0 / (2 * np.pi)
-        return 1j * self._get_o2() / (self.material.neff(f) * k0)
+        kn = self.material.neff(f) * k0
+        return 1j * self._get_o2() / kn, 1j * self._get_o2_tm() / kn
 
 
 class AbsorbingBoundary(RobinBC, Saveable):
@@ -170,6 +216,7 @@ class AbsorbingBoundary(RobinBC, Saveable):
         self.material: Material = AIR
         self.abctype: Literal["A", "B", "C", "D", "E"] = abctype
         self._coeffset: tuple[float, float] = None
+        self._tm_coeff: float | None = None
 
     def get_basis(self) -> np.ndarray:
         return np.eye(3)
@@ -239,6 +286,7 @@ class AbsorbingBoundary(RobinBC, Saveable):
         c2 = 1.0 / S
 
         self._coeffset = (c1, -c2)
+        self._tm_coeff = _fit_tm_o2(c1, angle_deg)
         
     def set_zero_angles(self, ang1_deg: float, ang2_deg: float):
         """Define two angles for which the absorbing boundary condition has a zero reflection
@@ -266,11 +314,19 @@ class AbsorbingBoundary(RobinBC, Saveable):
         c1 = (1.0 + P) / S
         c2 = 1.0 / S
         self._coeffset = (c1, -c2)
+        # The TE zeros can't be reproduced for TM with the shared c1; fit TM up to the largest angle
+        self._tm_coeff = _fit_tm_o2(c1, max(ang1_deg, ang2_deg))
 
     def _get_o2(self) -> float:
         if self._coeffset is not None:
             return self._coeffset[1]
         return self.o2coeffs[self.abctype][1]
+
+    def _get_o2_tm(self) -> float:
+        tm_coeff = getattr(self, "_tm_coeff", None)
+        if tm_coeff is not None:
+            return tm_coeff
+        return -self._get_o2()
 
     
     def get_gamma(self, k0: float) -> complex:

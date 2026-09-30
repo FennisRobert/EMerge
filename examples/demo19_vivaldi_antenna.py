@@ -199,8 +199,8 @@ plot_ff_polar(
 # Finally we create a simple field plot.
 ff_data = data.field.find(freq=6e9).farfield_3d(abc)
 model.display.add_objects(*model.all_geos())
-model.display.add_field(
-    data.field[1].cutplane(0.8 * mm, z=-th * mm / 2).scalar("Ey", "real"),
+model.display.animate().add_field(
+    data.field[1].cutplane(0.8 * mm, z=-th * mm / 2).scalar("Ey", "complex"),
     symmetrize=True,
 )
 model.display.add_farfield3d(

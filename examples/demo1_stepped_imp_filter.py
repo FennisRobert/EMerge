@@ -28,7 +28,7 @@ pcbmat = em.Material(er=er, color="#217627", opacity=0.2)
 
 # We start by creating our simulation object.
 
-model = em.Simulation("SteppedImpedanceFilter", loglevel='DEBUG')
+model = em.Simulation("SteppedImpedanceFilter")
 model.check_version("3.0.0")  # Checks version compatibility.
 
 # To accomodate PCB routing we make use of the PCBLayouter class. To use it we need to

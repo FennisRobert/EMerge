@@ -129,8 +129,8 @@ def tri_coefficients(vxs, vys):
 # fmt: off
 DPTS = np.array([
     [0.37500000000000000, 0.10416666666666700, 0.10416666666666700, 0.10416666666666700, 0.10416666666666700, 0.10416666666666700, 0.10416666666666700],  # weights
-    [0.33333333333333298, 0.73671249896843505, 0.73671249896843505, 0.23793236647243399, 0.23793236647243399, 0.02535513455193200, 0.02535513455193200],  # L1
-    [0.33333333333333298, 0.23793236647243399, 0.02535513455193200, 0.73671249896843505, 0.02535513455193200, 0.73671249896843505, 0.23793236647243399],  # L2
+    [0.33333333333333298, 0.73671249896843505, 0.73671249896843505, 0.23793236647243399, 0.23793236647243399, 0.02535513455913200, 0.02535513455913200],  # L1
+    [0.33333333333333298, 0.23793236647243399, 0.02535513455913200, 0.73671249896843505, 0.02535513455913200, 0.73671249896843505, 0.23793236647243399],  # L2
     [0.33333333333333398, 0.02535513455913097, 0.23793236647963295, 0.02535513455913097, 0.73671249897563396, 0.23793236647963290, 0.73671249897563396],  # L3
 ], dtype=np.float64)
 # fmt: on
@@ -140,9 +140,13 @@ DPTS = np.array([
 ############################################################
 
 
-@njit(c16[:, :](f8[:, :], c16, i8[:]), cache=True, nogil=True)
-def _abc_order_2_terms(tri_vertices, cf, dofcodes):
-    """ABC order 2 tangent gradient term"""
+@njit(c16[:, :, :](f8[:, :], i8[:]), cache=True, nogil=True)
+def _abc_order_2_terms(tri_vertices, dofcodes):
+    """ABC order 2 surface curl and divergence terms of one triangle.
+
+    Returns an array of shape (2, ndof, ndof): [0] = ∫ curl_t(F_i) curl_t(F_j) dS (TE part),
+    [1] = ∫ div_t(F_i) div_t(F_j) dS (TM part).
+    """
     typearry, indexarry = parse_dofcode(dofcodes)
     ndof = dofcodes.shape[0]
 
@@ -212,7 +216,9 @@ def _abc_order_2_terms(tri_vertices, cf, dofcodes):
             CurlMatrix[idof1, idof2] = np.sum(FC1 * FC2 * WEIGHTS)
             DivMatrix[idof1, idof2] = np.sum(FD1 * FD2 * WEIGHTS)
 
-    out = cf * (CurlMatrix - DivMatrix) * Area
+    out = np.empty((2, ndof, ndof), dtype=np.complex128)
+    out[0, :, :] = CurlMatrix * Area
+    out[1, :, :] = DivMatrix * Area
 
     return out
 
@@ -223,24 +229,25 @@ def _abc_order_2_terms(tri_vertices, cf, dofcodes):
 
 
 @njit(
-    (c16[:])(f8[:, :], i8[:, :], i8[:, :], i8[:, :], i8[:], c16, i8[:]),
+    types.Tuple((c16[:], c16[:]))(f8[:, :], i8[:, :], i8[:], i8[:]),
     cache=True,
     nogil=True,
     parallel=True,
 )
-def _matrix_builder(nodes, tris, edges, tri_to_field, tri_ids, coeff, dofcodes):
+def _matrix_builder(nodes, tris, tri_ids, dofcodes):
     """Numba optimized loop over each face triangle.
 
-    Writes into a COMPACT Mat sized (Ntris*nsq,) -- position itri_sub (the
-    local loop index), not the global triangle id -- so the caller only has
-    to allocate space for the triangles actually passed in, not the whole
-    mesh.
+    Writes into COMPACT Curl and Div arrays sized (Ntris*nsq,) -- position
+    itri_sub (the local loop index), not the global triangle id -- so the
+    caller only has to allocate space for the triangles actually passed in,
+    not the whole mesh.
     """
     n = dofcodes.shape[0]
     nsq = (n**2)
 
     Ntris = tri_ids.shape[0]
-    Mat = np.zeros(Ntris * nsq, dtype=np.complex128)
+    Curl = np.zeros(Ntris * nsq, dtype=np.complex128)
+    Div = np.zeros(Ntris * nsq, dtype=np.complex128)
 
     for itri_sub in prange(Ntris):  # type: ignore
         itri = tri_ids[itri_sub]
@@ -248,11 +255,12 @@ def _matrix_builder(nodes, tris, edges, tri_to_field, tri_ids, coeff, dofcodes):
 
         # Construct the local edge map
         tri_nodes = nodes[:, tris[:, itri]]
-        subMat = _abc_order_2_terms(tri_nodes, coeff, dofcodes)
+        subMat = _abc_order_2_terms(tri_nodes, dofcodes)
 
-        Mat[p : p + nsq] += subMat.ravel()
+        Curl[p : p + nsq] += subMat[0].ravel()
+        Div[p : p + nsq] += subMat[1].ravel()
 
-    return Mat
+    return Curl, Div
 
 
 ############################################################
@@ -261,27 +269,30 @@ def _matrix_builder(nodes, tris, edges, tri_to_field, tri_ids, coeff, dofcodes):
 
 
 def abc_order_2_matrix(
-    field: Nedelec2, surf_triangle_indices: np.ndarray, coeff: complex
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    field: Nedelec2, surf_triangle_indices: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Computes the second order absorbing boundary condition correction terms.
+
+    The TE (surface curl) and TM (surface divergence) parts are returned separately
+    at unit coefficient so that each can be scaled by its own coefficient:
+
+        A = c_curl * Curl + c_div * Div
+
+    with (c_curl, c_div) from RobinBC.get_abccorr(k0).
 
     Args:
         field (Nedelec2): The Basis function object
         surf_triangle_indices (np.ndarray): The surface triangle indices to add
-        coeff (complex): The integral coefficient jp2/k0
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray]: Compact (data, rows, cols)
-        triplet, sized to just the given triangles.
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: Compact (curl, div, rows, cols)
+        data, sized to just the given triangles.
     """
-    Mat = _matrix_builder(
+    Curl, Div = _matrix_builder(
         field.mesh.nodes,
         field.mesh.tris,
-        field.mesh.edges,
-        field.tri_to_field,
         surf_triangle_indices,
-        coeff,
         field.dofcodes2d
     )
     rows, cols = field.tri_rowcol(surf_triangle_indices)
-    return Mat, rows, cols
+    return Curl, Div, rows, cols

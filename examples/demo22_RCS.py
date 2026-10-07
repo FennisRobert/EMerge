@@ -24,14 +24,14 @@ OBJECT = "PEC SPHERE"
 
 air_radius = 1.5
 # First we create our simulation object
-model = em.Simulation("RCS", loglevel='DEBUG')
+model = em.Simulation("RCS")
 model.check_version("3.0.0")  # Checks version compatibility
 #model.set_solver(em.EMSolver.TEST)
 # We select the material of choice
 if OBJECT == "PEC SPHERE":
     material = em.lib.PEC
 else:
-    material = em.Material(er=4, color="#17B258")
+    material = em.Material(er=4, color="#17B258", opacity=0.3)
 
 if OBJECT in ("PEC SPHERE", "DIEL SPHERE"):
     scatter_object = em.geo.Sphere(radius=0.5).set_material(material)
@@ -52,6 +52,7 @@ model.mw.set_frequency(300e6)
 # We rather have a resolution of 0.15 or even 0.1 for accuracy but the RAM requirements are up to 20GB
 model.mw.set_resolution(0.18)
 
+model.mesher.set_face_size(scatter_object.boundary(), 0.1)
 # Now we can generate the mesh
 model.generate_mesh()
 model.view()
@@ -87,7 +88,7 @@ ff3d = field.farfield_3d(scatter_object.boundary())
 # For farfield integration this is not necessary because numerically the integral of external sources always yields 0.
 display = model.display
 display.populate(smooth_shading=True)  # Adds all geometries
-display.add_field(field.relative.grid(N=5000).vector("E"))  # Adds a vector polot
+#display.add_field(field.relative.grid(N=5000).vector("E"))  # Adds a vector polot
 display.add_farfield3d(
     ff3d, component="RCS", rmax=0.6, offset=(0, 0, 1.2)
 )  
@@ -95,10 +96,12 @@ display.add_farfield3d(
 # Adds the 3D Farfield plot
 display.animate().add_field(
     field.relative.grid(N=10_000).scalar("Ey", "complex"), symmetrize=True
-)  
-
+) 
+display.animate().cbar(None).add_field(
+    field.current_boundary(scatter_object).vector('Js','complex')
+)
 # Adds an animation of the plane wave
-display.show()
+display.show(zoom=1.6)
 
 # Finally we will also create a 2D plot
 if OBJECT == "PEC SPHERE":

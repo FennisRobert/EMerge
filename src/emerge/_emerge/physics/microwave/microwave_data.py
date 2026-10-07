@@ -24,6 +24,7 @@ import numpy as np
 from typing import Literal, Callable
 from loguru import logger
 from .adaptive_freq import SparamModel
+from .adaptive_sweep import RationalModel
 from ...cs import Axis, _parse_axis
 from ...selection import FaceSelection, DomainSelection
 from ...geometry import GeoSurface
@@ -56,6 +57,10 @@ EMField = Literal[
 ]
 
 
+def _validate_selection(selection: FaceSelection | DomainSelection):
+    if not selection.tags:
+        raise ValueError(f'Selection {selection} has no tags.')
+    
 def arc_on_plane(ref_dir, normal, angle_range_deg, num_points=100):
     """
     Generate theta/phi coordinates of an arc on a plane.
@@ -972,7 +977,7 @@ class MWField(Saveable):
         Triangle currents are projected onto the tangent plane and transferred
         to nodes using area-weighted averaging.
         """
-
+        _validate_selection(selection)
         boundary = self.mesh.boundary_surface(selection.tags)
 
         tris = boundary.tris
@@ -1071,6 +1076,49 @@ class MWField(Saveable):
         ehfield.structure = DataStructure.TRISURF
 
         return ehfield
+
+    def in_domain(self,
+                  selection: DomainSelection,
+                  nodes: bool = True,
+                  edges: bool = False,
+                  tris: bool = False,
+                  tets: bool = False) -> EHField:
+        """Create an unstructured dataset inside some domain. Can only be used with vector plots
+
+        Args:
+            selection (DomainSelection): The domain(s) in which to sample the field.
+            nodes (bool, optional): If the nodes should be included. Defaults to True.
+            edges (bool, optional): If edge centers should be included. Defaults to False.
+            tris (bool, optional): If triangle centers should be included. Defaults to False.
+            tets (bool, optional): If tet centroids should be included. Defaults to False.
+
+        Returns:
+            EHField: The field sampled at the requested points.
+        """
+        _validate_selection(selection)
+        if not (nodes or edges or tris or tets):
+            raise ValueError('At least one of nodes, edges, tris or tets must be True.')
+
+        mesh = self.mesh
+        tet_ids = mesh.get_tetrahedra(selection.tags)
+        if tet_ids.size == 0:
+            raise ValueError(f'Selection {selection} contains no tetrahedra.')
+
+        points = []
+        if nodes:
+            points.append(mesh.nodes[:, np.unique(mesh.tets[:, tet_ids])])
+        if edges:
+            points.append(mesh.edge_centers[:, np.unique(mesh.tet_to_edge[:, tet_ids])])
+        if tris:
+            points.append(mesh.tri_centers[:, np.unique(mesh.tet_to_tri[:, tet_ids])])
+        if tets:
+            points.append(mesh.centers[:, tet_ids])
+
+        xyz = np.hstack(points)
+        field = self.interpolate(xyz[0, :], xyz[1, :], xyz[2, :], False)
+        field.structure = DataStructure.UNSTRUCTURED
+        return field
+
 
     def cutplane(
         self,
@@ -1919,7 +1967,7 @@ class MWScalar(Saveable):
     """The MWDataSet class stores solution data of FEM Time Harmonic simulations."""
 
     _fields: list[str] = ["freq", "k0", "Sp", "beta", "Pout", "Z0"]
-    _copy: list[str] = ["_portmap", "_portnumbers", "port_modes"]
+    _copy: list[str] = ["_portmap", "_portnumbers", "port_modes", "_aaa_tol"]
 
     def __init__(self):
         self.freq: float = None
@@ -1933,6 +1981,8 @@ class MWScalar(Saveable):
         self._portnumbers: list[int | float] = []
         self.port_modes: list[PortProperties] = []
         self.vars: dict[str, float | complex] = dict()
+        # AAA fit tolerance if sampled by run_adaptive_sweep, else None
+        self._aaa_tol: float | None = None
         
     def init_sp(self, portnumbers: list[int | float]) -> None:
         """Initialize the S-parameter dataset with the given number of ports."""
@@ -1982,7 +2032,7 @@ class MWScalar(Saveable):
 
 class MWScalarNdim(Saveable):
     _fields: list[str] = ["freq", "k0", "Sp", "beta", "Pout", "Z0"]
-    _copy: list[str] = ["_portmap", "_portnumbers"]
+    _copy: list[str] = ["_portmap", "_portnumbers", "_aaa_tol"]
 
     def __init__(self):
         self.freq: np.ndarray = None
@@ -1995,6 +2045,7 @@ class MWScalarNdim(Saveable):
         self._portmap: dict[int | float, int] = dict()
         self._portnumbers: list[int | float] = []
         self._dense_frequencies: np.ndarray = None
+        self._aaa_tol: float | None = None
 
         # Ports embedded via embed_external_component are marked inactive
         # here rather than removed -- Sp, _portmap and _portnumbers always
@@ -2027,6 +2078,7 @@ class MWScalarNdim(Saveable):
         newndim._portmap = self._portmap
         newndim._portnumbers = self._portnumbers
         newndim._dense_frequencies = self._dense_frequencies
+        newndim._aaa_tol = self._aaa_tol
         newndim._active_ports = (
             set(self._active_ports) if self._active_ports is not None else None
         )
@@ -2227,6 +2279,24 @@ class MWScalarNdim(Saveable):
         S = renormalise_s(S, Z0s, 50.0)
         return f, S
 
+    def _aaa_Smat(self, freq: np.ndarray, tol: float | None) -> np.ndarray:
+        """Joint AAA model of all active ports evaluated at freq.
+
+        Returns an array of shape (*dims, len(freq), P, P); inactive ports are NaN.
+        """
+        if tol is None:
+            tol = self._aaa_tol if self._aaa_tol is not None else 5e-4
+        active = self._active_ports if self._active_ports is not None else self._portnumbers
+        rows, cols = np.ix_(*[[self._portmap[p] for p in active]] * 2)
+
+        dims = self.freq.shape[:-1]
+        P = len(self._portmap)
+        Smat = np.full(dims + (len(freq), P, P), np.nan, dtype=np.complex128)
+        for ids in np.ndindex(*dims):
+            model = RationalModel(self.freq[ids], self.Sp[ids][:, rows, cols], tol)
+            Smat[ids][:, rows, cols] = model(freq)
+        return Smat
+
     def model_S(
         self,
         i: int,
@@ -2236,21 +2306,29 @@ class MWScalarNdim(Saveable):
         inc_real: bool = True,
         maxpoles: int = 30,
         minpoles: int = 1,
+        method: Literal["auto", "aaa", "vf"] = "auto",
+        tol: float | None = None,
         _warn: bool = True,
     ) -> np.ndarray:
         """Returns an S-parameter model object at a dense frequency range.
-        This method uses vector fitting inside the datasets frequency points to determine a model for the linear system.
+        This method fits a rational model through the datasets frequency points to determine a model for the linear system.
         If no frequency array is provided the .dense_f(NF) method should have been called.
+
+        Two methods are available: 'vf' (Vector Fitting) and 'aaa' (AAA rational approximation of all
+        ports jointly). 'auto' uses 'aaa' for data from run_adaptive_sweep, which is the model the
+        adaptive sweep was converged on, and 'vf' otherwise.
 
         Args:
             i (int): The first S-parameter index
             j (int): The second S-parameter index
             freq (np.ndarray | optional): The frequency sample points. Defaults to None
-            Npoles (int | 'auto', optional): The number of poles to use (approx 2x divice order). Defaults to 10.
-            inc_real (bool, optional): Wether to allow for a real-pole. Defaults to False.
+            Npoles (int | 'auto', optional): VF only: The number of poles to use (approx 2x divice order). Defaults to 'auto'.
+            inc_real (bool, optional): VF only: Wether to allow for a real-pole. Defaults to True.
+            method ('auto' | 'aaa' | 'vf', optional): The fitting method. Defaults to 'auto'.
+            tol (float | None, optional): AAA only: The fit tolerance. Defaults to that of the adaptive sweep, or 5e-4.
 
         Returns:
-            SparamModel: The SparamModel object
+            np.ndarray: The modelled S-parameter
         """
         if freq is None:
             if self._dense_frequencies is None:
@@ -2259,6 +2337,11 @@ class MWScalarNdim(Saveable):
                 )
             else:
                 freq = self._dense_frequencies
+
+        if method == "auto":
+            method = "aaa" if self._aaa_tol is not None else "vf"
+        if method == "aaa":
+            return self._aaa_Smat(freq, tol)[..., self._portmap[i], self._portmap[j]]
 
         shape = np.squeeze(self.S(i, j)).shape
         if len(shape) > 1:
@@ -2292,16 +2375,21 @@ class MWScalarNdim(Saveable):
         frequencies: np.ndarray | None = None,
         Npoles: int = 10,
         inc_real: bool = True,
+        method: Literal["auto", "aaa", "vf"] = "auto",
+        tol: float | None = None,
         _warn: bool = True,
     ) -> np.ndarray:
-        """Generates a full S-parameter matrix on the provided frequency points using the Vector Fitting algorithm.
+        """Generates a full S-parameter matrix on the provided frequency points using a rational model.
 
         This function output can be used directly with the .save_matrix() method.
+        See .model_S() for the available methods.
 
         Args:
             frequencies (np.ndarray): The sample frequencies
-            Npoles (int, optional): The number of poles to fit. Defaults to 10.
-            inc_real (bool, optional): Wether allow for a real pole. Defaults to False.
+            Npoles (int, optional): VF only: The number of poles to fit. Defaults to 10.
+            inc_real (bool, optional): VF only: Wether allow for a real pole. Defaults to True.
+            method ('auto' | 'aaa' | 'vf', optional): The fitting method. Defaults to 'auto'.
+            tol (float | None, optional): AAA only: The fit tolerance. Defaults to that of the adaptive sweep, or 5e-4.
 
         Returns:
             np.ndarray: The (Nf,Np,Np) S-parameter matrix. Entries for
@@ -2316,6 +2404,11 @@ class MWScalarNdim(Saveable):
             else:
                 frequencies = self._dense_frequencies
 
+        if method == "auto":
+            method = "aaa" if self._aaa_tol is not None else "vf"
+        if method == "aaa":
+            return self._aaa_Smat(frequencies, tol)
+
         Nports = len(self._portmap)
         nfreq = frequencies.shape[0]
 
@@ -2325,7 +2418,7 @@ class MWScalarNdim(Saveable):
         for i in active:
             for j in active:
                 S = self.model_S(
-                    i, j, frequencies, Npoles=Npoles, inc_real=inc_real, _warn=_warn
+                    i, j, frequencies, Npoles=Npoles, inc_real=inc_real, method="vf", _warn=_warn
                 )
                 Smat[:, self._portmap[i], self._portmap[j]] = S
         return Smat

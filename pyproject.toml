@@ -47,7 +47,8 @@ dxf = [
   "ezdxf"
 ]
 gerber = [
-  "pygerber"
+  "pygerber>=2.4, <3",
+  "shapely>=2.0",
 ]
 spyder = [
   "trame-pyvista",

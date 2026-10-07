@@ -246,6 +246,7 @@ class Selection(Saveable):
             list[tuple[float,...]]: _description_
         """
         return [(_glob_getCenterOfMass(self.dim, tag), _glob_getArea(tag)) for tag in self.tags]
+    
     @property
     def _metal(self) -> bool:
         """A property needed for the graphic library in order to generally ask if something
@@ -471,7 +472,118 @@ class Selection(Saveable):
         self.__operable__(other)
         return Selection.from_dim_tags(self.dim, self._tags.difference(other.tags))
 
+    def constrain(self: TSelection, xyz_function: Callable = lambda x, y, z: True, complete: bool = True) -> TSelection:
+        """Constrain this selection using a function xyz_function(x,y,z) -> bool.
 
+        The function is evaluated at the minimum and maximum corners of the bounding box
+        of each item in the selection.
+
+        Args:
+            xyz_function (Callable): A callable for (x,y,z) that returns True if the point satisfies the constraint.
+            complete (bool, optional): If True, both corners must satisfy the constraint (entirely inside).
+                If False, one corner suffices (partially inside). Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified to only contain the items that satisfy the constraint.
+        """
+        check = all if complete else any
+        keep = set()
+        for tag in self._tags:
+            x0, y0, z0, x1, y1, z1 = _glob_getBoundingBox(self.dim, tag)
+            if check((xyz_function(x0, y0, z0), xyz_function(x1, y1, z1))):
+                keep.add(tag)
+        self._tags = keep
+        return self
+
+    def below(self: TSelection, z_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items below some Z-level (-Z side).
+
+        Args:
+            z_level (float): The Z-level
+            complete (bool, optional): If it should be entirely below. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: z < z_level, complete)
+
+    def above(self: TSelection, z_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items above some Z-level (+Z side).
+
+        Args:
+            z_level (float): The Z-level
+            complete (bool, optional): If it should be entirely above. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: z > z_level, complete)
+
+    def left_of(self: TSelection, x_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items left of some X-level (-X side).
+
+        Args:
+            x_level (float): The X-level
+            complete (bool, optional): If it should be entirely left of it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: x < x_level, complete)
+
+    def right_of(self: TSelection, x_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items right of some X-level (+X side).
+
+        Args:
+            x_level (float): The X-level
+            complete (bool, optional): If it should be entirely right of it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: x > x_level, complete)
+
+    def front_of(self: TSelection, y_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items in front of some Y-level (-Y side).
+
+        Args:
+            y_level (float): The Y-level
+            complete (bool, optional): If it should be entirely in front of it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: y < y_level, complete)
+
+    def behind(self: TSelection, y_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items behind some Y-level (+Y side).
+
+        Args:
+            y_level (float): The Y-level
+            complete (bool, optional): If it should be entirely behind it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: y > y_level, complete)
+
+    def around(self: TSelection, distance: float, 
+               coordinate: tuple[float, float, float] = (0,0,0)) -> TSelection:
+        """Return all objects with bounding boxes within some distance of a point.
+
+        Args:
+            distance (float): The maximum distance
+            coordinate (tuple[float, float, float], optional): The coordinate. Defaults to (0,0,0).
+
+        Raises:
+            ValueError: _description_
+            RuntimeError: _description_
+
+        Returns:
+            TSelection: _description_
+        """
+        return self.constrain(lambda x,y,z: (x-coordinate[0])**2 + (y-coordinate[1])**2 + (z-coordinate[2])**2 <= distance**2)
+    
 class PointSelection(Selection, Saveable):
     """A Class representing a selection of points."""
 

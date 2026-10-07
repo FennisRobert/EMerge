@@ -33,7 +33,7 @@ from .cacherun import get_build_section, get_run_section
 from .settings import DEFAULT_SETTINGS, Settings
 from .solver import EMSolver, Solver
 from .simstate import SimState
-from .selection import Selector, Selection, FaceSelection
+from .selection import Selector, Selection, FaceSelection, DomainSelection
 from .optim import Optimizer
 from typing import Literal, Generator, Any
 from loguru import logger
@@ -406,6 +406,7 @@ class Simulation:
                 base_obj._become(new_obj)
         for void in voids:
             void.remove()
+            
     ############################################################
     #                       PUBLIC FUNCTIONS                  #
     ############################################################
@@ -1461,3 +1462,52 @@ class Simulation:
         old = self.state.reload()
         self.state.store_geometry_data()
         return old
+
+
+    ############################################################
+    #                       SELECTION HELPERS                  #
+    ############################################################
+
+    def conducting_volumes(self, conductivity_level: float = 1e5) -> DomainSelection:
+        """Returns a selection of all conducting volumes
+
+        Args:
+            conductivity_level (float, optional): The conductivity beyond which a domain is considered conditing.
+            
+        Returns:
+            DomainSelection: _description_
+        """
+        tags = []
+        for geo in self.state.all3d:
+            if geo.material.cond >= conductivity_level:
+                tags.extend(geo.tags)
+        
+        return DomainSelection(tags)
+
+    def conducting_surfaces(self, conductivity_level: float = 1e5) -> FaceSelection:
+        """Returns a face selection for all faces that are considered electrically conducting
+
+        Args:
+            conductivity_level (float, optional): The conductivity level
+
+        Returns:
+            FaceSelection: _description_
+        """
+        from .attributes import MetalCoating
+        tags = []
+        for geo in self.state.all3d:
+            if ((geo.material.cond.value >= conductivity_level) or
+               (geo.properties.get(MetalCoating) is not None)):
+                
+                tags.extend(geo.boundary().tags)
+            
+        for geo in self.state.all2d:
+            if geo.properties.get(MetalCoating) is not None:
+                tags.extend(geo.tags)
+                continue
+            if geo.material is not None:
+                if geo.material.cond.value > conductivity_level:
+                    tags.extend(geo.tags)
+            
+        return FaceSelection(tags)
+                

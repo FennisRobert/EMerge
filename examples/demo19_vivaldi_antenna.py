@@ -11,6 +11,9 @@ Additionally, the narrow regions are a perfect opportunity to demonstrate the ef
 
 Due to the wind band nature of this simulation, it might take a while to simulate. 
 
+Additionally, the absorbing boundaries of this model are too close to the model. The reason is
+to constrain RAM consumption on user devices.
+
 The current version will consume up to 9GB of RAM with non SuperLU Solvers.
 
 For ARM MacOS users it is reccommended to install the Accelerate solver using:
@@ -162,19 +165,17 @@ abc = airbox.outside()
 # The lumped port is defined on the port rectangular region. All the dimensions are automatically stored inside
 # the port geometry object when you create it with the .lumped_port() function so you don't have to pass them!
 model.mw.bc.AbsorbingBoundary(abc)
-model.mesher.set_pec_face(polies)
-model.mesher.set_pec_face(ground)
 
 model.generate_mesh()
 
 model.view(plot_mesh=True, volume_mesh=False)
 
 # Before we run we call our adaptive mesh refinement at 7GHz. You can change the frequency yourself.
-model.adaptive_mesh_refinement(frequency=7e9)
+model.adaptive_mesh_refinement(frequency=7e9, max_steps=2)
 model.view(plot_mesh=True, volume_mesh=False)  # and view the resultant mesh
 
 # Finally we start our sweep
-data = model.mw.run_sweep(False)
+data = model.mw.run_adaptive_sweep()
 
 # We extract the object that contains all our gritted global parameter simulation data such as the S-parameters
 g = data.scalar.grid
@@ -191,17 +192,18 @@ S_non_reflected = np.sqrt(
 plot_sp(fd, [g.model_S(1, 1, fd), S_non_reflected], labels=["S₁₁", "√(1-|S₁₁|²)"])
 
 # We compute the farfield at 6Ghz
-ff_data = data.field.find(freq=6e9).farfield_2d((1, 0, 0), (0, 0, 1), abc)
+field = data.field.find(freq=6e9)
+ff_data = field.farfield_2d((1, 0, 0), (0, 0, 1), abc)
 plot_ff_polar(
     ff_data.ang, ff_data.normE / em.EISO, dB=True, title="Farfield E-plane @ 6GHz"
 )
 
 # Finally we create a simple field plot.
-ff_data = data.field.find(freq=6e9).farfield_3d(abc)
+ff_data = field.farfield_3d(abc)
 model.display.add_objects(*model.all_geos())
 model.display.animate().add_field(
-    data.field[1].cutplane(0.8 * mm, z=-th * mm / 2).scalar("Ey", "complex"),
-    symmetrize=True,
+    field.current_boundary(model.mw.conducting_surfaces()).scalar("Jsmag", "complex"),
+    cmap='classic', clim_crop_factor=0.2
 )
 model.display.add_farfield3d(
     ff_data, "normE", dB=True, dBfloor=-20, offset=(90 * mm, 0, 0), rmax=40 * mm

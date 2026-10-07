@@ -181,7 +181,7 @@ with em.Simulation("FullFilter") as model_final:
     p2 = model_final.mw.bc.RectangularWaveguide(feed2.back, 2)
 
     # Run frequency-domain sweep and extract S-parameters
-    data = model_final.mw.run_sweep()
+    data = model_final.mw.run_adaptive_sweep()
     grid = data.scalar.grid
     freqs = grid.freq
     fdense = np.linspace(freqs[0], freqs[-1], 2001)
@@ -199,10 +199,13 @@ with em.Simulation("FullFilter") as model_final:
     for obj in irises + cavities:
         model_final.display.add_object(obj)
     # Show electric field cut-plane at center frequency
-    cut = data.field.find(freq=f0).grid(N=100_000)
+    field = data.field.find(freq=f0)
+    cut = field.grid(N=100_000)
     model_final.display.animate().add_field(
         cut.scalar("Ez", "complex"), symmetrize=True
     )
+    model_final.display.animate(72).add_field(
+        field.current_boundary(model_final.mw.conducting_surfaces().below(wgb/2*0.9, complete=False)).scalar('Jsmag','complex'), cmap='classic')
     model_final.display.add_portmode(p1, k0=data.field.find(freq=f0).k0)
     model_final.display.add_portmode(p2, k0=data.field.find(freq=f0).k0)
-    model_final.display.show()
+    model_final.display.show(zoom=1.6)

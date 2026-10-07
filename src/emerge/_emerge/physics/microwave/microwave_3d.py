@@ -39,6 +39,7 @@ from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
 from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePortIH, UserDefinedPort
 
 from .microwave_data import MWData
+from .adaptive_sweep import AdaptiveFrequencySampler
 from .assembly.assembler import Assembler
 from .port_functions import compute_avg_power_flux, compute_port_power_flux
 from .simjob import SimJob, CNOSDDSimJob
@@ -1884,63 +1885,54 @@ class Microwave3D(GenericPhysics3D):
         parallel: bool = False,
         n_workers: int = 2,
         n_initial: int = 5,
-        n_max_new: int = 4,
+        tol: float = 5e-3,
+        max_samples: int = 100,
         harddisc_path: str = "EMergeSparse",
         frequency_groups: int = -1,
         cache_harddisk: bool = False,
         multi_processing: bool = False,
         automatic_modal_analysis: bool = True,
-        _reset_solvers: bool = True,
     ) -> MWData:
-        """Executes a frequency domain study
+        """Executes an adaptive frequency domain study over the range of the set frequencies.
 
-        The study is distributed over "n_workers" workers.
-        As optional parameter you may set a harddisc_threshold as integer. This determines the maximum
-        number of degrees of freedom before which the jobs will be cahced to the harddisk. The
-        path that will be used to cache the sparse matrices can be specified.
-        Additionally the term frequency_groups may be specified. This number will define in how
-        many groups the matrices will be pre-computed before they are send to workers. This can minimize
-        the total amound of RAM memory used. For example with 11 frequencies in gruops of 4, the following
-        frequency indices will be precomputed and then solved: [[1,2,3,4],[5,6,7,8],[9,10,11]]
+        The S-matrix is modelled by a rational (AAA) fit through the samples. Each iteration
+        compares the new model with the previous one and adds samples where they disagree
+        most, until the estimated error is below tol for two consecutive iterations.
+        With parallel=True, every interval whose estimated error exceeds tol is refined
+        at once, in batches of up to n_workers frequencies.
+
+        Use .model_S(i,j) / .model_Smat() on the resulting data for a dense frequency response.
 
         Args:
+            parallel (bool, optional): Solve batches of frequencies in parallel. Defaults to False.
             n_workers (int, optional): The number of workers. Defaults to 2.
-            harddisc_threshold (int, optional): The number of DOF limit. Defaults to None.
+            n_initial (int, optional): The number of equidistant initial samples. Defaults to 5.
+            tol (float, optional): Absolute tolerance on the S-parameters. Defaults to 5e-3.
+            max_samples (int, optional): Maximum total number of samples. Defaults to 100.
             harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
             frequency_groups (int, optional): The number of frequency points in a solve group. Defaults to -1.
-            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to False.
+            cache_harddisk (bool, optional): Cache the matrices on the hard disk. Defaults to False.
             multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines).
-
-        Raises:
-            SimulationError: An error associated witha a problem during the simulation.
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
 
         Returns:
-            MWSimData: The dataset.
+            MWData: The dataset.
         """
+        f_target = list(self.frequencies)
+        sampler = AdaptiveFrequencySampler(
+            min(f_target),
+            max(f_target),
+            tol,
+            batch_size=n_workers if parallel else 1,
+            max_samples=max_samples,
+        )
 
-        f_target = np.array(self.frequencies)
-        fmin = min(f_target)
-        fmax = max(f_target)
-
-        def getf(f1: float, f2: float) -> np.ndarray:
-            sub = f_target[(f_target >= f1) & (f_target <= f2)]
-            return np.linspace(f1, f2, max(len(sub), 21))
-
-        def _smat_ok(Smat, errs) -> bool:
-            return np.all(np.abs(Smat.flatten()) <= 1.0) and np.all(
-                np.abs(errs.flatten()) < 0.01
-            )
-
-        frequency_set = list(np.linspace(fmin, fmax, max(n_initial, n_workers)))
-        self.set_frequencies(frequency_set)
-        istart = max(0, self.data.scalar.n - 1)
-
-        converged = False
-        last_converged = False
-        N = len(frequency_set)
-        while not converged:
-            logger.info(f"Adaptive sweep at frequencies: {self.frequencies} GHz")
-            dataset = self.run_sweep(
+        freqs = sampler.initial(max(n_initial, n_workers if parallel else 0))
+        while freqs:
+            logger.info(f"Adaptive sweep: solving at {[_format_freq(f) for f in freqs]}")
+            n_before = self.data.scalar.n
+            self.frequencies = freqs
+            self.run_sweep(
                 parallel,
                 n_workers=n_workers,
                 harddisc_path=harddisc_path,
@@ -1950,54 +1942,13 @@ class Microwave3D(GenericPhysics3D):
                 automatic_modal_analysis=automatic_modal_analysis,
                 _reset_solvers=False,
             )
-            sgrid = dataset.scalar.slice_set(istart, None, sort_by="freq").grid
+            entries = list(self.data.scalar.iter())[n_before:]
+            for e in entries:
+                e._aaa_tol = sampler.fit_tol
+            sampler.add([e.freq for e in entries], np.array([e.Sp for e in entries]))
+            freqs = sampler.propose()
 
-            newF = []
-
-            if _smat_ok(
-                sgrid.model_Smat(f_target), sgrid.model_Smat(sgrid.freq) - sgrid.Smat
-            ):
-                if not last_converged:
-                    last_converged = True
-
-                    dFi = sorted(
-                        [
-                            (i, f2 - f1)
-                            for i, (f1, f2) in enumerate(
-                                zip(frequency_set[:-1], frequency_set[1:])
-                            )
-                        ],
-                        key=lambda df: df[1],
-                        reverse=True,
-                    )
-                    for i, df in dFi[:4]:
-                        newF.append(frequency_set[i] + df / 2)
-
-                else:
-                    logger.info(f"Adaptive sweep converged! with {N} total simulations")
-                    break
-
-            for i1, (f1, f2) in enumerate(zip(frequency_set[:-1], frequency_set[1:])):
-                i2 = i1 + 1
-                Smat = sgrid.model_Smat(getf(f1, f2), _warn=False)
-                er1 = Smat[0, :, :] - sgrid.Smat[i1, :, :]
-                er2 = Smat[-1, :, :] - sgrid.Smat[i2, :, :]
-                if (
-                    np.any(np.abs(er1.flatten() > 0.01))
-                    or np.any(np.abs(er2.flatten() > 0.01))
-                    or np.any(np.abs(Smat.flatten()) > 1.0)
-                ):
-                    newF.append((f1 * f2) ** 0.5)
-                    logger.debug(f"  Adding {newF[-1] / 1e9} GHz as new sample point.")
-
-            # if len(newF) > n_max_new:
-            #     newF = newF[0:n_max_new]
-            newF = sorted(newF)
-            N += len(newF)
-            frequency_set = sorted(frequency_set + newF)
-            logger.debug(f"Resimulating at {newF}")
-            self.set_frequencies(newF)
-
+        self.frequencies = f_target
         self.solveroutine.reset()
         return self.data
 
@@ -2680,11 +2631,19 @@ class Microwave3D(GenericPhysics3D):
 
             return field_p, mode_p
 
+
     ############################################################
-    #                     DEPRICATED FUNCTIONS                #
+    #                       SELECTION HELPERS                  #
     ############################################################
 
-    def frequency_domain(self, *args, **kwargs):
-        """DEPRICATED VERSION: Use run_sweep() instead."""
-        logger.warning("This function is depricated. Please use run_sweep() instead")
-        return self.run_sweep(*args, **kwargs)
+    def conducting_surfaces(self) -> FaceSelection:
+        """Returns a list of all surfaces that are in some way considered conducing by the
+        boundary conditions.
+
+        Returns:
+            FaceSelection: _description_
+        """
+        tags = set()
+        for bc in self.bc.get_conductors():
+            tags.update(bc.tags)
+        return FaceSelection(tags)

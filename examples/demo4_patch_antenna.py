@@ -150,8 +150,4 @@ model.display.add_farfield3d(ff3d, rmax=40 * mm, offset=(0, 0, 40 * mm))
 model.display.cbar("Ey [V/m]", clim=(-1000, 1000)).animate().add_field(
     field.grid(N=100_000, z_range=(-th, Rair)).scalar("Ey", "complex"), symmetrize=True
 )
-# model.display.add_particle_lines(
-#     field.trace_poynting_lines(weight_by='EH', seed_surface=rpatch, density='dense', n_particles=500, max_steps=200, dz = -th/2, verbose=True), 
-#     tube_radius=0.0002,
-#     arrow_scale=0.0002)
 model.display.show()

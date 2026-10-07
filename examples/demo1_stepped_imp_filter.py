@@ -93,7 +93,7 @@ model.generate_mesh()
 model.view(bc=True)
 
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
-sol = model.mw.run_sweep()
+sol = model.mw.run_adaptive_sweep()
 
 # Our "sol" variable is of type MWData (Microwave Data). This contains a set of scalar data
 # like S-parameters and field data like the E/H field. The scalar data is in sol.scalar and the
@@ -127,12 +127,15 @@ smith(S11, labels="S11", f=f)
 
 plot_sp(f, [S11, S21], labels=["S11", "S21"], dblim=[-40, 6], logx=True)
 port1, port2 = model.mw.bc.get_port(1), model.mw.bc.get_port(2)
-field = sol.field.find(freq=0.9e9)
+field = sol.field.find(freq=5e9)
 model.display.add_object(pcb, opacity=0.1)
 model.display.add_object(polies, opacity=0.5)
 model.display.animate().add_field(
     field.cutplane(0.5 * mm, z=-0.75 * th * mil).scalar("Ez", "complex"),
     symmetrize=True,
+)
+model.display.animate().add_field(
+    field.current_boundary(polies).vector('Js','complex'), cmap='classic', scale='log'
 )
 model.display.add_portmode(port1, k0=field.k0)
 model.display.add_portmode(port2, k0=field.k0)

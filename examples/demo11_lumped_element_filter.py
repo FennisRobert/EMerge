@@ -22,7 +22,6 @@ def Lf(L):
     """Return series impedance function for inductor L."""
     return lambda f: 1j * 2 * np.pi * f * L
 
-
 def Cf(C):
     """Return shunt admittance function for capacitor C."""
     return lambda f: 1 / (1j * 2 * np.pi * f * C)
@@ -94,7 +93,7 @@ model.commit_geometry()
 
 # --- Solver and mesh settings -------------------------------------------
 model.mw.set_frequency_range(0.05e9, 0.3e9, 31)  # 50–300 MHz sweep
-model.mesher.set_boundary_size(traces, 1 * mm)
+model.mesher.set_boundary_size(traces, 1.0 * mm)
 
 # Refine mesh around lumped component faces
 for le in LEs:
@@ -114,7 +113,7 @@ for le in LEs:
     model.mw.bc.LumpedElement(le)
 
 # --- Run frequency-domain simulation ------------------------------------
-data = model.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8)
+data = model.mw.run_sweep()
 grid = data.scalar.grid
 
 # --- Post-processing: plot S-parameters ---------------------------------
@@ -126,9 +125,11 @@ S21 = grid.model_S(2, 1, fd)
 plot_sp(fd, [S11, S21], xunit="MHz", labels=["S11", "S21"])
 
 # --- Visualize field distribution ---------------------------------------
+field = data.field.find(freq=0.15e9)
 model.display.add_object(diel, opacity=0.1)
 model.display.add_object(traces, opacity=0.1)
 # Cut-plane of Ez field through substrate center
-cut = data.field.find(freq=0.15e9).cutplane(0.1 * mm, z=-th / 2 * mm)
+
+cut = field.cutplane(0.1 * mm, z=-th / 2 * mm)
 model.display.animate().add_field(cut.scalar("Ez", "complex"), symmetrize=True)
 model.display.show()

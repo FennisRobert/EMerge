@@ -73,7 +73,7 @@ model.commit_geometry()
 
 model.view()
 
-model.mw.set_frequency_range(1e9, 6e9, 21)
+model.mw.set_frequency_range(1e9, 6e9, 11)
 model.mesher.set_boundary_size(trace, 1*mm)
 
 model.generate_mesh()
@@ -99,19 +99,18 @@ S21 = data.scalar.grid.model_S(2, 1, freq)
 
 plot_sp(freq, [S11, S21], labels=["S11", "S21"])
 
-model.display.add_object(diel, opacity=0.2)
-model.display.add_object(trace)
-model.display.add_object(vias)
-model.display.add_portmode(p1, k0=data.field[3].k0)
-
+field = data.field[3]
+model.display.populate()
+model.display.add_portmode(p1, k0=field.k0)
 # You can use the cutplane method of the BaseDataset class
 # This is equivalent to the interpolate method except it automatically generates
 # the point cloud based on a plane x,y or z coordinate.
 model.display.add_field(
-    data.field[3].cutplane(ds=0.0005, z=-0.00025).vector("E")
+    field.cutplane(ds=0.0005, z=-0.00025).vector("E")
 )  # Plotting full E-fields automatically registers as vector plots
+
 model.display.animate().add_field(
-    data.field[3].cutplane(ds=0.0005, z=-0.00075).scalar("Ez", "complex").smooth(),
+    field.cutplane(ds=0.0005, z=-0.00075).scalar("Ez", "complex").smooth(),
     symmetrize=True,
 )
 model.display.show()

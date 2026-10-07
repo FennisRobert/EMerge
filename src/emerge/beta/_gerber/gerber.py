@@ -15,8 +15,33 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-# Last Cleanup: 2025-01-01
-from pygerber.gerberx3.api.v2 import GerberFile, ParsedFile
+"""Gerber (RS-274X) layer import.
+
+Pipeline:
+    1. pygerber parses the file into draw/flash/region commands.
+    2. Every command is converted into a 2D shapely geometry (in mm).
+    3. Dark/clear polarity runs are merged with GEOS booleans (fast, 2D).
+    4. The merged outline is simplified and snapped to a grid.
+    5. Each resulting polygon (with holes) becomes one gmsh plane surface.
+
+All boolean work happens in 2D before anything is sent to gmsh, so gmsh never
+has to fuse or cut OCC faces.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Iterable
+
+import gmsh
+import numpy as np
+import shapely
+from shapely import affinity
+from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry.base import BaseGeometry
+from loguru import logger
+
+from pygerber.gerberx3.api.v2 import GerberFile
 from pygerber.gerberx3.parser2.commands2.region2 import Region2
 from pygerber.gerberx3.parser2.commands2.line2 import Line2
 from pygerber.gerberx3.parser2.commands2.flash2 import Flash2
@@ -24,490 +49,292 @@ from pygerber.gerberx3.parser2.commands2.arc2 import Arc2, CCArc2
 from pygerber.gerberx3.parser2.apertures2.polygon2 import Polygon2
 from pygerber.gerberx3.parser2.apertures2.circle2 import Circle2
 from pygerber.gerberx3.parser2.apertures2.rectangle2 import Rectangle2
-from pygerber.gerberx3.parser2.apertures2.macro2 import Macro2
+from pygerber.gerberx3.parser2.apertures2.obround2 import Obround2
 
-from math import cos, sin, pi
-import numpy as np
-from itertools import groupby
-import math
-
-from ..._emerge import geo
 from ..._emerge.cs import CoordinateSystem, GCS
 from ..._emerge.geometry import GeoSurface
-from ..._emerge.mth.loopsplit import Loop
-
-from loguru import logger
 
 N_CIRC_MIN = 6
 N_CIRC_MAX = 31
 
-def _calc_via_segs(diameter: float, 
-                   nsegments: int, 
+_EMPTY = Polygon()
+
+
+def _calc_via_segs(diameter: float,
+                   nsegments: int,
                    edge_size: float | None = None) -> int:
+    """Number of segments used to discretize a full circle of the given diameter."""
     if edge_size is not None:
         N = int(np.ceil(np.pi*diameter/edge_size))
     else:
         N = nsegments
-    return max(min(N,N_CIRC_MAX),N_CIRC_MIN)
-    
-def zero_runs_indices_gb(xs: list[int], min_len=3):
-    """Returns all index sequences of the input list of subsequent ids that form a segmen of at least min_len zeros.
+    return max(min(N, N_CIRC_MAX), N_CIRC_MIN)
 
-    Args:
-        xs (_type_): _description_
-        min_len (int, optional): _description_. Defaults to 3.
 
-    Returns:
-        _type_: _description_
-    """
-    runs = []
-    idx = 0
-    for val, grp in groupby(xs):
-        length = sum(1 for _ in grp)
-        if val == 0 and length >= min_len:
-            runs.append((idx, idx + length - 1))  # inclusive end
-        idx += length
-    return runs
+def _mm(value) -> float:
+    return float(value.as_millimeters())
+
+
+def _xy(vec) -> tuple[float, float]:
+    return _mm(vec.x), _mm(vec.y)
+
+
+def _is_dark(cmd) -> bool:
+    return 'dark' in str(cmd.transform.polarity).lower()
 
 
 ############################################################
-#                    POLYGON FUNCTIONS                    #
+#                     RING SIMPLIFICATION                  #
 ############################################################
 
-def semi_circ(p: tuple[float, float], 
-              u: tuple[float, float], 
-              w: float, 
-              N: int, 
-              max_seg: float | None) -> list[tuple[float, float]]:
-    """Generates a semi-circular path going counter-clockwise around the point p while pointing in the direction u.
+def _simplify_ring(xy: np.ndarray,
+                   min_dist: float,
+                   min_incl_angle: float,
+                   min_remove_angle: float,
+                   min_points: int = 4) -> np.ndarray:
+    """Removes redundant vertices from an open (non-repeated) ring.
 
-    Args:
-        p (tuple[float, float]): The center location
-        u (tuple[float, float]): The direction of the semi-circle
-        w (float): the diameter of the circle
-        N (int): The number of segments
-        max_seg (float | None): The maximum number of segments.
+    A vertex is removed iff it duplicates its predecessor, OR
+        turn angle < min_incl_angle, OR
+        both adjacent edges < min_dist AND turn angle < min_remove_angle.
 
-    Returns:
-        list[tuple[float, float]]: A list of xy coordinate tuples
+    Each pass is fully vectorized. Within a pass no two neighbouring vertices
+    are removed, so angles are re-evaluated after every removal just like a
+    sequential sweep would, but in O(n log n) instead of O(n^2) or worse.
     """
-    N = _calc_via_segs(w, N, max_seg)
-    x2, y2 = p
-    ux, uy = u
-    urx, ury = uy, -ux
-    ths = np.linspace(0.01,np.pi-0.01,N)#[1:-1]
-    pes = []
-    ex = 0*w*np.sin(np.pi/(2*N))*ux 
-    ey = 0*w*np.sin(np.pi/(2*N))*uy
-    for th in ths:
-        c = (w*urx + w*ury*1j)*np.exp(1j*th)
-        px = x2 + c.real
-        py = y2 + c.imag
-        pes.append((px+ex, py+ey))
-    return pes
+    while len(xy) > min_points:
+        d_prev = xy - np.roll(xy, 1, axis=0)
+        d_next = np.roll(xy, -1, axis=0) - xy
+        l_prev = np.hypot(d_prev[:, 0], d_prev[:, 1])
+        l_next = np.hypot(d_next[:, 0], d_next[:, 1])
 
-def parse_region(cmd: Region2) -> list[tuple[float, float]]:
-    ring = []
-    for seg in cmd.command_buffer:   # nested boundary commands
-        if isinstance(seg, Line2):
-            # points are Vector2D with unit helpers; use millimeters
-            if not ring:
-                ring.append((float(seg.start_point.x.as_millimeters()),
-                            float(seg.start_point.y.as_millimeters())))
-            ring.append((float(seg.end_point.x.as_millimeters()),
-                        float(seg.end_point.y.as_millimeters())))
-            continue
-    return ring
+        valid = (l_prev > 0) & (l_next > 0)
+        cos_a = np.einsum('ij,ij->i', d_prev, d_next) / np.where(valid, l_prev*l_next, 1.0)
+        angle = np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0)))
 
-def xy_to_c(points: list[tuple[float, float]]) -> list[complex]:
-    """Converts a list of xy coordinates as tuples to complex numbers.
+        remove = (l_prev == 0) | (valid & (
+            (angle < min_incl_angle)
+            | ((l_prev < min_dist) & (l_next < min_dist) & (angle < min_remove_angle))
+        ))
+        if not remove.any():
+            break
 
-    Args:
-        points (list[tuple[float, float]]): A list of XY coordinates
+        # Only remove every other vertex in a run of candidates
+        idx = np.flatnonzero(remove)
+        run_start = np.r_[True, np.diff(idx) != 1]
+        run_id = np.cumsum(run_start) - 1
+        pos_in_run = np.arange(len(idx)) - np.flatnonzero(run_start)[run_id]
+        sel = idx[pos_in_run % 2 == 0]
+        if len(sel) > 1 and sel[0] == 0 and sel[-1] == len(xy) - 1:
+            sel = sel[:-1]  # first and last vertex are neighbours on a ring
+        sel = sel[:max(len(xy) - min_points, 0)]
+        if len(sel) == 0:
+            break
+        xy = np.delete(xy, sel, axis=0)
+    return xy
 
-    Returns:
-        list[complex]: A list of complex numbers
-    """
-    return [p[0]+1j*p[1] for p in points]
 
-def c_to_xy(points: list[complex]) -> list[tuple[float, float]]:
-    """Converts a list of complex numbers to xy coordinate tuples.
-    Args:
-        points (list[complex]): A list of complex numbers
-    
-    Returns:
-        list[tuple[float, float]]: A list of XY coordinate tuples
-    """
-    return [(p.real, p.imag) for p in points]
+def _simplify_polygon(poly: Polygon, min_dist: float, min_incl_angle: float, min_remove_angle: float) -> Polygon:
+    def ring(r) -> np.ndarray:
+        xy = np.asarray(r.coords)[:-1]
+        return _simplify_ring(xy, min_dist, min_incl_angle, min_remove_angle)
+
+    new = Polygon(ring(poly.exterior), [ring(h) for h in poly.interiors])
+    if new.is_valid and not new.is_empty:
+        return new
+    return poly
 
 
 ############################################################
-#                      GERBER COMMANDS                     #
+#                     PRIMITIVE GEOMETRY                   #
 ############################################################
 
-def dphi_cw(dr: tuple[float, float]) -> tuple[float, float]:
-    """Rotates a direction vector 90 degrees clockwise and normalizes.
+class _Builder:
+    """Converts pygerber commands into shapely geometries (in mm)."""
 
-    Args:
-        dr (tuple[float, float]): The direction tuple
+    def __init__(self, arc_tol_mm: float, n_circ_segments: int, seg_size_mm: float | None):
+        self.arc_tol = arc_tol_mm
+        self.nseg = n_circ_segments
+        self.seg_size = seg_size_mm
 
-    Returns:
-        tuple[float, float]: The rotated direction tuple.
-    """
-    rx, ry = dr
-    R = (rx**2 + ry**2)**0.5
-    return (ry/R, -rx/R)
+    # ---------------- helpers ----------------
 
-def dphi_ccw(dr: tuple[float, float]) -> tuple[float, float]:
-    """Rotates a direction vector 90 degrees counter-clockwise and normalizes.
+    def _quad_segs(self, diameter: float) -> int:
+        return max(1, math.ceil(_calc_via_segs(diameter, self.nseg, self.seg_size)/4))
 
-    Args:
-        dr (tuple[float, float]): The direction tuple
+    def _circle(self, cx: float, cy: float, diameter: float) -> BaseGeometry:
+        if diameter <= 0:
+            return _EMPTY
+        return Point(cx, cy).buffer(diameter/2, quad_segs=self._quad_segs(diameter))
 
-    Returns:
-        tuple[float, float]: The rotated direction tuple.
-    """
-    rx, ry = dr
-    R = (rx**2 + ry**2)**0.5
-    return (-ry/R, rx/R)
+    def _with_hole(self, geom: BaseGeometry, aperture, cx: float, cy: float) -> BaseGeometry:
+        hole = getattr(aperture, 'hole_diameter', None)
+        if hole is None:
+            return geom
+        return geom.difference(self._circle(cx, cy, _mm(hole)))
 
-def parse_arc(cmd: Arc2, ds: float, reverse: bool, Nseg: int, max_size: float | None) -> list[tuple[float, float]]:
-    """Parses an Arc2 command into a list of xy coordinate tuples.
+    def _arc_points(self, cmd: Arc2) -> np.ndarray:
+        """Samples the centre line of an arc command, start and end inclusive."""
+        x0, y0 = _xy(cmd.start_point)
+        x1, y1 = _xy(cmd.end_point)
+        xc, yc = _xy(cmd.center_point)
+        R = math.hypot(x0 - xc, y0 - yc)
+        if R == 0:
+            return np.array([[x0, y0], [x1, y1]])
 
-    Args:
-        cmd (Arc2): The Arc2 command
-        ds (float): _segment length
-        reverse (bool): if true, reverses start and end points
-        Nseg (int): _number of segments for semi-circles
-        max_size (float | None): max segment size for semi-circles
-
-    Returns:
-        list[tuple[float, float]]: _description_
-    """
-    xc =  float(cmd.center_point.x.as_millimeters())
-    yc =  float(cmd.center_point.y.as_millimeters())
-    dx0 = float(cmd.get_relative_start_point().x.as_millimeters())
-    dy0 = float(cmd.get_relative_start_point().y.as_millimeters())
-    dx1 = float(cmd.get_relative_end_point().x.as_millimeters())
-    dy1 = float(cmd.get_relative_end_point().y.as_millimeters())
-    
-    if reverse:
-        dx0, dy0, dx1, dy1 = dx1, dy1, dx0, dy0
-        
-    w = float(cmd.aperture.diameter.as_millimeters())/2
-    
-    dang = np.angle((dx1+1j*dy1)/(dx0+1j*dy0))
-    if dang > 0:
-        dang = dang - 2*np.pi
-        #raise ValueError(f'Dang is positive {dang}, {xc},{yc},{dx0},{dy0},{dx1},{dy1}')
-    
-    R = (dx0**2 + dy0**2)**0.5
-    Nang = abs(int(np.ceil(1.5*dang*R/ds)))
-    angs = np.linspace(0,dang,Nang)
-    
-    arm = dx0 + 1j*dy0
-    cc = xc + 1j*yc
-    psc1 = c_to_xy([cc+arm*np.exp(1j*th)*(R-w)/R for th in angs])
-    psc2 = c_to_xy([cc+arm*np.exp(1j*th)*(R+w)/R for th in angs][::-1])
-    
-    
-    begin_cap = semi_circ((xc+dx0, yc+dy0), dphi_ccw((dx0, dy0)), w, Nseg, max_size)
-    end_cap = semi_circ((xc+dx1, yc+dy1), dphi_cw((dx1, dy1)), w, Nseg, max_size)
-    
-    points = psc1+end_cap+psc2+begin_cap
-    return points
-
-def parse_line(cmd: Line2, min_dist: float, ncirc: int , size_circ: float) -> list[tuple[float, float]]:
-    """Parses a Line2 command into a list of xy coordinate tuples.
-
-    Args:
-        cmd (Line2): The Line2 command
-        min_dist (float): Minimum distance to consider line
-        ncirc (int): Number of segments for semi-circles
-        size_circ (float): Maximum segment size for semi-circles
-
-    Returns:
-        list[tuple[float, float]]: A list of xy coordinate tuples
-    """
-    diam = float(cmd.aperture.diameter.as_millimeters())
-    x1 = float(cmd.start_point.x.as_millimeters())
-    y1 = float(cmd.start_point.y.as_millimeters())
-    x2 = float(cmd.end_point.x.as_millimeters())
-    y2 = float(cmd.end_point.y.as_millimeters())
-    
-    L = ((x2-x1)**2 + (y2-y1)**2)**0.5
-    
-    if L < min_dist/10:
-        diam = float(cmd.aperture.diameter.as_millimeters())
-        x = float(cmd.start_point.x.as_millimeters())
-        y = float(cmd.start_point.y.as_millimeters())
-        R = diam/2 #+ diam/2*np.sin(np.pi/12)
-        points = [(x+R*np.cos(th), y+R*np.sin(th)) for th in np.linspace(0,2*np.pi,_calc_via_segs(diam, ncirc, size_circ))]
-        return points
-    
-    ux = (x2-x1)/L
-    uy = (y2-y1)/L
-
-    urx = uy
-    ury = -ux
-    w = diam/2
-    
-    
-    p1 = (x1+w*urx, y1+w*ury)
-    p2 = (x2+w*urx, y2+w*ury)
-    p3 = (x2-w*urx, y2-w*ury)
-    p4 = (x1-w*urx, y1-w*ury)
-    
-    pes = semi_circ((x2, y2), (ux, uy), w, ncirc, size_circ)
-    pss = semi_circ((x1, y1), (-ux, -uy), w, ncirc, size_circ)
-    
-    points = [p1, p2] + pes + [p3, p4] + pss
-    return points
-
-def parse_flash_circ(cmd: Flash2, nsegments: int, segsize: float | None = None) -> list[tuple[float, float]]:
-    """Parses a circular Flash2 command into a list of xy coordinate tuples.
-
-    Args:
-        cmd (Flash2): The Flash2 command
-        nsegments (int): Number of segments
-        segsize (float | None, optional): The desired segment size. Defaults to None.
-
-    Returns:
-        list[tuple[float, float]]: A list of xy coordinate tuples
-    """
-    diam = float(cmd.aperture.diameter.as_millimeters())
-    x = float(cmd.flash_point.x.as_millimeters())
-    y = float(cmd.flash_point.y.as_millimeters())
-    
-    N = _calc_via_segs(diam, nsegments, segsize)
-    points = [(x+diam/2*np.cos(th), y+diam/2*np.sin(th)) for th in np.linspace(0,2*np.pi,N+1)]
-    return points
-
-def parse_flash_rect(cmd: Rectangle2) -> list[tuple[float, float]]:
-    """Parses a rectangular Flash2 command into a list of xy coordinate tuples.
-
-    Args:
-        cmd (Rectangle2): The Flash2 command
-
-    Returns:
-        list[tuple[float, float]]: A list of xy coordinate tuples
-    """
-    x = float(cmd.flash_point.x.as_millimeters())
-    y = float(cmd.flash_point.y.as_millimeters())
-    sizeX = float(cmd.aperture.x_size.as_millimeters())
-    sizeY = float(cmd.aperture.y_size.as_millimeters())
-    rotation = float(cmd.aperture.rotation)
-    
-    # Half sizes
-    hx, hy = sizeX / 2.0, sizeY / 2.0
-
-    # Local (unrotated) corners relative to center
-    corners = [
-        (-hx, -hy),
-        ( hx, -hy),
-        ( hx,  hy),
-        (-hx,  hy),
-    ]
-
-    cos_r, sin_r = np.cos(rotation), np.sin(rotation)
-
-    # Rotate + translate
-    points = [
-        (
-            x + dx * cos_r - dy * sin_r,
-            y + dx * sin_r + dy * cos_r
-        )
-        for dx, dy in corners
-    ]
-
-    return points
-
-def parse_flash_macro(cmd: Flash2, 
-                      res_mm: float, 
-                      nseg: int, 
-                      seg_size: float | None) -> list[list[tuple[float, float]]]:
-    
-    fx = float(cmd.flash_point.x.as_millimeters())
-    fy = float(cmd.flash_point.y.as_millimeters())
-    
-    macro_ap: Macro2 = cmd.aperture
-    rings = []
-    
-    for sub_cmd in macro_ap.command_buffer:
-        pts = None
-        
-        if isinstance(sub_cmd, Region2):
-            pts = parse_region(sub_cmd)
-        elif isinstance(sub_cmd, CCArc2):
-            pts = parse_arc(sub_cmd, res_mm, False, nseg, seg_size)
-        elif isinstance(sub_cmd, Arc2):
-            pts = parse_arc(sub_cmd, res_mm, True, nseg, seg_size)
-        elif isinstance(sub_cmd, Line2):
-            pts = parse_line(sub_cmd, res_mm, nseg, seg_size)
-        elif isinstance(sub_cmd, Flash2):
-            if isinstance(sub_cmd.aperture, Circle2):
-                pts = parse_flash_circ(sub_cmd, nseg, seg_size)
-            elif isinstance(sub_cmd.aperture, Rectangle2):
-                pts = parse_flash_rect(sub_cmd)
-            elif isinstance(sub_cmd.aperture, Polygon2):
-                ap = sub_cmd.aperture
-                n = int(ap.vertices)
-                R = float(ap.diameter.as_millimeters()) / 2.0
-                cx = float(sub_cmd.flash_point.x.as_millimeters())
-                cy = float(sub_cmd.flash_point.y.as_millimeters())
-                rot = float(ap.rotation) * pi / 180.0
-                pts = [(cx + R * cos(2*pi*i/n + rot), 
-                        cy + R * sin(2*pi*i/n + rot)) for i in range(n)]
-            else:
-                logger.warning(f'Unhandled sub-aperture in macro: {type(sub_cmd.aperture)}')
-                continue
+        a0 = math.atan2(y0 - yc, x0 - xc)
+        a1 = math.atan2(y1 - yc, x1 - xc)
+        if isinstance(cmd, CCArc2):
+            sweep = (a1 - a0) % (2*math.pi)
+            if sweep < 1e-9:
+                sweep = 2*math.pi
         else:
-            logger.warning(f'Unhandled sub-command in macro: {type(sub_cmd)}')
+            sweep = -((a0 - a1) % (2*math.pi))
+            if sweep > -1e-9:
+                sweep = -2*math.pi
+
+        # Angular step such that the chord deviates at most arc_tol from the true arc
+        dth = 2*math.acos(max(1 - self.arc_tol/R, -1.0)) if self.arc_tol < R else math.pi/2
+        n = max(2, math.ceil(abs(sweep)/max(dth, 1e-6)) + 1, math.ceil(abs(sweep)/(2*math.pi)*N_CIRC_MIN) + 1)
+        th = a0 + np.linspace(0, sweep, n)
+        pts = np.column_stack((xc + R*np.cos(th), yc + R*np.sin(th)))
+        pts[-1] = (x1, y1)  # land exactly on the end point
+        return pts
+
+    def _stroke(self, pts: np.ndarray, aperture) -> BaseGeometry:
+        """Strokes a polyline with an aperture (D01 draw)."""
+        if isinstance(aperture, Circle2):
+            d = _mm(aperture.diameter)
+            if d <= 0:
+                return _EMPTY
+            if np.allclose(pts[0], pts[1:]):
+                return self._circle(pts[0, 0], pts[0, 1], d)
+            return LineString(pts).buffer(d/2, quad_segs=self._quad_segs(d))
+
+        if isinstance(aperture, Rectangle2) and not isinstance(aperture, Obround2) and len(pts) == 2:
+            # Minkowski sum of a rectangle and a segment = hull of the two end-rectangles
+            hx, hy = _mm(aperture.x_size)/2, _mm(aperture.y_size)/2
+            rects = [box(x - hx, y - hy, x + hx, y + hy) for x, y in pts]
+            return shapely.union_all(rects).convex_hull
+
+        # Rare in practice: approximate with a round aperture of the stroke width
+        logger.warning(f'Drawing with aperture {type(aperture).__name__} is approximated by a round stroke.')
+        d = _mm(aperture.get_stroke_width())
+        return LineString(pts).buffer(d/2, quad_segs=self._quad_segs(d)) if d > 0 else _EMPTY
+
+    def _flash(self, cmd: Flash2) -> BaseGeometry:
+        ap = cmd.aperture
+        cx, cy = _xy(cmd.flash_point)
+
+        if isinstance(ap, Circle2):
+            return self._with_hole(self._circle(cx, cy, _mm(ap.diameter)), ap, cx, cy)
+
+        if isinstance(ap, Obround2):
+            sx, sy = _mm(ap.x_size), _mm(ap.y_size)
+            r = min(sx, sy)/2
+            if sx >= sy:
+                core = LineString([(-sx/2 + r, 0), (sx/2 - r, 0)])
+            else:
+                core = LineString([(0, -sy/2 + r), (0, sy/2 - r)])
+            geom = core.buffer(r, quad_segs=self._quad_segs(2*r)) if core.length > 0 else Point(0, 0).buffer(r, quad_segs=self._quad_segs(2*r))
+            geom = affinity.rotate(geom, float(ap.rotation), origin=(0, 0))
+            return self._with_hole(affinity.translate(geom, cx, cy), ap, cx, cy)
+
+        if isinstance(ap, Rectangle2):
+            hx, hy = _mm(ap.x_size)/2, _mm(ap.y_size)/2
+            geom = affinity.rotate(box(-hx, -hy, hx, hy), float(ap.rotation), origin=(0, 0))
+            return self._with_hole(affinity.translate(geom, cx, cy), ap, cx, cy)
+
+        if isinstance(ap, Polygon2):
+            n = int(ap.number_vertices)
+            R = _mm(ap.outer_diameter)/2
+            th = np.radians(float(ap.rotation)) + 2*np.pi*np.arange(n)/n
+            geom = Polygon(np.column_stack((cx + R*np.cos(th), cy + R*np.sin(th))))
+            return self._with_hole(geom, ap, cx, cy)
+
+        if hasattr(ap, 'command_buffer'):
+            # Macro (AM) or block (AB) aperture: primitives are relative to the flash point
+            # and their exposure only affects the aperture itself.
+            geom = merge_commands(ap.command_buffer, self)
+            return affinity.translate(geom, cx, cy)
+
+        logger.error(f'Unsupported aperture {type(ap).__name__} in flash at ({cx}, {cy}) mm. '
+                     'Please contact the EMerge developers with this Gerber file to get it supported.')
+        return _EMPTY
+
+    def _region(self, cmd: Region2) -> BaseGeometry:
+        """Builds a region (G36/G37). A new contour starts wherever a segment does not
+        continue from the previous end point (D02 move)."""
+        contours: list[list[np.ndarray]] = []
+        last_end = None
+        for seg in cmd.command_buffer:
+            if isinstance(seg, Arc2):
+                pts = self._arc_points(seg)
+            elif isinstance(seg, Line2):
+                pts = np.array([_xy(seg.start_point), _xy(seg.end_point)])
+            else:
+                logger.warning(f'Unhandled region segment {type(seg).__name__}')
+                continue
+            if last_end is None or not np.allclose(pts[0], last_end, atol=1e-9):
+                contours.append([pts])
+            else:
+                contours[-1].append(pts[1:])
+            last_end = pts[-1]
+
+        polys = []
+        for parts in contours:
+            ring = np.vstack(parts)
+            if len(ring) < 3:
+                continue
+            # 'structure' turns KiCad style cut-in contours into proper holes
+            polys.append(shapely.make_valid(Polygon(ring), method='structure', keep_collapsed=False))
+        return shapely.union_all(polys) if polys else _EMPTY
+
+    # ---------------- dispatch ----------------
+
+    def geometry(self, cmd) -> BaseGeometry | None:
+        if isinstance(cmd, Region2):
+            return self._region(cmd)
+        if isinstance(cmd, Arc2):
+            return self._stroke(self._arc_points(cmd), cmd.aperture)
+        if isinstance(cmd, Line2):
+            pts = np.array([_xy(cmd.start_point), _xy(cmd.end_point)])
+            return self._stroke(pts, cmd.aperture)
+        if isinstance(cmd, Flash2):
+            return self._flash(cmd)
+        logger.warning(f'Unprocessed Gerber command: {type(cmd).__name__}')
+        return None
+
+
+def merge_commands(commands: Iterable, builder: _Builder) -> BaseGeometry:
+    """Converts a stream of commands to geometry and applies the dark/clear polarity
+    in order. Consecutive commands of equal polarity are merged in a single union."""
+    result: BaseGeometry = _EMPTY
+    batch: list[BaseGeometry] = []
+    batch_dark = True
+
+    def flush() -> None:
+        nonlocal result
+        if not batch:
+            return
+        merged = shapely.union_all(batch)
+        if batch_dark:
+            result = shapely.union(result, merged)
+        elif not result.is_empty:
+            result = shapely.difference(result, merged)
+        batch.clear()
+
+    for cmd in commands:
+        geom = builder.geometry(cmd)
+        if geom is None or geom.is_empty:
             continue
-        
-        if pts is not None and len(pts) >= 3:
-            # Translate from macro-local coords to flash point
-            translated = [(x + fx, y + fy) for x, y in pts]
-            rings.append(translated)
-    return rings
-
-############################################################
-#                          CLASSES                         #
-############################################################
-
-
-class ClosedPoly:
-    
-    def __init__(self, points: list[tuple[float, float]], clear: bool, simplify: bool):
-        points = [(x*0.001, y*0.001) for x,y in points]
-        if points[0] != points[-1]:
-            points.append(points[0])
-            
-        points = self._ensure_clockwise(points)
-        
-        self.points: list[tuple[float, float]] = points
-        self.clear: bool = clear
-        x, y = zip(*self.points)
-        self.xs: list[float] = x
-        self.ys: list[float] = y
-        self.do_simplify: bool = simplify
-    
-    @staticmethod
-    def _ensure_clockwise(points: list[tuple[float, float]]):
-        # Signed area (shoelace formula)
-        area = 0.0
-        for (x0, y0), (x1, y1) in zip(points, points[1:]):
-            area += (x1 - x0) * (y1 + y0)
-
-        # area > 0 → counter-clockwise → reverse
-        if area > 0.0:
-            return points[::-1]
-        return points
-    
-    @property
-    def dark(self) -> bool:
-        return not self.clear
-    
-    @property
-    def xy(self) -> tuple[list[float], list[float]]:
-        return self.xs, self.ys
-    
-    def simplify(self, min_distance: float, min_incl_angle: float = 2, min_remove_angle: float = 10):
-        """
-        Simplify a closed polygon (last point is NOT repeated as first) by iteratively
-        removing vertices according to the following rules:
-
-        For each point i:
-            dist_till_next = distance(i, i+1)
-            dist_till_prev = distance(i, i-1)
-            angle_next_prev = angle between vectors (prev -> i) and (i -> next)
-                            in degrees, 0° = straight, 180° = U-turn
-
-        A point is removed iff:
-            |angle_next_prev| < min_incl_angle
-        OR
-            dist_till_next < min_distance AND
-            dist_till_prev < min_distance AND
-            |angle_next_prev| < min_remove_angle
-
-        After any removal, the process restarts until no more points are removed.
-        """
-        min_distance = min_distance/1000
-        # Optional guard: do nothing for very small polygons
-        if len(self.points) <= 6:
-            return
-
-        # Work on local copies so we can pop safely
-        xs = list(self.xs)
-        ys = list(self.ys)
-        n = len(xs)
-
-        # Need at least a triangle
-        if n < 3:
-            return
-
-        changed = True
-        while changed and n > 6:
-            changed = False
-
-            for i in range(n):
-                ip = (i - 1) % n        # previous index
-                inext = (i + 1) % n     # next index
-
-                x_i, y_i = xs[i], ys[i]
-                x_p, y_p = xs[ip], ys[ip]
-                x_n, y_n = xs[inext], ys[inext]
-
-                # Distances to previous and next
-                dx_prev = x_i - x_p
-                dy_prev = y_i - y_p
-                dx_next = x_n - x_i
-                dy_next = y_n - y_i
-
-                dist_prev = math.hypot(dx_prev, dy_prev)
-                dist_next = math.hypot(dx_next, dy_next)
-
-                # If either adjacent segment is degenerate, skip angle computation
-                if dist_prev == 0.0 or dist_next == 0.0:
-                    continue
-
-                # Angle between (prev -> current) and (current -> next)
-                dot = dx_prev * dx_next + dy_prev * dy_next
-                denom = dist_prev * dist_next
-                cos_angle = dot / denom
-
-                # Clamp for numerical safety
-                if cos_angle > 1.0:
-                    cos_angle = 1.0
-                elif cos_angle < -1.0:
-                    cos_angle = -1.0
-
-                angle = math.degrees(math.acos(cos_angle))  # in [0, 180]
-
-                remove = False
-                
-                if abs(angle) < min_incl_angle:
-                    remove = True
-                elif (
-                    dist_next < min_distance
-                    and dist_prev < min_distance
-                    and abs(angle) < min_remove_angle
-                ):
-                    remove = True
-
-                # Do not reduce below a triangle
-                if remove and n - 1 >= 6:
-                    xs.pop(i)
-                    ys.pop(i)
-                    n -= 1
-                    changed = True
-                    break  # restart outer while-loop with updated polygon
-
-        # Write back to object
-        self.xs = xs
-        self.ys = ys
-        self.points = list(zip(xs, ys))
-
+        dark = _is_dark(cmd)
+        if dark != batch_dark:
+            flush()
+            batch_dark = dark
+        batch.append(geom)
+    flush()
+    return result
 
 
 ############################################################
@@ -515,9 +342,23 @@ class ClosedPoly:
 ############################################################
 
 class GerberLayer:
-    
-    def __init__(self, 
-                 filename: str, 
+    """A single Gerber copper layer converted to merged 2D geometry.
+
+    Args:
+        filename (str): Path to the Gerber file.
+        res_mm (float): Geometric resolution in mm. Used as the arc chord tolerance and as
+            the edge length below which near-collinear vertices are removed.
+        n_circ_segments (int): Segments per full circle for round apertures. Defaults to 8.
+        seg_size_mm (float | None): Target edge length for round apertures. Overrides n_circ_segments.
+        min_incl_angle (float): Vertices with a turn angle below this (deg) are removed.
+        min_remove_angle (float): Vertices between two edges shorter than res_mm with a
+            turn angle below this (deg) are removed.
+        cs (CoordinateSystem): The coordinate system to place the layer in.
+        simplify (bool): Whether to simplify the merged outline.
+    """
+
+    def __init__(self,
+                 filename: str,
                  res_mm: float,
                  n_circ_segments: int = 8,
                  seg_size_mm: float | None = None,
@@ -527,167 +368,60 @@ class GerberLayer:
                  cs: CoordinateSystem = GCS,
                  simplify: bool = True
                  ):
-        
         self.fname: str = filename
-        self.pf: ParsedFile = GerberFile.from_file(filename).parse()
-        self.buffer = self.pf._command_buffer
-        self.polies: list[ClosedPoly] = []
         self.res_mm: float = res_mm
-        
-        self._nseg: int = n_circ_segments
-        self._seg_size_mm: float = seg_size_mm
-        self._min_incl_angle: float = min_incl_angle
-        self._min_remove_angle: float = min_remove_angle
-        
-        self.xs = []
-        self.ys = []
-        
         self.cs: CoordinateSystem = cs
-        self.parse_file()
+
+        commands = GerberFile.from_file(filename).parse()._command_buffer
+        builder = _Builder(res_mm, n_circ_segments, seg_size_mm)
+        geom = merge_commands(commands, builder)
+
+        # Snap to a fine grid: removes slivers and near-coincident vertices left by the booleans
+        geom = shapely.set_precision(geom, res_mm/10)
+        polys = [p for p in shapely.get_parts(geom) if isinstance(p, Polygon) and not p.is_empty]
         if simplify:
-            self.simplify()
-    
+            polys = [_simplify_polygon(p, res_mm, min_incl_angle, min_remove_angle) for p in polys]
+
+        #: Merged layer polygons in mm
+        self.polygons: list[Polygon] = polys
+
+        if polys:
+            x0, y0, x1, y1 = shapely.MultiPolygon(polys).bounds
+            self.xs: list[float] = [x0*1e-3, x1*1e-3]
+            self.ys: list[float] = [y0*1e-3, y1*1e-3]
+        else:
+            logger.warning(f'Gerber file {filename} produced no copper geometry.')
+            self.xs, self.ys = [], []
+
+    @property
+    def n_points(self) -> int:
+        return sum(len(p.exterior.coords) - 1 + sum(len(h.coords) - 1 for h in p.interiors) for p in self.polygons)
+
     def bounds(self, margin: float | tuple[float, float, float, float] = 0.0) -> tuple[float, float, float, float]:
         if isinstance(margin, (float, int)):
-            return min(self.xs)-margin, min(self.ys)-margin, max(self.xs)+margin, max(self.ys)+margin
-        else:
-            return min(self.xs)-margin[0], min(self.ys)-margin[1], max(self.xs)+margin[2], max(self.ys)+margin[3]
-        
-    def _add_poly(self, points: list[tuple], clear: bool, simplify: bool) -> None:
-        if points[-1]==points[0]:
-            points = points[:-1]
-        poly = ClosedPoly(points, clear, simplify)
-        self.polies.append(poly)
-        self.xs.extend(poly.xs)
-        self.ys.extend(poly.ys)
-        
-    
-    def parse_file(self):
-        for cmd in self.buffer:
-            
-            if 'dark' in str(cmd.transform.polarity).lower():
-                clear = False
-            else:
-                clear = True
-            
-            if isinstance(cmd, Region2):
-                poly = parse_region(cmd)
-                self._add_poly(poly, clear, True)
-                continue
-            
-            if isinstance(cmd, CCArc2):
-                points = parse_arc(cmd, self.res_mm, False, self._nseg, self._seg_size_mm)
-                self._add_poly(points, clear, True)
-                continue
-            
-            if isinstance(cmd, Arc2):
-                points = parse_arc(cmd, self.res_mm, True, self._nseg, self._seg_size_mm)
-                self._add_poly(points, clear, True)
-                continue
-            
-            if isinstance(cmd, Line2):
-                points = parse_line(cmd, self.res_mm, self._nseg, self._seg_size_mm)
-                self._add_poly(points, clear, True)
-                continue
-            
-            if not isinstance(cmd, Flash2):
-                logger.warning('Not a Flash2, Uprocessed command:', cmd)
-                continue
-            
-            if isinstance(cmd.aperture, Polygon2):
-                ap = cmd.aperture
-                # Field names are available on the dataclass; inspect if unsure:
-                # print(ap.model_dump())
-                n = int(ap.vertices)             # number of sides
-                R = float(ap.diameter.as_millimeters()) / 2.0
-                # Flash placement lives in the command transform:
-                tr = cmd.transform               # translation + rotation
-                cx = float(tr.translation.x.as_millimeters())
-                cy = float(tr.translation.y.as_millimeters())
-                # Rotation is in degrees in PyGerber’s apertures; convert to radians if needed
-                rot = float(ap.rotation) * pi / 180.0
-                verts = [(cx + R * cos(2*pi*i/n + rot), cy + R * sin(2*pi*i/n + rot))
-                        for i in range(n)]
-                self._add_poly(verts, clear, True)
-                continue
-            
-            if isinstance(cmd.aperture, Circle2):
-                points = parse_flash_circ(cmd, self._nseg, self._seg_size_mm)
-                self._add_poly(points, clear, True)
-                continue
-            
-            if isinstance(cmd.aperture, Rectangle2):
-                points = parse_flash_rect(cmd)
-                self._add_poly(points, clear, True)
-                continue
+            margin = (margin, margin, margin, margin)
+        return min(self.xs)-margin[0], min(self.ys)-margin[1], max(self.xs)+margin[2], max(self.ys)+margin[3]
 
-            if isinstance(cmd.aperture, Macro2):
-                rings = parse_flash_macro(cmd, self.res_mm, self._nseg, self._seg_size_mm)
-                for ring in rings:
-                    self._add_poly(ring, clear, True)
-                continue
-            logger.error(f'Unparsable command found! {cmd}. Aperture type: {type(cmd.aperture)}. Please contact the EMerge developers with this Gerber file to get this command supported.')
-     
-    def simplify(self):
-        for poly in self.polies:
-            poly.simplify(self.res_mm, self._min_incl_angle, self._min_remove_angle)
-    
+    def _curve_loop(self, ring, z: float) -> int:
+        xy = np.asarray(ring.coords)[:-1]*1e-3
+        xg, yg, zg = self.cs.in_global_cs(xy[:, 0], xy[:, 1], np.full(len(xy), z))
+        occ = gmsh.model.occ
+        ptags = [occ.addPoint(x, y, zz) for x, y, zz in zip(xg, yg, zg)]
+        n = len(ptags)
+        lines = [occ.addLine(ptags[i], ptags[(i + 1) % n]) for i in range(n)]
+        return occ.addCurveLoop(lines)
+
     def flatten(self, z: float = 0.0) -> GeoSurface:
-        """Merge a GerberLayer into a GeoSurface
-
-        Raises:
-            Exception: _description_
+        """Creates the gmsh surfaces of this layer at height z (meters).
 
         Returns:
-            GeoSurface: _description_
+            GeoSurface: One surface object containing all disjoint copper areas.
         """
-        poly = None
-        
-        xall = []
-        yall = []
-
-        for isdark, polygons in groupby(self.polies, key=lambda x: x.dark):
-            if poly is None and not isdark:
-                raise Exception('First polygon is a clear:(')
-            surfs = []
-            for pol in polygons:
-                x, y = pol.xy
-                if len(x) < 3:
-                    continue
-                loop = Loop(np.array(x),np.array(y))
-                add, remove = loop.split()
-                LA = []
-                LR = []
-                for ax, ay in add:
-                    LA.append(geo.XYPolygon(ax, ay, resolution=1e-7).geo(self.cs.displace(0,0,z)))
-                    xall.extend(ax)
-                    yall.extend(ay)
-                for ax, ay in remove:
-                    LR.append(geo.XYPolygon(ax, ay, resolution=1e-7).geo(self.cs.displace(0,0,z)))
-                
-                if len(LA)==1 and len(LR)==0:
-                    surfs.append(LA[0])
-                    continue
-                
-                if len(LR)==0:
-                    surf = geo.unite(*LA)
-                    surfs.append(surf)
-                    continue
-                
-                surf = geo.subtract(geo.unite(*LA), geo.unite(*LR))
-                surfs.append(surf)
-           
-            self.xs = xall
-            self.ys = yall
-            if poly is None:
-                poly = geo.unite(*surfs)
-                continue
-            
-            if isdark:
-                poly = geo.unite(poly, *surfs)
-            else:
-                poly = geo.subtract(poly, geo.unite(*surfs))
-            
-            
-        return poly
-            
+        if not self.polygons:
+            raise ValueError(f'Gerber file {self.fname} contains no copper geometry.')
+        tags = []
+        for poly in self.polygons:
+            loops = [self._curve_loop(poly.exterior, z)]
+            loops += [self._curve_loop(h, z) for h in poly.interiors]
+            tags.append(gmsh.model.occ.addPlaneSurface(loops))
+        return GeoSurface(tags, name='GerberLayer')

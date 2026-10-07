@@ -120,7 +120,7 @@ model.generate_mesh()
 model.view()
 
 # At last we can compute the frequency domain study
-data = model.mw.run_sweep(parallel=True)
+data = model.mw.run_adaptive_sweep()
 
 # Next we will use the Vector Fitting algorithm to model our S-parameters with a Rational function
 
@@ -139,10 +139,14 @@ model.display.add_object(feed1out, opacity=0.1)
 model.display.add_portmode(port1)
 model.display.add_portmode(port2)
 outside = box.boundary()
-model.display.add_field(field.boundary(outside).scalar("normE"), opacity=0.4)
-model.display.animate().add_field(
-    field.grid(N=50_000).scalar("Ez", "complex"),
-    symmetrize=True,
-    clim_crop_factor=0.5,
+model.display.animate(72).add_field(
+    field.current_boundary(model.mw.conducting_surfaces()\
+        .below(0.99*b, complete=False)\
+        .behind(-0.48*a)
+    ).scalar("Jsmag","complex"))
+model.display.animate(72).add_field(
+    field.grid(N=5000).vector("H", "complex"),
+    symmetrize=False,
 )
+
 model.display.show()

@@ -1988,6 +1988,9 @@ class SolveRoutine:
 
         for solver in solvers:
             if isinstance(solver, EMSolver):
+                if solver not in self.solvers:
+                    logger.error(f'Solver {solver} is not installed. Ignoring preference.')
+                    return
                 self.forced_solver = [self.solvers[solver]]
             else:
                 self.forced_solver = [solver]

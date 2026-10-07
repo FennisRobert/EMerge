@@ -207,11 +207,11 @@ class InstallSolverCommand(Command):
 
     @staticmethod
     def _install_extras(extra: str) -> None:
-        package_map = {"dxf": "ezdxf", "gerber": "pygerber"}
-        package = package_map[extra]
-        print(f"Installing {extra} dependency ({package})...")
-        _pip("install", package)
-        print(f"{extra} dependency installed.")
+        package_map = {"dxf": ["ezdxf"], "gerber": ["pygerber>=2.4,<3", "shapely>=2.0"]}
+        packages = package_map[extra]
+        print(f"Installing {extra} dependencies ({', '.join(packages)})...")
+        _pip("install", *packages)
+        print(f"{extra} dependencies installed.")
 
 
 

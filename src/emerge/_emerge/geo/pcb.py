@@ -44,6 +44,11 @@ class RouteException(Exception):
     pass
 
 
+class PCBBoundsError(ValueError):
+    """Raised when an operation needs the PCB board outline/bounds before they are defined."""
+    pass
+
+
 ############################################################
 #                         CONSTANTS                        #
 ############################################################
@@ -1696,6 +1701,20 @@ class PCB:
         geopoly.max_meshsize = ds
         self.lumped_elements.append(geopoly)
 
+    def _require_bounds(self, action: str, outline: bool = False) -> None:
+        """Raises a PCBBoundsError if the board bounds (or outline) are not defined yet."""
+        missing = self.board_outline_xs is None if outline else (self.width is None or self.length is None)
+        if not missing:
+            return
+        raise PCBBoundsError(
+            f"Cannot {action}: the board outline of {self.name} is not defined yet. "
+            "Define it first with one of:\n"
+            "  pcb.determine_bounds(left, top, right, bottom)  # traces/copper extents plus margins\n"
+            "  pcb.set_bounds(xmin, ymin, xmax, ymax)          # explicit rectangle\n"
+            "  pcb.set_board_outline(xs, ys)                   # arbitrary polygon\n"
+            f"All values are in PCB units (unit={self.unit} m)."
+        )
+
     def _get_z(self, element: RouteElement) -> float:
         """Return the z-height of a given Route Element
 
@@ -2013,10 +2032,7 @@ class PCB:
             GeoSurface: The resultant GeoSurface of the plane
         """
         if width is None or height is None or origin is None:
-            if self.width is None or self.length is None or self.origin is None:
-                raise RouteException(
-                    "Cannot define a plane with no possible definition of its size."
-                )
+            self._require_bounds("create a plane without an explicit width, height and origin")
             width = width if width is not None else self.width
             height = height if height is not None else self.length
             origin = origin if origin is not None else (self.origin[0], self.origin[1])
@@ -2109,6 +2125,7 @@ class PCB:
         Returns:
             GeoVolume: _description_
         """
+        self._require_bounds("generate the PCB dielectric", outline=True)
         bxs = [x*self.unit for x in self.board_outline_xs]
         bys = [y*self.unit for y in self.board_outline_ys]
 
@@ -2192,6 +2209,7 @@ class PCB:
         Returns:
             GeoVolume: The PCB Block
         """
+        self._require_bounds("generate the air box")
         dz = 0
 
         x0, y0, z0 = self.origin * self.unit

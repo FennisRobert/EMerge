@@ -1162,12 +1162,13 @@ class GeoVolume(GeoObject):
             gmsh.model.occ.get_center_of_mass(d, t) for d, t in self._get_boundary_cache
         ]
         self._cached = True
+        boundary = (self._get_boundary_cache, self._origins_cache, self._normals_cache)
         for name in self._face_pointers.keys():
-            self._face_tag_cache[name] = self._face_tags(name)
+            self._face_tag_cache[name] = self._face_tags(name, _boundary=boundary)
         
         for tool, fpdict in self._tools.items():
             for name in fpdict.keys():
-                self._face_tag_cache[f'{tool}.{name}'] = self._face_tags(name, tool_key=tool)
+                self._face_tag_cache[f'{tool}.{name}'] = self._face_tags(name, tool_key=tool, _boundary=boundary)
 
     def _get_normal(self):
         if not self._cached:
@@ -1426,7 +1427,8 @@ class GeoVolume(GeoObject):
             tags.extend(self._face_tags(name, tool))
         return FaceSelection(tags)._named("Faces[" + ",".join(names) + "]")
 
-    def _face_tags(self, name: FaceNames, tool: GeoObject | None = None, tool_key: int | None = None) -> list[int]:
+    def _face_tags(self, name: FaceNames, tool: GeoObject | None = None, tool_key: int | None = None,
+                   _boundary: tuple[list, list, list] | None = None) -> list[int]:
         names = self._all_pointer_names
 
         if name not in names:
@@ -1445,15 +1447,17 @@ class GeoVolume(GeoObject):
         if cachename in self._face_tag_cache:
             return self._face_tag_cache[cachename]
         
-        gmsh.model.occ.synchronize()
-        dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
-
-        normals = [gmsh.model.get_normal(t, [0, 0]) for d, t in dimtags]
-        origins = [gmsh.model.occ.get_center_of_mass(d, t) for d, t in dimtags]
+        if _boundary is not None:
+            dimtags, origins, normals = _boundary
+        else:
+            gmsh.model.occ.synchronize()
+            dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
+            normals = [gmsh.model.get_normal(t, [0, 0]) for d, t in dimtags]
+            origins = [gmsh.model.occ.get_center_of_mass(d, t) for d, t in dimtags]
 
         if tool is not None:
             tags = self._tools[tool._key][name].find(dimtags, origins, normals)
-        if tool_key is not None:
+        elif tool_key is not None:
             tags = self._tools[tool_key][name].find(dimtags, origins, normals)
         else:
             tags = self._face_pointers[name].find(dimtags, origins, normals)

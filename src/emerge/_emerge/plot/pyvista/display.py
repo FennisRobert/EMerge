@@ -34,7 +34,7 @@ from ...coord import Line
 from pathlib import Path
 from importlib.resources import files
 
-from emsutil.pyvista import EMergeDisplay, cmap_names
+from emsutil.pyvista import EMergeDisplay, cmap_names, plot_item
 from emsutil import themes
 from emsutil.emdata import EHFieldFF
 
@@ -94,6 +94,16 @@ def _merge(lst: Iterable[GeoObject | Selection]) -> Selection:
     else:
         return Selection(all_tags)
 
+
+def _compact_grid(conn: np.ndarray, celltype, nodes: np.ndarray, z_boost: float = 0.0) -> pv.UnstructuredGrid:
+    """Builds a grid from (ncells, nverts) global node indices, keeping only the referenced nodes."""
+    used, local = np.unique(conn, return_inverse=True)
+    local = local.reshape(conn.shape)
+    cells = np.hstack([np.full((conn.shape[0], 1), conn.shape[1]), local])
+    points = nodes[:, used].T.copy()
+    points[:, 2] += z_boost
+    celltypes = np.full(conn.shape[0], celltype, dtype=np.uint8)
+    return pv.UnstructuredGrid(cells, celltypes, points)
 
 def _print_coords(x1, y1, x2, y2, z):
     # ALLOWED PRINT
@@ -167,20 +177,27 @@ class PVDisplay(EMergeDisplay):
             str: _description_
         """
         return str(Path(files("emerge")) / "_emerge" / "plot" / "pyvista" / filename)
-
-    def show(self, screenshot: str | None = None, off_screen: bool = False):
+    
+    def show(self, screenshot: str | None = None, off_screen: bool = False, zoom: float = 1.0):
         """Shows the Pyvista display."""
-        logo_path = self._get_emerge_path("EMS_small.png")
-        self._plot.add_logo_widget(
-            logo_path, position=(0.87, 0.87), size=(0.10, 0.10), opacity=1.0
-        )
+        
+        """ Set default EMerge logo as logo if none is provided by the theme. """
+        if self.set.theme.logo_path is None:
+            self.set.theme.logo_path = self._get_emerge_path("EMS_small.png")
+        
+        logo_path = self._get_logo_path()
+        if logo_path is not None:
+            self._plot.add_logo_widget(
+                logo_path, position=(0.87, 0.87), size=(0.10, 0.10), opacity=1.0
+            )
+        
         text_actor = self._plot.add_text(
             f"EMerge Version: {__version__}",
-            color="white",
+            color=self.set.theme.text_color,
             font_size=12,
             position="lower_right",
         )
-        super().show(screenshot, off_screen)
+        super().show(screenshot, off_screen, zoom=zoom)
 
     def _add_selectable_points(self) -> None:
         self._clear_selectable_objects()
@@ -250,6 +267,7 @@ class PVDisplay(EMergeDisplay):
     #                       SPECIFIC METHODS                  #
     ############################################################
 
+
     def _register_printer(self):
         self._ruler._call_coords = _print_coords
 
@@ -266,26 +284,13 @@ class PVDisplay(EMergeDisplay):
         if len(edge_ids) == 0:
             raise ValueError(f"Cannot plot {obj}")
             return None
-        nedges = edge_ids.shape[0]
-        cells = np.zeros((nedges, 3), dtype=np.int64)
-        cells[:, 1:] = self._mesh.edges[:, edge_ids].T
-        cells[:, 0] = 2
-        celltypes = np.full(nedges, fill_value=pv.CellType.CUBIC_LINE, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
-        return pv.UnstructuredGrid(cells, celltypes, points)
+        return _compact_grid(self._mesh.edges[:, edge_ids].T, pv.CellType.CUBIC_LINE, self._mesh.nodes)
 
     def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid:
         tris = self._mesh.get_triangles(surface.tags)
         if tris.shape[0] == 0:
             return None
-        ntris = tris.shape[0]
-        cells = np.zeros((ntris, 4), dtype=np.int64)
-        cells[:, 1:] = self._mesh.tris[:, tris].T
-        cells[:, 0] = 3
-        celltypes = np.full(ntris, fill_value=pv.CellType.TRIANGLE, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
-        points[:, 2] += self.set.z_boost
-        return pv.UnstructuredGrid(cells, celltypes, points)
+        return _compact_grid(self._mesh.tris[:, tris].T, pv.CellType.TRIANGLE, self._mesh.nodes, self.set.z_boost)
 
     def mesh(self, obj: GeoObject | Selection | Iterable) -> pv.UnstructuredGrid | None:
         if isinstance(obj, Iterable):
@@ -304,6 +309,7 @@ class PVDisplay(EMergeDisplay):
     #                        EMERGE METHODS                    #
     ############################################################
 
+    @plot_item
     def add_anchors(self, anchors: list[Anchor], size: float = 1.0) -> None:
         """Adds a list of anchors to display in the current view"""
         xaxs = [f._x for f in anchors]
@@ -330,18 +336,13 @@ class PVDisplay(EMergeDisplay):
 
     def mesh_volume(self, volume: DomainSelection) -> pv.UnstructuredGrid:
         tets = self._mesh.get_tetrahedra(volume.tags)
-        ntets = tets.shape[0]
-        cells = np.zeros((ntets, 5), dtype=np.int64)
-        cells[:, 1:] = self._mesh.tets[:, tets].T
-        cells[:, 0] = 4
-        celltypes = np.full(ntets, fill_value=pv.CellType.TETRA, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
-        return pv.UnstructuredGrid(cells, celltypes, points)
+        return _compact_grid(self._mesh.tets[:, tets].T, pv.CellType.TETRA, self._mesh.nodes)
 
     @property
     def _mesh(self) -> Mesh3D:
         return self._state.mesh
 
+    @plot_item
     def add_object(
         self,
         obj: GeoObject | Selection,
@@ -409,8 +410,6 @@ class PVDisplay(EMergeDisplay):
                     pickable=False,
                     show_edges=True,
                 )
-            else:
-                return
 
         if label:
             points = []
@@ -444,6 +443,7 @@ class PVDisplay(EMergeDisplay):
         for obj in self._state.current_geo_state:
             self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
 
+    @plot_item
     def add_scatter(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
         """Adds a scatter point cloud
 
@@ -453,9 +453,9 @@ class PVDisplay(EMergeDisplay):
             zs (np.ndarray): The Z-coordinate
         """
         cloud = pv.PolyData(np.array([xs, ys, zs]).T)
-        self._data_sets.append(cloud)
         self._plot.add_points(cloud)
 
+    @plot_item
     def add_line(self, line: Line, width: float = 3.0, color: str = "EMERGE-RED"):
         """Adds a Line object to the plot
 
@@ -476,6 +476,7 @@ class PVDisplay(EMergeDisplay):
             line_width=width,
         )
 
+    @plot_item
     def add_portmode(
         self,
         port: PortBC,
@@ -590,15 +591,15 @@ class PVDisplay(EMergeDisplay):
             self._wrap_plot(grid, scalars=Fnorm.T, opacity=0.8, pickable=False)
 
         Emag = F / np.max(Fnorm.flatten()) * d * 3
-        actor = self._plot.add_arrows(
+        self._plot.add_arrows(
             np.array([xf, yf, zf]).T,
             Emag,
             cmap=cmap,
             color=self.set.theme.parse_color(color),
             show_scalar_bar=False,
         )
-        self._data_sets.append(actor.mapper.dataset)
 
+    @plot_item
     def add_backgroundfields(self, fields: list[BackgroundField], radius: float) -> None:
         coords = []
         ks = []
@@ -636,6 +637,7 @@ class PVDisplay(EMergeDisplay):
         self.add_quiver(xs,ys,zs,Hx,Hy,Hz, color='blue')#, color='EMERGE-GREEN')
         
 
+    @plot_item
     def add_farfield3d(
         self,
         farfield_obj: EHFieldFF,
@@ -668,6 +670,7 @@ class PVDisplay(EMergeDisplay):
             **self.set.theme.farfield_3d_kwarg,
         )
 
+    @plot_item
     def add_particle_lines(
         self, 
         lines: list[np.ndarray] | np.ndarray, 
@@ -760,6 +763,7 @@ class PVDisplay(EMergeDisplay):
                     ambient=0.3
                 )
 
+    @plot_item
     def add_solution_error(
         self,
         error_value: np.ndarray,
@@ -870,18 +874,10 @@ class PVDisplay(EMergeDisplay):
                 clim=clim,
                 show_scalar_bar=show_scalar_bar,
             )
-            self._data_sets.append(glyphs)
             return
  
         # volume / surface modes both need the tet UnstructuredGrid
-        ntets = tet_ids.shape[0]
-        cells = np.zeros((ntets, 5), dtype=np.int64)
-        cells[:, 1:] = self._mesh.tets[:, tet_ids].T
-        cells[:, 0] = 4
-        celltypes = np.full(ntets, fill_value=pv.CellType.TETRA, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
- 
-        grid = pv.UnstructuredGrid(cells, celltypes, points)
+        grid = _compact_grid(self._mesh.tets[:, tet_ids].T, pv.CellType.TETRA, self._mesh.nodes)
         grid.cell_data[scalar_name] = error_value
  
         if mode == "volume":
@@ -907,5 +903,3 @@ class PVDisplay(EMergeDisplay):
                 clim=clim,
                 show_scalar_bar=show_scalar_bar,
             )
- 
-        self._data_sets.append(grid)

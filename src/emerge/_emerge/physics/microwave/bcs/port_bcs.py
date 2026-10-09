@@ -17,6 +17,9 @@ from collections import defaultdict
 from .portmode import PortMode
 
 
+class BoundaryConditionError(Exception):
+    pass
+
 ############################################################
 #                     UTILITY FUNCTIONS                    #
 ############################################################
@@ -348,8 +351,8 @@ class ModalPort(PortBC, Saveable):
                 + " - You simulate at a frequency that is too low.\n"
                 + " - Your mode face is not appropriately supporting a modal solution."
             )
-            raise ValueError(
-                "ModalPort is not properly configured. No modes are defined."
+            raise BoundaryConditionError(
+                "ModalPort could find no modes and thus the simulation can't run. Double check your port mode and port geometry to make sure modes exist that aren't in cutoff."
             )
         return len(self.available_modes[self._last_k0])
 

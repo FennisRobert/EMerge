@@ -94,7 +94,8 @@ def _surface_flux_builder(nodes, tris, tri_to_field, tri_ids_2d, q_flux, n_field
 
     f_global = np.zeros((n_field,), dtype=np.float64)
 
-    for idx in prange(n_sel):
+    # Serial loop: neighbouring triangles share DOFs, so a prange scatter-add races.
+    for idx in range(n_sel):
         itri = tri_ids_2d[0, idx]
         iv1 = tris[0, itri]
         iv2 = tris[1, itri]

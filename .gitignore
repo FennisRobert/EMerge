@@ -20,9 +20,6 @@ scrap/
 *.msh
 
 
-# tests
-**/test_*
-
 version_update.txt
 
 # EMerge data files
@@ -56,3 +53,5 @@ search_prints.py
 check_directory_cleanup.py
 
 uv.lock
+# EMerge global cache
+__emergecache__/

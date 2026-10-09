@@ -36,7 +36,7 @@ warnings.filterwarnings(
 import os
 import sys
 
-__version__ = "3.0.0a20"
+__version__ = "3.0.0a21"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -64,7 +64,7 @@ _is_main_process = _mp.current_process().name == "MainProcess"
 
 if _is_main_process:
     logger.info(f'EMerge v{__version__}')
-    logger.debug('Importing modules')
+    logger.info('Importing modules')
 
 import gmsh
 from ._emerge.simmodel import Simulation
@@ -80,7 +80,7 @@ from ._emerge.geo.polybased import XYPolygon, GeoPrism, Disc, Curve
 from ._emerge.geo.step import STEPItems
 from ._emerge.geo.open_region import open_region, open_pml_region
 from ._emerge.selection import Selection, FaceSelection, DomainSelection, EdgeSelection
-from ._emerge.geometry import select
+from ._emerge.geometry import select, _GeometryManager, _KeyGenerator
 from ._emerge.mth.common_functions import norm, coax_rout, coax_rin, dot, cross
 from ._emerge.periodic import RectCell, HexCell
 from ._emerge.mesher import Algorithm2D, Algorithm3D

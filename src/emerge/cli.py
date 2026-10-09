@@ -100,6 +100,79 @@ class UpgradeCommand(Command):
         _pip("install", "--upgrade", url)
         print("Upgrade complete.")
 
+class UpdatesCommand(Command):
+    name = "updates"
+    help_text = "Opt in/out of the once-per-day check for new EMerge versions on PyPI"
+
+    def configure(self, parser):
+        parser.add_argument(
+            "action",
+            choices=["on", "off", "status", "check", "notices", "clear"],
+            help=(
+                "on/off: enable or disable the daily check, status: show the setting, "
+                "check: check PyPI now, notices: show/validate notices.json, "
+                "clear: clear the notices shown at launch"
+            ),
+        )
+        parser.add_argument(
+            "--file",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help="With 'notices': read a local notices.json instead of the one on GitHub",
+        )
+
+    def execute(self, args):
+        from ._emerge.global_cache import EMergeGlobalCache
+        from ._emerge.update_check import (
+            check_for_update, _upgrade_hint, _installed_version,
+            fetch_notices, validate_notice, describe_notices, NOTICES_URL,
+            clear_notices,
+        )
+
+        cache = EMergeGlobalCache()
+
+        if args.action in ("on", "off"):
+            enabled = args.action == "on"
+            cache.set("update_check", "enabled", enabled)
+            # Reset so enabling triggers a check on the next launch.
+            cache.set("update_check", "last_checked", None)
+            state = "enabled" if enabled else "disabled"
+            print(f"Daily update check {state}. (stored in {cache.path})")
+
+        elif args.action == "status":
+            enabled = cache.get("update_check", "enabled", False)
+            last = cache.get("update_check", "last_checked") or "never"
+            print(f"Daily update check: {'enabled' if enabled else 'disabled'}")
+            print(f"Last checked:       {last}")
+            print(f"Stored notices:     {len(cache.get('update_check', 'notices', []) or [])}")
+            print(f"Cleared notices:    {len(cache.get('update_check', 'dismissed_notices', []) or [])}")
+            print(f"Cache file:         {cache.path}")
+
+        elif args.action == "check":
+            installed, newer = check_for_update(timeout=10.0)
+            if newer is None:
+                print(f"EMerge {installed} is up to date (or PyPI could not be reached).")
+            else:
+                print(f"A newer version is available: {newer} (installed: {installed})")
+                print(f"Upgrade with: {_upgrade_hint(newer)}")
+
+        elif args.action == "notices":
+            source = args.file or NOTICES_URL
+            notices = fetch_notices(source, timeout=10.0)
+            if notices is None:
+                print(f"Could not read notices from {source} (missing file or invalid JSON).")
+                sys.exit(1)
+
+            print(describe_notices(notices, _installed_version(), source))
+            if any(validate_notice(n) for n in notices):
+                sys.exit(1)
+
+        elif args.action == "clear":
+            n = clear_notices(cache)
+            print(f"Cleared {n} notice(s). They will not be shown again.")
+
+
 class CompileCommand(Command):
     name = "compile"
     help_text = "Precompiles all numba code for smooth execution"

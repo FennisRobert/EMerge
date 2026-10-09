@@ -35,7 +35,7 @@ warnings.filterwarnings(
 import os
 import sys
 
-__version__ = "3.0.0a20"
+__version__ = "3.0.0a21"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -64,7 +64,7 @@ _is_main_process = _mp.current_process().name == "MainProcess"
 
 if _is_main_process:
     logger.info(f'EMerge v{__version__}')
-    logger.debug('Importing modules')
+    logger.info('Importing modules')
 
 import gmsh
 from ._emerge.simmodel import Simulation
@@ -96,6 +96,10 @@ howto = _HowtoClass()
 from ._emerge.install_check import run_installation_checks
 
 run_installation_checks()
+
+if _is_main_process:
+    from ._emerge._launch_checks import run_launch_checks
+    run_launch_checks()
 
 
 ############################################################

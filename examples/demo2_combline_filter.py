@@ -118,7 +118,7 @@ port2 = model.mw.bc.ModalPort(model.select.face.near(Lbox + lfeed, 0, h), 2, mod
 # Finally we may create our mesh.
 model.generate_mesh()
 model.view()
-
+model.set_solver(em.EMSolver.SPARTA)
 # At last we can compute the frequency domain study
 data = model.mw.run_adaptive_sweep()
 
@@ -145,8 +145,8 @@ model.display.animate(72).add_field(
         .behind(-0.48*a)
     ).scalar("Jsmag","complex"))
 model.display.animate(72).add_field(
-    field.grid(N=5000).vector("H", "complex"),
-    symmetrize=False,
+    field.grid(N=100_000).vector("H", "complex"),
+    symmetrize=False, vector_type='cloud'
 )
 
 model.display.show()

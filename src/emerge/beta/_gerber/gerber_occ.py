@@ -28,7 +28,7 @@ built directly as an OCC face with true circular arcs:
 Dark/clear polarity is applied with OCC booleans. No polygon simplification is
 needed since round features contribute only a handful of exact edges. Shapes that
 cannot be represented exactly (KiCad cut-in regions, arcs thinner than their
-aperture) fall back to the polygonal representation of the shapely path.
+aperture) fall back to the polygonal (emcad) representation of the polygon path.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ from typing import Iterable
 
 import gmsh
 import numpy as np
-import shapely
-from shapely.geometry import Polygon
+import emcad as cad
+from emcad.kernel.api import is_simple_ring, dekeyhole_polygon
 from loguru import logger
 
 from pygerber.gerberx3.api.v2 import GerberFile
@@ -54,7 +54,7 @@ from pygerber.gerberx3.parser2.apertures2.obround2 import Obround2
 
 from ..._emerge.cs import CoordinateSystem, GCS
 from ..._emerge.geometry import GeoSurface
-from .gerber import _Builder, _mm, _xy, _is_dark
+from .gerber import _Builder, _mm, _xy, _is_dark, _arc_sweep, _poly
 
 MM = 1e-3            # Gerber geometry is handled in mm, gmsh works in meters
 _MAX_ARC = math.radians(120)  # longest single OCC arc segment
@@ -62,18 +62,6 @@ _EPS = 5e-4          # mm, well above the OCC tolerance of 1e-7 m
 
 DimTags = list[tuple[int, int]]
 
-
-def _arc_sweep(cmd: Arc2) -> float:
-    x0, y0 = _xy(cmd.start_point)
-    x1, y1 = _xy(cmd.end_point)
-    xc, yc = _xy(cmd.center_point)
-    a0 = math.atan2(y0 - yc, x0 - xc)
-    a1 = math.atan2(y1 - yc, x1 - xc)
-    if isinstance(cmd, CCArc2):
-        sweep = (a1 - a0) % (2*math.pi)
-        return sweep if sweep > 1e-9 else 2*math.pi
-    sweep = -((a0 - a1) % (2*math.pi))
-    return sweep if sweep < -1e-9 else -2*math.pi
 
 
 class _Wire:
@@ -182,20 +170,24 @@ class _OCCBuilder:
             w.line_to(x, y)
         return [(2, w.face())]
 
-    def from_shapely(self, geom) -> DimTags:
-        """Fallback: build linear faces from a shapely (multi)polygon in mm."""
+    def from_polygons(self, polys: list[cad.Polygon] | None) -> DimTags:
+        """Fallback: build linear faces from emcad polygons (meters), islands included."""
         self.n_fallback += 1
+        occ = gmsh.model.occ
         out = []
-        for p in shapely.get_parts(geom):
-            if not isinstance(p, Polygon) or p.is_empty:
-                continue
-            loops = []
-            for ring in [p.exterior, *p.interiors]:
-                xy = np.asarray(ring.coords)[:-1]
-                pts = [gmsh.model.occ.addPoint(x*MM, y*MM, 0) for x, y in xy]
-                lines = [gmsh.model.occ.addLine(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))]
-                loops.append(gmsh.model.occ.addCurveLoop(lines))
-            out.append((2, gmsh.model.occ.addPlaneSurface(loops)))
+
+        def loop(xs, ys) -> int:
+            pts = [occ.addPoint(x, y, 0) for x, y in zip(xs, ys)]
+            return occ.addCurveLoop([occ.addLine(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))])
+
+        def add(p: cad.Polygon) -> None:
+            out.append((2, occ.addPlaneSurface([loop(p.xs, p.ys)] + [loop(h.xs, h.ys) for h in p.holes])))
+            for hole in p.holes:
+                for island in hole.holes:
+                    add(island)
+
+        for p in polys or []:
+            add(p)
         return out
 
     def _cut_hole(self, faces: DimTags, ap, cx: float, cy: float) -> DimTags:
@@ -212,12 +204,12 @@ class _OCCBuilder:
         (x1, y1), (x2, y2) = _xy(cmd.start_point), _xy(cmd.end_point)
         if isinstance(ap, Circle2):
             return self.stadium(x1, y1, x2, y2, _mm(ap.diameter)/2)
-        return self.from_shapely(self._poly.geometry(cmd))
+        return self.from_polygons(self._poly.geometry(cmd))
 
     def _stroke_arc(self, cmd: Arc2) -> DimTags:
         ap = cmd.aperture
         if not isinstance(ap, Circle2):
-            return self.from_shapely(self._poly.geometry(cmd))
+            return self.from_polygons(self._poly.geometry(cmd))
         w = _mm(ap.diameter)/2
         if w <= 0:
             return []
@@ -230,7 +222,7 @@ class _OCCBuilder:
             return self.disk(x0, y0, 2*w)
         if R - w < _EPS:
             # Aperture wider than the arc radius: no inner boundary, use the polygon path
-            return self.from_shapely(self._poly.geometry(cmd))
+            return self.from_polygons(self._poly.geometry(cmd))
 
         if abs(abs(sweep) - 2*math.pi) < 1e-9:
             out, _ = gmsh.model.occ.cut(self.disk(xc, yc, 2*(R + w)), self.disk(xc, yc, 2*(R - w)))
@@ -286,28 +278,15 @@ class _OCCBuilder:
         return []
 
     def _region(self, cmd: Region2) -> DimTags:
-        # Split into contours at every discontinuity (D02 move)
-        contours: list[list] = []
-        last_end = None
-        for seg in cmd.command_buffer:
-            if not isinstance(seg, (Line2, Arc2)):
-                continue
-            start, end = _xy(seg.start_point), _xy(seg.end_point)
-            if last_end is None or math.hypot(start[0] - last_end[0], start[1] - last_end[1]) > _EPS:
-                contours.append([])
-            contours[-1].append(seg)
-            last_end = end
-
         faces: DimTags = []
-        for segs in contours:
-            # Self touching (cut-in) contours are not valid OCC faces: use the polygon path
-            ring = [_xy(segs[0].start_point)]
-            for seg in segs:
-                ring.extend(self._poly._arc_points(seg)[1:].tolist() if isinstance(seg, Arc2) else [_xy(seg.end_point)])
+        for segs in self._poly.region_contours(cmd):
+            # Self crossing or keyhole (cut-in) contours are not valid OCC faces: use the polygon path
+            ring = self._poly.contour_ring(segs)
             if len(ring) < 4:
                 continue
-            if not Polygon(ring).is_valid:
-                faces += self.from_shapely(shapely.make_valid(Polygon(ring), method='structure', keep_collapsed=False))
+            fixed = dekeyhole_polygon(_poly(ring))
+            if fixed.holes or not is_simple_ring(ring[:, 0]*MM, ring[:, 1]*MM):
+                faces += self.from_polygons(cad.add_polygons(fixed))
                 continue
 
             wire = _Wire(*ring[0], self.centers)

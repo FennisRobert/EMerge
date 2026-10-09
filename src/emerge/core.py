@@ -34,6 +34,7 @@ warnings.filterwarnings(
 ############################################################
 
 import os
+import sys
 
 __version__ = "3.0.0a20"
 
@@ -46,8 +47,11 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", NTHREADS)
 os.environ.setdefault("VECLIB_NUM_THREADS", NTHREADS)
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", NTHREADS)
 os.environ.setdefault("NUMEXPR_NUM_THREADS", NTHREADS)
-os.environ.setdefault("NUMBA_NUM_THREADS", "4")
-os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
+# Numba reads these on every compile and refuses a changed thread count once its
+# threads run, so leave them alone if numba was already imported (e.g. via emcad).
+if "numba" not in sys.modules:
+    os.environ.setdefault("NUMBA_NUM_THREADS", "4")
+    os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 
 
 ############################################################

@@ -48,6 +48,8 @@ class MLPreconData:
         dof_coords: np.ndarray | None = None,
         grad: "csc_matrix | None" = None,
         pi: "csc_matrix | None" = None,
+        abc2_curl: "csc_matrix | None" = None,
+        abc2_div: "csc_matrix | None" = None,
         name: str = "",
     ):
         self.filename = filename
@@ -111,6 +113,21 @@ class MLPreconData:
                 raise ValueError(f"pi has {pi.shape[0]} rows, expected {n} (E.shape[0]).")
         self.pi = pi
 
+        # The second order ABC's contribution to K, split into its surface curl
+        # and surface divergence terms (coefficients applied). Both are ALSO
+        # contained in B; they travel separately because the curl term is the
+        # one part of Im(K) that is negative semidefinite, which a shifted
+        # preconditioner has to treat per term. See
+        # physics/microwave/assembly/ams_export/boundary_terms.py.
+        for argname, M in (("abc2_curl", abc2_curl), ("abc2_div", abc2_div)):
+            if M is not None:
+                if not issparse(M):
+                    raise TypeError(f"{argname} must be a scipy.sparse matrix.")
+                if M.shape != E.shape:
+                    raise ValueError(f"{argname}.shape {M.shape} != E.shape {E.shape}.")
+        self.abc2_curl = abc2_curl
+        self.abc2_div = abc2_div
+
         self.name = name
         self.solution: np.ndarray | None = None
 
@@ -173,6 +190,16 @@ class MLPreconData:
         if self.solution is not None:
             payload["solution"] = self.solution
 
+        # Frequency dependent, so saved with every file, not only with the mesh.
+        for key, M in (("ABC2C", self.abc2_curl), ("ABC2D", self.abc2_div)):
+            if M is not None:
+                M = M.tocsr()
+                M.eliminate_zeros()
+                payload[f"{key}_data"] = M.data
+                payload[f"{key}_indices"] = M.indices
+                payload[f"{key}_indptr"] = M.indptr
+                payload[f"{key}_shape"] = np.array(M.shape)
+
         if include_mesh:
             if self.mesh_nodes is not None:
                 payload["mesh_nodes"] = self.mesh_nodes
@@ -230,10 +257,15 @@ class MLPreconData:
                                  shape=tuple(f["G_shape"])) if "G_data" in f else None),
                 pi=(csr_matrix((f["PI_data"], f["PI_indices"], f["PI_indptr"]),
                                shape=tuple(f["PI_shape"])) if "PI_data" in f else None),
+                abc2_curl=(csr_matrix((f["ABC2C_data"], f["ABC2C_indices"], f["ABC2C_indptr"]),
+                                      shape=tuple(f["ABC2C_shape"])) if "ABC2C_data" in f else None),
+                abc2_div=(csr_matrix((f["ABC2D_data"], f["ABC2D_indices"], f["ABC2D_indptr"]),
+                                     shape=tuple(f["ABC2D_shape"])) if "ABC2D_data" in f else None),
                 name=str(f["name"]) if "name" in f else "",
             )
 
-            rec = cls(E, B, float(f["k0"]), f["b"], f["solve_ids"], **kwargs)
+            rec = cls(filename, E, B, float(f["k0"]), f["solve_ids"], **kwargs)
+            rec.b = f["b"]
             if "solution" in f:
                 rec.solution = f["solution"]
             return rec

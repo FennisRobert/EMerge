@@ -45,6 +45,7 @@ packages = [
     "msgpack",
     "msgpack-numpy",
     "psutil",
+    "emerge-aura"
 ]
 
 

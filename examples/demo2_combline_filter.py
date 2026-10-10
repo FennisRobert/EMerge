@@ -107,7 +107,7 @@ model.mw.set_frequency_range(6e9, 8e9, 31)
 model.mw.set_resolution(0.1)
 # To improve simulation quality we refine the faces at the top of the cylinders.
 for stub in stubs:
-    model.mesher.set_boundary_size(box.face("back", tool=stub), 0.25 * mm)
+    model.mesher.set_boundary_size(box.face("back", tool=stub), 0.5 * mm)
 
 
 # We define our modal ports, assign the boundary condition and execute a modal analysis to solve for the
@@ -118,7 +118,7 @@ port2 = model.mw.bc.ModalPort(model.select.face.near(Lbox + lfeed, 0, h), 2, mod
 # Finally we may create our mesh.
 model.generate_mesh()
 model.view()
-model.set_solver(em.EMSolver.SPARTA)
+
 # At last we can compute the frequency domain study
 data = model.mw.run_adaptive_sweep()
 

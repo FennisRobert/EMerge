@@ -792,15 +792,19 @@ class Assembler:
             # E/B because it cannot be reconstructed from them, and an
             # auxiliary-space Maxwell preconditioner needs it to separate the
             # gradient (curl-free) modes from the rest.
-            from .ams_export import (assemble_discrete_gradient,
+            from .ams_export import (assemble_abc2_terms,
+                                     assemble_discrete_gradient,
                                      assemble_nedelec_interpolation)
             t_grad = time.time()
             Gmat = assemble_discrete_gradient(field)
             Pimat = assemble_nedelec_interpolation(field)
             logger.debug(f"  - AMS operators: G {Gmat.shape} nnz={Gmat.nnz:,}, "
                          f"Pi {Pimat.shape} nnz={Pimat.nnz:,} ({time.time() - t_grad:.1f}s)")
+            # The second order ABC, also contained in Bmat, split out so a
+            # preconditioner can treat it per term; see ams_export/boundary_terms.py.
+            abc2_curl, abc2_div = assemble_abc2_terms(system, robin_bcs, K0)
 
-            mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords(), grad=Gmat, pi=Pimat)
+            mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords(), grad=Gmat, pi=Pimat, abc2_curl=abc2_curl, abc2_div=abc2_div)
         else:
             mldataset = None
 

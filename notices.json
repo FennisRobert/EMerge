@@ -6,7 +6,7 @@
         "Each notice in the 'notices' list has these fields:",
         "  id        (required) Unique name, never reuse one. Users see each id only once.",
         "  message   (required) Plain text shown to the user. Keep it to one or two sentences.",
-        "  affects   (optional) Versions that see it, e.g. '>=3.0.0a1,<3.0.0a21' or '==3.0.0'. Leave out for all versions.",
+        "  affects   (optional) Versions that see it, e.g. '>=3.0.0a1,<3.0.0a22' or '==3.0.0'. Leave out for all versions.",
         "  severity  (optional) 'info', 'warning' (default) or 'critical'. Critical is repeated daily until the user upgrades.",
         "  url       (optional) Link to an issue or release notes.",
         "  enabled   (optional) Set to false to switch a notice off without deleting it. Default: true.",
@@ -20,7 +20,7 @@
             "enabled": false,
             "affects": ">3.0.0",
             "severity": "warning",
-            "message": "Thermal simulations with surface heat flux or convection boundaries could give results that are ~1% off due to a threading bug. Please upgrade to 3.0.0a21 or newer.",
+            "message": "Thermal simulations with surface heat flux or convection boundaries could give results that are ~1% off due to a threading bug. Please upgrade to 3.0.0a22 or newer.",
             "url": ""
         },
         {

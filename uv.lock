@@ -643,9 +643,10 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.0a20"
+version = "3.0.0a21"
 source = { editable = "." }
 dependencies = [
+    { name = "emerge-aura" },
     { name = "emsutil" },
     { name = "gmsh" },
     { name = "joblib" },
@@ -663,6 +664,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+aura = [
+    { name = "emerge-aura" },
+]
 cudss = [
     { name = "cupy-cuda12x" },
     { name = "nvidia-cudss-cu12" },
@@ -692,7 +696,6 @@ umfpack = [
 [package.dev-dependencies]
 dev = [
     { name = "emerge-aasds" },
-    { name = "emsutil" },
     { name = "pytest" },
     { name = "scikit-umfpack" },
     { name = "twine" },
@@ -703,6 +706,8 @@ requires-dist = [
     { name = "cupy-cuda12x", marker = "extra == 'cudss'" },
     { name = "cupy-cuda12x", marker = "extra == 'cudss12'" },
     { name = "emcad", marker = "extra == 'gerber'", specifier = ">=0.1,<0.2" },
+    { name = "emerge-aura", specifier = ">=0.1,<0.2" },
+    { name = "emerge-aura", marker = "extra == 'aura'", specifier = ">=0.1" },
     { name = "emsutil", specifier = ">=1.1,<1.2.0" },
     { name = "ezdxf", marker = "extra == 'dxf'" },
     { name = "gmsh", specifier = ">=4.13.0,<=5.0" },
@@ -727,12 +732,11 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.14.0" },
     { name = "trame-pyvista", marker = "extra == 'spyder'" },
 ]
-provides-extras = ["umfpack", "cudss", "cudss12", "dxf", "gerber", "spyder"]
+provides-extras = ["umfpack", "cudss", "cudss12", "dxf", "gerber", "spyder", "aura"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "emerge-aasds", git = "https://github.com/FennisRobert/emerge-aasds" },
-    { name = "emsutil" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "scikit-umfpack", specifier = ">=0.4.2" },
     { name = "twine", specifier = ">=7.0.0" },
@@ -746,6 +750,22 @@ dependencies = [
     { name = "numpy" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+
+[[package]]
+name = "emerge-aura"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/c5/530f4e424770f3821686768f9b7d11c0f0ca19c99049be59cece869db521/emerge_aura-0.1.0.tar.gz", hash = "sha256:aae21a9a85d3eaa9172718cc39ec96618920584512a251f7819b354df0243c0c", size = 50507, upload-time = "2026-10-10T13:52:42.297Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/0e/7481726d48613d0c71daf780df71b262e780285f312e661ad85e635ba8d0/emerge_aura-0.1.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:99f6df7889d8e8f83cee739146e9998d087215f01aa4ff042a3434bcf1dac9ac", size = 390578, upload-time = "2026-10-10T13:52:34.376Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/1a/31a87407d7ec0d666b8dbee471e422bcb9e58482ef1c45e1b76e6ea83738/emerge_aura-0.1.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:f35921d515fd265f0d999e033a37e740f8413bbe87554715ff86c032b256db23", size = 374092, upload-time = "2026-10-10T13:52:36.027Z" },
+    { url = "https://files.pythonhosted.org/packages/06/d3/518b7fc055e7541a3acc61ebda365000b08c6a445709bf82b87a333f6f8b/emerge_aura-0.1.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5b5ee71459db1169f38f568fcc0e477766b91283930af3ef873a210b733760d1", size = 404882, upload-time = "2026-10-10T13:52:37.577Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/6e/314d2755c2a8a9b94e6dc12f3b3a70f358a28616831fd0e3820aafa92f9d/emerge_aura-0.1.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8c2b620a7deb46ee035d3b826d7130f4ca573d6e1a77b9815a140b4427255d7e", size = 416327, upload-time = "2026-10-10T13:52:39.343Z" },
+    { url = "https://files.pythonhosted.org/packages/07/d3/0b0267a3dd40d58968a2231e5bfd54984d547d36e742d8d286b269639f2b/emerge_aura-0.1.0-cp39-abi3-win_amd64.whl", hash = "sha256:848ca9c2841574d6a47eec66213b1a5b5c659927fd5a8b347e7898d00d179cb3", size = 303878, upload-time = "2026-10-10T13:52:40.74Z" },
 ]
 
 [[package]]

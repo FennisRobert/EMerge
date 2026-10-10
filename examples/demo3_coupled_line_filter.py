@@ -86,7 +86,7 @@ model.mw.set_frequency_range(5.2e9, 6.2e9, 30)  # 5.2–6.2 GHz, 31 points
 model.commit_geometry()
 # --- Mesh refinement -----------------------------------------------------
 # High growth rates are generally not adviced but used here to save some memory.
-model.mesher.set_boundary_size(stripline, 0.2 * mm, growth_rate=4)
+model.mesher.set_boundary_size(stripline, 0.5 * mm, growth_rate=4)
 model.mesher.set_face_size(p1, 1 * mm)
 model.mesher.set_face_size(p2, 1 * mm)
 

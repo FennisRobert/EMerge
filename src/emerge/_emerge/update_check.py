@@ -25,6 +25,9 @@ Disabled by default. Enable with:
 from __future__ import annotations
 import datetime
 import json
+import re
+import subprocess
+import sys
 import textwrap
 import urllib.request
 from pathlib import Path
@@ -45,8 +48,46 @@ def _installed_version() -> Version:
     return Version(__version__)
 
 
-def fetch_latest_version(include_prereleases: bool, timeout: float = TIMEOUT_S) -> Version | None:
-    """Returns the newest non-yanked EMerge version on PyPI, or None if PyPI can't be reached."""
+class _PipUnavailable(Exception):
+    pass
+
+
+def _latest_via_pip(include_prereleases: bool, timeout: float) -> Version | None:
+    """Asks pip (`pip index versions emerge`) for the newest version. This respects the
+    user's pip configuration (index URL, proxy, certificates).
+
+    Raises _PipUnavailable if pip is not installed in this environment (e.g. uv venvs)."""
+    cmd = [
+        sys.executable, "-m", "pip", "index", "versions", "emerge",
+        "--disable-pip-version-check", "--no-input", "--retries", "0",
+        "--timeout", str(max(1, round(timeout))),
+    ]
+    if include_prereleases:
+        cmd.append("--pre")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+    except subprocess.TimeoutExpired:
+        logger.debug("Update check via pip timed out.")
+        return None
+    except OSError as e:
+        raise _PipUnavailable(str(e)) from e
+
+    if "No module named pip" in result.stderr:
+        raise _PipUnavailable("pip is not installed in this environment")
+
+    # First line of the output looks like: "emerge (3.0.0a22)"
+    match = re.search(r"^emerge \(([^)]+)\)", result.stdout, re.MULTILINE)
+    if result.returncode != 0 or match is None:
+        logger.debug(f"Update check via pip failed: {result.stderr.strip()}")
+        return None
+    try:
+        return Version(match.group(1))
+    except InvalidVersion:
+        return None
+
+
+def _latest_via_pypi_json(include_prereleases: bool, timeout: float) -> Version | None:
+    """Fallback when pip is not available: queries the PyPI JSON API directly."""
     try:
         with urllib.request.urlopen(PYPI_URL, timeout=timeout) as response:
             data = json.load(response)
@@ -66,6 +107,17 @@ def fetch_latest_version(include_prereleases: bool, timeout: float = TIMEOUT_S) 
             continue
         versions.append(ver)
     return max(versions, default=None)
+
+
+def fetch_latest_version(include_prereleases: bool, timeout: float = TIMEOUT_S) -> Version | None:
+    """Returns the newest EMerge version available, or None if it can't be determined.
+
+    Uses pip when it is installed, otherwise falls back to the PyPI JSON API."""
+    try:
+        return _latest_via_pip(include_prereleases, timeout)
+    except _PipUnavailable as e:
+        logger.debug(f"pip unavailable ({e}), using the PyPI JSON API for the update check.")
+        return _latest_via_pypi_json(include_prereleases, timeout)
 
 
 def check_for_update(timeout: float = TIMEOUT_S) -> tuple[Version, Version | None]:

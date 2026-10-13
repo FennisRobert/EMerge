@@ -1194,7 +1194,7 @@ class SolverSparta(Solver):
         self.initalized = False
         self.cpu: bool = False
         self.settings: dict = dict(
-            ordering=sparta.Ordering.METIS, 
+            ordering=sparta.Ordering.SCALPEL, 
             refinement_steps=0,
         )
 

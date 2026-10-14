@@ -19,22 +19,18 @@
 # Last Cleanup: 2025-01-01
 import re
 from typing import Any
-from ..pcb import PCBNew, RouteException
-from ...selection import Selection
-from ...geometry import GeoObject
+from ..._emerge.geo.pcb import PCBNew, RouteException
+from ..._emerge.selection import Selection
+from ..._emerge.geometry import GeoObject
 from emsutil import Material, PEC
-from ...cs import GCS, CoordinateSystem
+from ..._emerge.cs import GCS, CoordinateSystem
 from loguru import logger
 from math import hypot
-from ...simmodel import Simulation
-from ...mth.loopsplit import Loop
-try: 
-    import ezdxf
-    from ezdxf.recover import readfile as recover_readfile
-    from ezdxf.path import make_path, from_hatch
-except ImportError as e:
-    logger.error('Cannot find the required ezdxf library. Install using: pip install ezdxf')
-    raise e
+from ..._emerge.simmodel import Simulation
+from ..._emerge.mth.loopsplit import Loop
+import ezdxf  # optional dependency: pip install emerge[dxf]
+from ezdxf.recover import readfile as recover_readfile
+from ezdxf.path import make_path, from_hatch
 import numpy as np
 
 INSUNITS_TO_NAME = {

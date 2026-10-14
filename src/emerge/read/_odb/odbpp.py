@@ -18,7 +18,7 @@ from loguru import logger
 
 import emcad as cad
 import emerge as em
-from .ext import GeoObject, GeoVolume, GeoSurface
+from ...ext import GeoObject, GeoVolume, GeoSurface
 
 from emcad.odbpp import PCBView
 from emcad.odbpp.cache import save_pcb_cache, load_pcb_cache
@@ -150,6 +150,22 @@ class ODBImportConfig:
 
     trace_post_simplify_delta: float = 10e-6
     # RDP tolerance (meters) for that post-union pass.
+
+    trace_regularize: bool = False
+    # If True, run map-making style outline regularization on each
+    # layer's unioned output (after dezigzag, before the post-union
+    # RDP pass): edges snap back onto their dominant straight lines and
+    # protrusions smaller than `trace_regularize_tol` -- typically via
+    # pads poking out of a copper edge -- are flattened, without the
+    # skewed edges a large `trace_post_simplify_delta` produces. See
+    # `emcad.Polygon.regularize`.
+
+    trace_regularize_tol: float = 0.25e-3
+    # Largest protrusion (meters) regularization flattens. Keep it below
+    # the smallest real feature (slot/gap width) you need to preserve.
+
+    trace_regularize_dangle_deg: float = 5.0
+    # Snap-angle step (degrees) for straight edges.
 
     # -- via circle tessellation, tiered by drill diameter -----------------
 
@@ -426,6 +442,9 @@ class ODBImport:
         post_simplify_delta: float | None = None,
         simplify_delta: float | None = None,
         merge_tol: float | None = None,
+        regularize: bool | None = None,
+        regularize_tol: float | None = None,
+        regularize_dangle_deg: float | None = None,
     ) -> list[GeoVolume | GeoSurface]:
         """Build copper geometry (pads/traces/pours) for every signal
         layer, already boolean-unified per layer -- see
@@ -453,6 +472,11 @@ class ODBImport:
             post_simplify_delta if post_simplify_delta is not None else cfg.trace_post_simplify_delta
         )
         merge_tol = merge_tol if merge_tol is not None else cfg.merge_tol
+        regularize = regularize if regularize is not None else cfg.trace_regularize
+        regularize_tol = regularize_tol if regularize_tol is not None else cfg.trace_regularize_tol
+        regularize_dangle_deg = (
+            regularize_dangle_deg if regularize_dangle_deg is not None else cfg.trace_regularize_dangle_deg
+        )
 
         logger.debug("generate_traces: start")
 
@@ -468,7 +492,8 @@ class ODBImport:
                 dezigzag_max_angle_deg=dezigzag_max_angle_deg,
                 dezigzag_min_neighbor_factor=dezigzag_min_neighbor_factor,
                 post_simplify=post_simplify, post_simplify_delta=post_simplify_delta,
-                merge_tol=merge_tol,
+                merge_tol=merge_tol, regularize=regularize, regularize_tol=regularize_tol,
+                regularize_dangle_deg=regularize_dangle_deg,
             ):
                 polygons.append(parse_polygon(poly, layer.z1, material=self.trace_material))
 

@@ -47,9 +47,9 @@ cudss12 = [
 dxf = [
   "ezdxf"
 ]
-gerber = [
+cad = [
   "pygerber>=2.4, <3",
-  "emcad>=0.1, <0.2",
+  "emcad>=0.2, <0.3",
 ]
 spyder = [
   "trame-pyvista",

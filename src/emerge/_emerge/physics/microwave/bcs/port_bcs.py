@@ -1447,6 +1447,7 @@ class LumpedPort(PortBC, Saveable):
     _include_stiff: bool = True
     _include_mass: bool = False
     _include_force: bool = True
+    _size_constraint_is_physical: bool = True  # derived from the physical width/height
     _color: str = "#e1851c"
     _name: str = "LumpedPort"
     _texture: str = "tex5.png"

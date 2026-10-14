@@ -97,6 +97,7 @@ class Mesher:
         self.periodic_cell: PeriodicCell = None
 
         self._scale: float = 1.0
+        self.global_max_size: float | None = None  # physical meters, see set_global_max_size
 
     @property
     def edge_tags(self) -> list[int]:
@@ -285,6 +286,8 @@ class Mesher:
             if bc.dim != 2:
                 continue
             size = bc._size_constraint
+            if bc._size_constraint_is_physical:
+                size *= self._scale  # physical length -> modelling units
             logger.debug(
                 f"Setting size constraint for {bc} of size {size * 1000:.2f}mm"
             )
@@ -298,6 +301,19 @@ class Mesher:
         gmsh.model.mesh.field.setNumbers(tag,"FieldsList",[maxval_tag,],)
         gmsh.model.mesh.field.setAsBackgroundMesh(tag)
         self._coarse_tags = (tag, maxval_tag)
+
+    def set_global_max_size(self, size: float | None) -> None:
+        """Sets an upper limit for the mesh element size everywhere in the model.
+
+        The size is a physical length in meters. It is multiplied by the model scale factor
+        (Simulation.set_scale_factor) internally. The wavelength-based default sizes can be much larger
+        than electrically small models (e.g. on-chip structures), in which case this limit is what
+        sets the mesh density away from small geometric features.
+
+        Args:
+            size (float | None): Maximum element size in meters. None removes the limit.
+        """
+        self.global_max_size = size
 
     def _configure_mesh_size(self, discretizer: Callable, resolution: float):
         """Defines the mesh sizes based on a discretization callable.
@@ -313,6 +329,14 @@ class Mesher:
         gmsh.option.setNumber(
             "Mesh.MeshSizeFromCurvature", self.curved_boundary_segments
         )
+
+        # Global upper limit on every element (gmsh default 1e22 = no limit). Always set, so a limit
+        # from a previous model does not leak into this one through gmsh's global options.
+        if self.global_max_size is not None:
+            gmsh.option.setNumber("Mesh.MeshSizeMax", self.global_max_size * self._scale)
+            logger.info(f"Global maximum mesh size: {self.global_max_size * 1e6:.3g} um (physical)")
+        else:
+            gmsh.option.setNumber("Mesh.MeshSizeMax", 1e22)
 
         for tag in self._coarse_tags:
             gmsh.model.mesh.field.remove(tag)
@@ -341,6 +365,8 @@ class Mesher:
 
             size = self._scale*discretizer(obj.material) * resolution * obj.mesh_multiplier
             size = min(size, obj.max_meshsize)
+            if self.global_max_size is not None:
+                size = min(size, self.global_max_size * self._scale)
 
             for dimtag in obj.dimtags:
                 size_mapping[dimtag] = size

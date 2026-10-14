@@ -194,7 +194,7 @@ class InstallSolverCommand(Command):
     name = "install-solver"
     help_text = "Install an optional solver backend"
 
-    SOLVERS = ["umfpack", "cudss", "dxf", "gerber", "aasds"]
+    SOLVERS = ["umfpack", "cudss", "dxf", "cad", "gerber", "aasds"]
 
     def configure(self, parser):
         parser.add_argument(
@@ -205,7 +205,7 @@ class InstallSolverCommand(Command):
                 "umfpack (Linux/macOS via pip, Windows via conda), "
                 "cudss / cudss12 (Windows + NVIDIA GPU), "
                 "aasds (macOS Apple Silicon), "
-                "dxf, gerber (file format extras)"
+                "dxf, cad (file format extras: Gerber, ODB++; 'gerber' is an alias of 'cad')"
             ),
         )
 
@@ -220,7 +220,8 @@ class InstallSolverCommand(Command):
             "cudss12": lambda: self._install_cudss(system),
             "aasds":   lambda: self._install_aasds(system, machine),
             "dxf":     lambda: self._install_extras("dxf"),
-            "gerber":  lambda: self._install_extras("gerber"),
+            "cad":     lambda: self._install_extras("cad"),
+            "gerber":  lambda: self._install_extras("cad"),
         }
 
         installer = installers.get(solver)
@@ -280,7 +281,7 @@ class InstallSolverCommand(Command):
 
     @staticmethod
     def _install_extras(extra: str) -> None:
-        package_map = {"dxf": ["ezdxf"], "gerber": ["pygerber>=2.4,<3", "emcad>=0.1,<0.2"]}
+        package_map = {"dxf": ["ezdxf"], "cad": ["pygerber>=2.4,<3", "emcad>=0.2,<0.3"]}
         packages = package_map[extra]
         print(f"Installing {extra} dependencies ({', '.join(packages)})...")
         _pip("install", *packages)

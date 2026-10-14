@@ -63,6 +63,10 @@ class BoundaryCondition(Saveable):
         self.tags: list[int] = self.selection.tags
         
         
+    # True if _size_constraint is a physical length (e.g. from user-given port dimensions) rather than one
+    # measured on the gmsh geometry. The mesher multiplies physical constraints by the model scale factor.
+    _size_constraint_is_physical: bool = False
+
     @property
     def _size_constraint(self) -> float | None:
         return None

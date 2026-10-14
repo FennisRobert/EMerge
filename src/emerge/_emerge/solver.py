@@ -139,14 +139,16 @@ except ModuleNotFoundError as e:
 
 
 try:
-    from .solve_interfaces.cudss_interface import CuDSSInterface
+    from .solve_interfaces.cudss_interface import CuDSSInterface, gpu_fp64_ratio
 
     _CUDSS_AVAILABLE = True
 except ModuleNotFoundError:
     logger.trace("CuDSS Interface not found. (not harmful)")
-except ImportError as e:
-    logger.error("Error while importing CuDSS dependencies:")
-    logger.exception(e)
+except Exception as e:
+    # Any failure in the optional GPU stack (e.g. an API change in nvmath-python raising an
+    # AttributeError) must not break `import emerge` for CPU-only use.
+    logger.warning(f"The cuDSS GPU solver is unavailable: {type(e).__name__}: {e}")
+    logger.debug("cuDSS import error details:", exc_info=e)
 
 
 ############################################################
@@ -1467,22 +1469,64 @@ class SolverCuDSS(Solver):
     stype = SolverType.SINGLE_ONLY
     name = "CUDSS"
 
+    # In 'auto' mode, single precision is used on GPUs whose FP64 throughput is at most 1/N of FP32.
+    FP64_RATIO_THRESHOLD: int = 8
+
     def __init__(self, pre: str):
         super().__init__(pre)
         self._cudss: CuDSSInterface | None = None
         self.fact_symb: bool = False
         self.fact_numb: bool = False
         self._csym: bool = True
+        self.precision: Literal['auto', 'single', 'double'] = 'auto'
+
+    def set_precision(self, precision: Literal['auto', 'single', 'double'] = 'auto') -> None:
+        """Sets the floating point precision of the cuDSS solve.
+
+        'auto' (default) checks the GPU: many consumer and workstation cards run double precision at
+        only 1/32 or 1/64 of the single precision rate, in which case single precision is used and a
+        warning is given. 'double' always uses double precision, 'single' always single precision.
+        Single precision is faster on such GPUs but less accurate for ill-conditioned problems.
+        """
+        if precision not in ('auto', 'single', 'double'):
+            raise ValueError(f"precision must be 'auto', 'single' or 'double', not {precision!r}")
+        self.precision = precision
+        if self._cudss is not None:
+            self._cudss._PRES = self._choose_precision()
+
+    def _choose_precision(self) -> int:
+        """Returns 1 (single) or 2 (double) for the CuDSS interface."""
+        if self.precision == 'single':
+            return 1
+        if self.precision == 'double':
+            return 2
+        try:
+            ratio, name = gpu_fp64_ratio()
+        except Exception as e:  # never let the hardware query stop a solve
+            logger.debug(f"Could not query the GPU double precision rate ({e}); using double precision.")
+            return 2
+        if ratio is not None and ratio >= self.FP64_RATIO_THRESHOLD:
+            logger.warning(
+                f"GPU '{name}' runs double precision at 1/{ratio} of single precision speed. cuDSS will use "
+                "single precision, which is faster but less accurate. To force double precision use "
+                "model.mw.solveroutine.solvers[em.EMSolver.CUDSS].set_precision('double')."
+            )
+            return 1
+        logger.debug(f"GPU '{name}' FP32:FP64 ratio {ratio}; using double precision.")
+        return 2
 
     def initialize(self) -> None:
         if self.initialized:
             return
         self._cudss = CuDSSInterface()
-        self._cudss._PRES = 2
+        self._cudss._PRES = self._choose_precision()
+        self._cudss._csym = self._csym
         self.initialized = True
 
     def set_symmetry(self, complex_symmetric: bool) -> None:
-        self._cudss._csym = complex_symmetric
+        self._csym = complex_symmetric
+        if self._cudss is not None:
+            self._cudss._csym = complex_symmetric
 
     def reset(self) -> None:
         self.fact_symb = False

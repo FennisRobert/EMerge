@@ -25,7 +25,7 @@ from .geo.modeler import Modeler
 from .physics.microwave.microwave_3d import Microwave3D
 from .physics.heatconduction.heatconduction_3d import HeatConduction3D
 from .mesh3d import Mesh3D
-from .mesher import Mesher
+from .mesher import Mesher, MeshError
 from .dataset import SimulationDataset
 from .plot.pyvista import PVDisplay
 from .periodic import PeriodicCell
@@ -1025,6 +1025,44 @@ class Simulation:
 
         return orphans
 
+    def _check_mesh_consistency(self) -> None:
+        """Raises a MeshError if gmsh returned tetrahedra that reference nodes it does not have.
+
+        gmsh's boundary recovery (Delaunay and HXT 3D algorithms) can insert helper nodes on badly shaped
+        surface meshes and then lose them, leaving dangling node references. Without this check that
+        surfaces later as an unexplained KeyError while reading the mesh.
+        """
+        node_tags = gmsh.model.mesh.get_nodes()[0]
+        _, _, tet_node_tags = gmsh.model.mesh.get_elements(3)
+        if not len(tet_node_tags):
+            return
+        missing = np.setdiff1d(np.unique(tet_node_tags[0]), node_tags)
+        if len(missing) == 0:
+            return
+
+        # Which volumes (and which objects) contain the broken tetrahedra
+        bad_volumes = []
+        for _, vtag in gmsh.model.getEntities(3):
+            _, _, vnodes = gmsh.model.mesh.get_elements(3, vtag)
+            if len(vnodes) and np.isin(vnodes[0], missing).any():
+                bad_volumes.append(vtag)
+        names = sorted({obj.name for obj in self.mesher.objects
+                        for d, t in obj.dimtags if d == 3 and t in bad_volumes})
+
+        logger.error(f"GMSH produced an inconsistent mesh: {len(missing)} node(s) referenced by tetrahedra in "
+                     f"volumes {bad_volumes} do not exist.")
+        _GlobalHandler.active().debugcollector.add_report(
+            f"GMSH produced an inconsistent mesh: tetrahedra in volume(s) {bad_volumes} ({', '.join(names)}) "
+            f"reference {len(missing)} node(s) that do not exist. This happens when the 3D mesher has to repair "
+            "very badly shaped surface triangles, typically long slivers on thin layers or thin conductors when "
+            "the mesh size is much larger than the layer thickness. Possible solutions:\n"
+            "    1. Use the Frontal 3D algorithm, which does not use this repair step:\n"
+            "        model.mesher.set_algorithm(em.Algorithm3D.FRONTAL)\n"
+            "    2. Reduce the mesh size on the thin objects so their surface triangles are better shaped:\n"
+            "        object.max_meshsize = ..."
+        )
+        raise MeshError("GMSH produced an inconsistent mesh (tetrahedra reference missing nodes).")
+
     def generate_mesh(self, regenerate: bool = False, remove_orphans: bool = False) -> None:
         """Generate the mesh.
         This can only be done after commit_geometry(...) is called and if frequencies are defined.
@@ -1111,6 +1149,7 @@ class Simulation:
             print(_GMSH_ERROR_TEXT)
             raise
 
+        self._check_mesh_consistency()
         self._apply_size_scaling()
         
         

@@ -929,6 +929,7 @@ def dot_c_arry(a: np.ndarray, b: np.ndarray):
     ),
     cache=True,
     nogil=True,
+    parallel=True,
 )
 def compute_error_single(
     nodes,
@@ -965,6 +966,7 @@ def compute_error_single(
     # INIT POSTERIORI ERROR ESTIMATE QUANTITIES
     alpha_t = np.zeros((N_TETS,), dtype=np.complex128)
     max_elem_size = np.zeros((N_TETS,), dtype=np.float64)
+    nan_tet = np.zeros((N_TETS,), dtype=np.bool_)
 
     Qf_face1 = np.zeros((4, N2D, N_TETS), dtype=np.complex128)
     Qf_face2 = np.zeros((4, N2D, N_TETS), dtype=np.complex128)
@@ -975,12 +977,13 @@ def compute_error_single(
     Rf_face_residual = np.zeros((4, N_TETS), dtype=np.float64)
     adj_tets_mat = -np.ones((4, N_TETS), dtype=np.int32)
 
-    # Compute Error estimate
-    for itet in range(N_TETS):
-        uinv = (1 / ur[itet]) * np.eye(3)
-        ermat = er[itet] * np.eye(3)
+    # Compute Error estimate. Each tet writes only its own slots, plus (per shared face) exactly one slot
+    # of the neighbour across that face, so the loop is race-free in parallel.
+    for itet in prange(N_TETS):
         erc = er[itet]
         urc = ur[itet]
+        uinv = (1 / urc) * np.eye(3)
+        ermat = erc * np.eye(3)
 
         # GEOMETRIC QUANTITIES
         vertices = nodes[:, tets[:, itet]]
@@ -990,34 +993,17 @@ def compute_error_single(
         v4 = vertices[:, 3]
 
         # VOLUME INTEGRATION POINTS
-        vxs = (
-            DPTS_3D[1, :] * v1[0]
-            + DPTS_3D[2, :] * v2[0]
-            + DPTS_3D[3, :] * v3[0]
-            + DPTS_3D[4, :] * v4[0]
-        )
-        vys = (
-            DPTS_3D[1, :] * v1[1]
-            + DPTS_3D[2, :] * v2[1]
-            + DPTS_3D[3, :] * v3[1]
-            + DPTS_3D[4, :] * v4[1]
-        )
-        vzs = (
-            DPTS_3D[1, :] * v1[2]
-            + DPTS_3D[2, :] * v2[2]
-            + DPTS_3D[3, :] * v3[2]
-            + DPTS_3D[4, :] * v4[2]
-        )
-
         intpts = np.empty((3, DPTS_3D.shape[1]), dtype=np.float64)
-        intpts[0, :] = vxs
-        intpts[1, :] = vys
-        intpts[2, :] = vzs
+        for k in range(3):
+            intpts[k, :] = (
+                DPTS_3D[1, :] * v1[k]
+                + DPTS_3D[2, :] * v2[k]
+                + DPTS_3D[3, :] * v3[k]
+                + DPTS_3D[4, :] * v4[k]
+            )
 
         # TET TRI/EDGE NODE COUPLINGS -- geometry only, independent of how
-        # many DOF "orders" exist per edge/face (unlike the old code, which
-        # derived these from tet_to_field[:6]/[6:10], silently assuming a
-        # fixed 6-edge/4-face-DOF layout). tet_to_edge/tet_to_tri always
+        # many DOF "orders" exist per edge/face. tet_to_edge/tet_to_tri always
         # have exactly 6/4 entries per tet regardless of DOF order count.
         g_node_ids = tets[:, itet]
         g_edge_ids = edges[:, tet_to_edge[:, itet]]
@@ -1026,15 +1012,10 @@ def compute_error_single(
         l_tri_ids = local_mapping(g_node_ids, g_tri_ids)
         triids = tet_to_tri[:, itet]
 
-        #size_max = circum_sphere_diam(v1, v2, v3, v4)
-        #size_max = min(size_max, np.max(edge_lengths[tet_to_edge[:, itet]]))
         size_max = np.max(edge_lengths[tet_to_edge[:, itet]])
         TET_VOLUME = compute_volume(vertices[0, :], vertices[1, :], vertices[2, :])
-        #Rt = circum_sphere_diam(v1, v2, v3, v4)
         Rt = ((3*TET_VOLUME)/(4*np.pi))**(1/3)
         # Efield -- full per-tet DOF vector, in the same order as dofcodes3d.
-        # No more Em1s/Ef1s/Em2s/Ef2s fixed slicing -- compute_field/curl/div/
-        # curl_curl dispatch per-DOF internally via dofcodes3d.
         Ef = Efield[tet_to_field[:, itet]]
 
         # Qt term
@@ -1048,19 +1029,11 @@ def compute_error_single(
             )
         )
 
-        # Jt term
+        # Jt term (er/ur are scalar per tet, so the material matrices are diagonal: scalar products)
         Rv1 = compute_curl_curl(vertices, Ef, l_edge_ids, l_tri_ids, uinv, dofcodes3d)
-        Rv2 = -(k0**2) * matmul(
-            ermat, compute_field(intpts, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
-        )
-        Rv = 1 * Rv2
-        Rv[0, :] += Rv1[0]  # X-component
-        Rv[1, :] += Rv1[1]  # Y-component
-        Rv[2, :] += Rv1[2]  # Z-component
-
-        Rv[0, :] = Rv[0, :] * WEIGHTS_VOL
-        Rv[1, :] = Rv[1, :] * WEIGHTS_VOL
-        Rv[2, :] = Rv[2, :] * WEIGHTS_VOL
+        Rv = -(k0**2) * erc * compute_field(intpts, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
+        for k in range(3):
+            Rv[k, :] = (Rv[k, :] + Rv1[k]) * WEIGHTS_VOL
 
         Jt = -TET_VOLUME * np.sum(1 / (1j * W0 * MU0) * Rv, axis=1)
 
@@ -1069,63 +1042,28 @@ def compute_error_single(
         alpha_t[itet] = -Gt / (erc * EPS0 + DEPS) * Qt * Qt - Gt * urc * MU0 * np.sum(
             Jt * Jt
         )
-        if np.isnan(
-            np.abs(-Gt / (erc * EPS0) * Qt * Qt - Gt * urc * MU0 * np.sum(Jt * Jt))
-        ):
-            print(f"tet {itet}:")
-            print(f"  W0={W0}, k0={k0}, Rt={Rt}")
-            print(f"  exp term={np.exp(-1j * k0 * Rt)}")
-            print(f"  Gt={Gt}")
-            print(f"  erc={erc}, urc={urc}")
-            print(f"  Qt={Qt}")
-            print(f"  Jt={Jt}, sum(Jt*Jt)={np.sum(Jt * Jt)}")
-            print(f"  term1={-Gt / (erc * EPS0) * Qt * Qt}")
-            print(f"  term2={-Gt * urc * MU0 * np.sum(Jt * Jt)}")
-            print(
-                f"  alpha_t={-Gt / (erc * EPS0) * Qt * Qt - Gt * urc * MU0 * np.sum(Jt * Jt)}"
-            )
-            raise ValueError(f"NaN detected at tet {itet}")
+        if np.isnan(np.abs(alpha_t[itet])):
+            nan_tet[itet] = True
 
         # Face Residual computation
-
         all_face_coords = np.empty((3, 4 * N2D), dtype=np.float64)
         for itri in range(4):
-            triid = triids[itri]
-            tnodes = nodes[:, tris[:, triid]]
-            n1 = tnodes[:, 0]
-            n2 = tnodes[:, 1]
-            n3 = tnodes[:, 2]
-            all_face_coords[0, itri * N2D : (itri + 1) * N2D] = (
-                DPTS_2D[1, :] * n1[0] + DPTS_2D[2, :] * n2[0] + DPTS_2D[3, :] * n3[0]
-            )
-            all_face_coords[1, itri * N2D : (itri + 1) * N2D] = (
-                DPTS_2D[1, :] * n1[1] + DPTS_2D[2, :] * n2[1] + DPTS_2D[3, :] * n3[1]
-            )
-            all_face_coords[2, itri * N2D : (itri + 1) * N2D] = (
-                DPTS_2D[1, :] * n1[2] + DPTS_2D[2, :] * n2[2] + DPTS_2D[3, :] * n3[2]
-            )
+            tnodes = nodes[:, tris[:, triids[itri]]]
+            for k in range(3):
+                all_face_coords[k, itri * N2D : (itri + 1) * N2D] = (
+                    DPTS_2D[1, :] * tnodes[k, 0] + DPTS_2D[2, :] * tnodes[k, 1] + DPTS_2D[3, :] * tnodes[k, 2]
+                )
 
-        Qf_all = (
-            erc
-            * EPS0
-            * compute_field(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
-        )
-        Jf_all = (
-            -1
-            / (1j * MU0 * W0)
-            * matmul(
-                uinv, compute_curl(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
-            )
-        )
         E_face_all = compute_field(all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d)
+        Qf_all = erc * EPS0 * E_face_all
+        Jf_all = -1 / (1j * MU0 * W0) * ((1 / urc) * compute_curl(
+            all_face_coords, vertices, Ef, l_edge_ids, l_tri_ids, dofcodes3d))
         tetc = centers[:, itet].flatten()
 
         max_elem_size[itet] = size_max
 
         for iface in range(4):
             tri_index = triids[iface]
-
-            pec_face = tet_is_pec[tri_index]
 
             i1, i2, i3 = tris[:, tri_index]
 
@@ -1136,28 +1074,23 @@ def compute_error_single(
                 nodes[:, i1], nodes[:, i2], nodes[:, i3], tetc
             ).astype(np.complex128)
 
-            area = areas[triids[iface]]
-
-            n1 = nodes[:, i1]
-            n2 = nodes[:, i2]
-            n3 = nodes[:, i3]
-            #l1 = np.linalg.norm(n2 - n1)
-            #l2 = np.linalg.norm(n3 - n1)
-            #l3 = np.linalg.norm(n3 - n2)
-            #Rf = np.max(np.array([l1, l2, l3]))
-            #Rf = diam_circum_circle(n1, n2, n3)
+            area = areas[tri_index]
             Rf = (area/np.pi)**0.5
 
             Rf_face_residual[iface, itet] = Rf
             areas_face_residual[iface, :, itet] = area
 
-            adj_tets = [int(tri_to_tet[j, triids[iface]]) for j in range(2)]
-            adj_tets = [num for num in adj_tets if num not in (itet, -1234)]
-
-            if len(adj_tets) == 0:
+            # Neighbour across this face (-1 for an exterior face)
+            itet_adj = -1
+            for j in range(2):
+                t = tri_to_tet[j, tri_index]
+                if t != itet and t != -1234:
+                    itet_adj = t
+                    break
+            if itet_adj == -1:
                 continue
 
-            if pec_face is True:
+            if tet_is_pec[tri_index]:
                 Jtan = (
                     Y0
                     * np.sqrt(1 / urc)
@@ -1165,17 +1098,15 @@ def compute_error_single(
                         normal, -cross_c_arry(normal, E_face_all[:, slc1:slc2])
                     )
                 )
-
-                itet_adj = adj_tets[0]
-                iface_adj = np.argwhere(tet_to_tri[:, itet_adj] == triids[iface])[0][0]
-
                 Jf_face1[iface, :, :, itet] = Jtan
-
                 adj_tets_mat[iface, itet] = itet_adj
                 continue
 
-            itet_adj = adj_tets[0]
-            iface_adj = np.argwhere(tet_to_tri[:, itet_adj] == triids[iface])[0][0]
+            iface_adj = 0
+            for j in range(4):
+                if tet_to_tri[j, itet_adj] == tri_index:
+                    iface_adj = j
+                    break
 
             Jf_face1[iface, :, :, itet] = cross_c_arry(normal, Jf_all[:, slc1:slc2])
             Jf_face2[iface_adj, :, :, itet_adj] = -cross_c_arry(
@@ -1186,6 +1117,11 @@ def compute_error_single(
             Qf_face2[iface_adj, :, itet_adj] = -dot_c_arry(normal, Qf_all[:, slc1:slc2])
 
             adj_tets_mat[iface, itet] = itet_adj
+
+    for itet in range(N_TETS):
+        if nan_tet[itet]:
+            print("NaN in the error estimate at tet", itet, "er =", er[itet], "ur =", ur[itet])
+            raise ValueError("NaN detected in the a-posteriori error estimate")
 
     # Compute 2D Gauss quadrature weight matrix
     fWs = np.empty_like(areas_face_residual, dtype=np.float64)
@@ -1213,7 +1149,7 @@ def compute_error_single(
     )
 
     alpha_Nf = np.zeros((4, N_TETS), dtype=np.complex128)
-    for it in range(N_TETS):
+    for it in prange(N_TETS):
         for iface in range(4):
             it2 = adj_tets_mat[iface, it]
             if it2 == -1:

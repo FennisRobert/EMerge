@@ -37,6 +37,7 @@ from ..physics_generic import GenericPhysics3D
 from .bcs.boundary_condition_set import MWBoundaryConditionSet
 from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
 from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePortIH, UserDefinedPort
+from .bcs.mode_gauge import GAUGE_QUALITY_WARNING, canonical_mode_factor, port_face_quadrature
 
 from .microwave_data import MWData
 from .adaptive_sweep import AdaptiveFrequencySampler
@@ -610,9 +611,9 @@ class Microwave3D(GenericPhysics3D):
         """
 
         def disc(material: Material):
-            return 299792458 / (
-                max(self.frequencies) * np.real(material.neff(max(self.frequencies)))
-            )
+            fmax = max(self.frequencies)
+            neff = np.max(np.real(np.asarray(material.neff(fmax))))
+            return 299792458 / (fmax * neff)
 
         return disc
 
@@ -1346,6 +1347,13 @@ class Microwave3D(GenericPhysics3D):
 
         nmodes_found = eigen_values.shape[0]
 
+        # Quadrature of the port face for the canonical mode gauge (see bcs/mode_gauge.py)
+        gauge_quad = port_face_quadrature(
+            self.mesh.nodes,
+            self.mesh.tris[:, self.mesh.get_triangles(port.tags)],
+            self.mesh.inward_normal(port.tags),
+        )
+
         # For each found mode
         for i in range(nmodes_found):
             # The E-field must
@@ -1389,6 +1397,20 @@ class Microwave3D(GenericPhysics3D):
                         f"Mode polarization along alignment axis {vec} = {EdotVec.real:.3f}, inverting."
                     )
                     Emode = -Emode
+            else:
+                # Without an alignment vector, fix the sign (and residual phase) with the mesh-independent
+                # canonical gauge, so the mode does not flip between frequencies or mesh refinement passes.
+                # TEM ports with terminals are still flipped to a positive voltage further below.
+                E_gauge = nlf.interpolate_Ef(Emode)(*gauge_quad.points)
+                factor, quality = canonical_mode_factor(E_gauge, gauge_quad)
+                if quality < GAUGE_QUALITY_WARNING:
+                    logger.warning(
+                        f"{port}: mode {i + 1} has a very small overlap with the gauge test field "
+                        f"(quality {quality:.1e}); its sign may not be consistent between meshes. "
+                        "Define the polarization with port.align_modes(...) to be sure."
+                    )
+                logger.debug(f"Canonical mode gauge: factor {factor:.3f}, quality {quality:.3f}")
+                Emode = Emode * factor
 
             # These return field interpolation class objects.
             portfE = nlf.interpolate_Ef(Emode)

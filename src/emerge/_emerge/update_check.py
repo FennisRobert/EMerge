@@ -75,7 +75,7 @@ def _latest_via_pip(include_prereleases: bool, timeout: float) -> Version | None
     if "No module named pip" in result.stderr:
         raise _PipUnavailable("pip is not installed in this environment")
 
-    # First line of the output looks like: "emerge (3.0.0a23)"
+    # First line of the output looks like: "emerge (3.0.0a24)"
     match = re.search(r"^emerge \(([^)]+)\)", result.stdout, re.MULTILINE)
     if result.returncode != 0 or match is None:
         logger.debug(f"Update check via pip failed: {result.stderr.strip()}")

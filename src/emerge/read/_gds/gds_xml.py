@@ -148,7 +148,12 @@ class GDSFromXML(GDSFile):
         color = f"#{m.color}" if m.color else "#BEBEBE"
         if m.type.lower() == "conductor":
             return Material(cond=m.conductivity, color=color, name=name)
-        return Material(er=m.permittivity, tand=m.loss_tangent, cond=m.conductivity, color=color, name=name)
+        # Display opacity follows the refractive index mismatch to air: 1 - 1/n with n = sqrt(er), so
+        # air (er = 1) is fully transparent and higher permittivity is more opaque, but never fully.
+        n = np.sqrt(max(m.permittivity, 1.0))
+        opacity = float(1.0 - 1.0 / n)
+        return Material(er=m.permittivity, tand=m.loss_tangent, cond=m.conductivity, color=color, name=name,
+                        opacity=opacity)
 
     # ------------------------------------------------------------ 2D shapes
 
@@ -253,6 +258,24 @@ class GDSFromXML(GDSFile):
         unused = sorted(drawn - known)
         if unused:
             logger.info(f"GDS: layout layers not in the stack-up (skipped, e.g. port markers): {unused}")
+
+    # --------------------------------------------------------------- access
+
+    def objects_of_type(self, *types: str) -> list[GeoSurface | GeoVolume]:
+        """Built objects whose stack-up layer Type is one of the given types
+        ('conductor', 'via', 'dielectric', 'sheet')."""
+        return [obj for key, obj in self.objects.items() if self._xml_layers[key].type in types]
+
+    @property
+    def conductors(self) -> list[GeoSurface | GeoVolume]:
+        """All built metal objects: stack-up layers of Type 'conductor' and 'via' (traces, vias and drawn
+        ground layers such as SUBGND)."""
+        return self.objects_of_type("conductor", "via")
+
+    @property
+    def drawn_dielectrics(self) -> list[GeoVolume]:
+        """All built drawn dielectric objects (stack-up layers of Type 'dielectric', e.g. a conformal shell)."""
+        return self.objects_of_type("dielectric")
 
     # ----------------------------------------------------------- dielectrics
 

@@ -41,6 +41,7 @@ import numpy as np
 import gmsh  # type: ignore
 import os
 import inspect
+import time
 from pathlib import Path
 import joblib
 from pickle import PicklingError
@@ -1312,7 +1313,7 @@ class Simulation:
             growth_limits (tuple[float, float], optional): AURA only. Clamp on the growth per pass. Defaults to (0.1, 1.0).
             use_aura (bool, optional): Use AURA local refinement when emerge_aura is installed. Defaults to True.
             aura_options (dict, optional): AURA only. Extra options: max_depth, lepp_ratio, improve_sweeps,
-                improve_layers, improve_initial, improve_global, strip_ratio, strip_max_growth,
+                improve_layers, improve_initial, improve_global, strip_ratio, strip_max_growth, strip_gated,
                 project_boundaries. Defaults to None.
 
         Returns:
@@ -1401,6 +1402,9 @@ class Simulation:
             # -------------------------------------------------------------------
             # Error + current size per tet
             # -------------------------------------------------------------------
+            logger.info(f"Pass {step}: computing the a-posteriori error estimate "
+                        f"({self.mesh.n_tets} tetrahedra, {NF} frequency point(s))...")
+            t_est = time.perf_counter()
             errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
             h_current_per_freq = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
             for i in range(NF):
@@ -1408,6 +1412,7 @@ class Simulation:
                 errors[:, i] = error
                 h_current_per_freq[:, i] = h_current
             error_current = np.max(errors, axis=1)
+            logger.info(f"Pass {step}: error estimate done in {time.perf_counter() - t_est:.2f} s")
             h_current = h_current_per_freq[:, 0]
     
             logger.debug(
@@ -1508,11 +1513,14 @@ class Simulation:
             # Install via the Mesher's own size-field convention, then let the
             # NORMAL remesh pipeline handle everything else.
             # -------------------------------------------------------------------
+            logger.info(f"Pass {step}: refining the mesh (full remesh with the error size field)...")
+            t_ref = time.perf_counter()
             self.mesher.clear_error_size_field()
             self.mesher.set_error_size_field(nodes, tets, size_at_node)
     
             self._reset_mesh()
             self.generate_mesh(regenerate=True)
+            logger.info(f"Pass {step}: mesh refinement done in {time.perf_counter() - t_ref:.2f} s")
     
             logger.info(f"    Pass {step}: New mesh has {self.mesh.n_tets} tetrahedra (Δ={(self.mesh.n_tets/previous_tet_count-1)*100:.1f}%)")
             previous_tet_count = self.mesh.n_tets
@@ -1578,6 +1586,7 @@ class Simulation:
         improve_global: bool = False,
         strip_ratio: float = 4.0,
         strip_max_growth: float = 2.0,
+        strip_gated: bool = True,
         project_boundaries: bool = True,
     ) -> SimulationDataset:
         """Adaptive mesh refinement with local AURA refinement instead of GMSH remeshing.
@@ -1599,9 +1608,11 @@ class Simulation:
             improve_layers: Rings of neighbouring old tets around the refined region that are improved too.
             improve_initial: Run one quality-improvement pass over the whole initial mesh before the first solve.
             improve_global: Improve the whole mesh after every refinement instead of only the refined region.
-            strip_ratio: Step 0 (initial pass): split curve edges along narrow strips (thin traces) until they are
-                at most this many strip widths long, so the strip is not meshed with slivers. 0 disables it.
-            strip_max_growth: Step 0 stops once the tet count has grown by this fraction.
+            strip_ratio: Split curve edges along narrow strips (thin traces) until they are at most this many strip
+                widths long, so the strip is not meshed with slivers. 0 disables it.
+            strip_max_growth: Strip regularisation stops once it has grown the tet count by this fraction.
+            strip_gated: Regularise strips in every pass, but only next to high-error tets (default). If False, all
+                narrow strips are regularised once in step 0, before the first solve, regardless of the error.
             project_boundaries: Project new boundary nodes onto curved geometry.
 
         Returns:
@@ -1625,8 +1636,10 @@ class Simulation:
         logger.debug(f"AURA geometry snapshot: {brep.summary()}")
         periodic = [(bc.face1.tags, bc.face2.tags, np.asarray(bc.dv)) for bc in self.mesher._get_periodic_bcs()]
 
-        if improve_initial or strip_ratio > 0:
-            # Step 0: geometric regularisation of narrow strips + global quality pass.
+        initial_strips = strip_ratio > 0 and not strip_gated
+        if improve_initial or initial_strips:
+            # Step 0: global quality pass (+ geometric regularisation of all narrow strips if not gated).
+            logger.info("[AURA] Step 0: improving the initial mesh...")
             new_mesh, report = refine_mesh_step(
                 self.mesh,
                 np.zeros(self.mesh.n_tets),
@@ -1634,8 +1647,9 @@ class Simulation:
                 growth=0.0,
                 improve_sweeps=max(improve_sweeps, 1),
                 improve_global=improve_initial,
-                strip_ratio=strip_ratio,
+                strip_ratio=strip_ratio if initial_strips else 0.0,
                 strip_max_growth=strip_max_growth,
+                strip_gated=False,
                 periodic=periodic,
             )
             self._aura_install_mesh(new_mesh)
@@ -1694,10 +1708,14 @@ class Simulation:
             # -------------------------------------------------------------------
             # Error estimate and local refinement
             # -------------------------------------------------------------------
+            logger.info(f"[AURA] Pass {step}: computing the a-posteriori error estimate "
+                        f"({self.mesh.n_tets} tetrahedra, {NF} frequency point(s))...")
+            t_est = time.perf_counter()
             errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
             for i in range(NF):
                 errors[:, i], _ = fields[i]._solution_quality(solve_ids)
             error_current = np.max(errors, axis=1)
+            logger.info(f"[AURA] Pass {step}: error estimate done in {time.perf_counter() - t_est:.2f} s")
 
             info = dict(
                 n_tets=self.mesh.n_tets,
@@ -1707,6 +1725,8 @@ class Simulation:
             )
             g = growth_for_pass(growth, step, info, theta, order, growth_limits)
 
+            logger.info(f"[AURA] Pass {step}: refining the mesh (local refinement, target growth {g:.0%})...")
+            t_ref = time.perf_counter()
             new_mesh, report = refine_mesh_step(
                 self.mesh,
                 error_current,
@@ -1718,9 +1738,13 @@ class Simulation:
                 improve_sweeps=improve_sweeps,
                 improve_layers=improve_layers,
                 improve_global=improve_global,
+                strip_ratio=strip_ratio if strip_gated else 0.0,
+                strip_max_growth=strip_max_growth,
+                strip_gated=True,
                 periodic=periodic,
             )
             self._aura_install_mesh(new_mesh)
+            logger.info(f"[AURA] Pass {step}: mesh refinement done in {time.perf_counter() - t_ref:.2f} s")
 
             logger.info(
                 f"    Pass {step}: New mesh has {report['n_tets']} tetrahedra "
@@ -1728,7 +1752,8 @@ class Simulation:
                 f"quality min {report['q_min']:.3f} mean {report['q_mean']:.3f}"
             )
             logger.debug(
-                f"    AURA: {report['n_splits']} edge splits, {report['n_projected']} projected nodes, "
+                f"    AURA: {report['n_splits']} edge splits ({report['n_strip_splits']} narrow-strip), "
+                f"{report['n_projected']} projected nodes, "
                 f"flips 2-3/3-2/4-4/5+ {report['n_flip23']}/{report['n_flip32']}/{report['n_flip44']}/{report['n_flip_large']}, "
                 f"{report['n_smoothed']} smoothing moves"
             )

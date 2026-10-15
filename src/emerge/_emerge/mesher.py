@@ -92,6 +92,8 @@ class Mesher:
         self._coarse_tags: list[int] = []
 
         self._amr_fields: list[int] = []
+        # Wavelength-based size range set by set_frequency, in physical meters. Used as the default
+        # maximum size by the size helpers below, which convert it to modelling units (x self._scale).
         self.min_size: float = None
         self.max_size: float = None
         self.periodic_cell: PeriodicCell = None
@@ -449,7 +451,7 @@ class Mesher:
 
         if max_size is None:
             self._check_ready()
-            max_size = self.max_size
+            max_size = self.max_size * self._scale  # physical -> modelling units
 
         growth_distance = (growth_rate * max_size - size) / (growth_rate - 1)
         logger.debug(
@@ -510,7 +512,7 @@ class Mesher:
 
         if max_size is None:
             self._check_ready()
-            max_size = self.max_size
+            max_size = self.max_size * self._scale  # physical -> modelling units
 
         if isinstance(obj, Iterable):
             from .geometry import select
@@ -632,7 +634,7 @@ class Mesher:
             size (float): The maximum size
         """
         if size < 0:
-            size = self.max_size
+            size = self.max_size * self._scale  # physical -> modelling units
         if obj.dim != 2:
             raise MeshError("Provided object is not a surface.")
 
@@ -648,7 +650,7 @@ class Mesher:
                 size (float): The maximum size
             """
             if size < 0:
-                size = self.max_size
+                size = self.max_size * self._scale  # physical -> modelling units
             if obj.dim != 3:
                 raise MeshError("Provided object is not a domain.")
     

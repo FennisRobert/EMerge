@@ -8,9 +8,8 @@
 # Run `./emergetools help` for a list of commands.
 #
 # CLAUDE CODE GENERATED CLI
-# ./emergetools clean numba-cache --dry-run   # preview
-# ./emergetools clean numba-cache             # actually delete .nbi/.nbc
-# ./emergetools clean pycache                 # nukes __pycache__ entirely (also clears numba cache, since they share dirs)
+# ./emergetools clean pycache --dry-run       # preview
+# ./emergetools clean pycache                 # nukes __pycache__ entirely
 # ./emergetools help
 set -euo pipefail
 
@@ -99,46 +98,6 @@ set_threads_linux() {
 }
 
 # ---------------------------------------------------------------------------
-# clean numba-cache
-# ---------------------------------------------------------------------------
-
-cmd_clean_numba_cache() {
-    require_src_dir
-
-    local dry_run=false
-    for arg in "$@"; do
-        case "$arg" in
-            --dry-run|-n) dry_run=true ;;
-            *) err "Unknown option for 'clean numba-cache': $arg"; exit 1 ;;
-        esac
-    done
-
-    log "Scanning for Numba cache artifacts under: $SRC_DIR"
-
-    local files
-    files="$(find "$SRC_DIR" \( -name "*.nbi" -o -name "*.nbc" \) 2>/dev/null || true)"
-
-    if [[ -z "$files" ]]; then
-        log "No cache files found. Nothing to do."
-        return 0
-    fi
-
-    local count
-    count="$(echo "$files" | wc -l | tr -d ' ')"
-
-    if $dry_run; then
-        log "Would remove $count file(s):"
-        echo "$files" | sed 's/^/  /'
-        return 0
-    fi
-
-    echo "$files" | while IFS= read -r f; do
-        rm -f -- "$f"
-    done
-    log "Removed $count Numba cache file(s). Next import will trigger a full recompile."
-}
-
-# ---------------------------------------------------------------------------
 # clean pycache  (bonus: also clears regular .pyc / __pycache__ dirs)
 # ---------------------------------------------------------------------------
 
@@ -175,7 +134,7 @@ cmd_clean_pycache() {
     echo "$dirs" | while IFS= read -r d; do
         rm -rf -- "$d"
     done
-    log "Removed $count __pycache__ director(y/ies) (this also clears .pyc and Numba cache files)."
+    log "Removed $count __pycache__ director(y/ies) (this also clears .pyc files)."
 }
 
 # ---------------------------------------------------------------------------
@@ -187,13 +146,8 @@ print_help() {
 emergetools - project maintenance CLI for EMerge
 
 Usage:
-  ./emergetools clean numba-cache [--dry-run]
-      Remove all Numba *.nbi/*.nbc cache files under src/, forcing a full
-      recompile of every @njit(cache=True) function on next import.
-
   ./emergetools clean pycache [--dry-run]
-      Remove all __pycache__ directories under src/ (clears .pyc files too,
-      as well as Numba cache files since they share the same directories).
+      Remove all __pycache__ directories under src/ (clears .pyc files too).
 
   ./emergetools help
       Show this message.
@@ -214,16 +168,15 @@ main() {
     case "$command" in
         clean)
             if [[ $# -eq 0 ]]; then
-                err "Missing subcommand for 'clean'. Try: numba-cache, pycache"
+                err "Missing subcommand for 'clean'. Try: pycache"
                 exit 1
             fi
             local subcommand="$1"; shift || true
             case "$subcommand" in
-                numba-cache|numba) cmd_clean_numba_cache "$@" ;;
                 pycache)           cmd_clean_pycache "$@" ;;
                 *)
                     err "Unknown 'clean' subcommand: $subcommand"
-                    err "Try: numba-cache, pycache"
+                    err "Try: pycache"
                     exit 1
                     ;;
             esac

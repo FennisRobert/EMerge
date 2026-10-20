@@ -149,11 +149,21 @@ def drop_constant_variables(listvars: list[dict[str, float]]) -> list[dict[str, 
 
 class DataEntry(Saveable):
     def __init__(self, variables: dict[str, float]):
+        """A data entry for one set of simulation parameters.
+
+        Args:
+            variables (dict[str, float]): The simulation parameter values
+        """
         self.vars: dict[str, float] = variables
         self.data: dict[str, Any] = dict()
         self.reports: list[SolveReport] = []
 
     def is_non_empty(self) -> bool:
+        """Whether the entry contains any data.
+
+        Returns:
+            bool: True if the entry has data
+        """
         return len(self.data) > 0
 
     # ALLOWED PRINT
@@ -164,15 +174,27 @@ class DataEntry(Saveable):
             print(f"    {key} = {value}")
 
     def values(self) -> list[Any]:
-        """Return all values stored in the DataEntry"""
+        """Return all values stored in the DataEntry
+
+        Returns:
+            list[Any]: The data values
+        """
         return list(self.data.values())
 
     def keys(self) -> list[str]:
-        """Return all names of data stored in the DataEntry"""
+        """Return all names of data stored in the DataEntry
+
+        Returns:
+            list[str]: The data names
+        """
         return list(self.data.keys())
 
     def items(self) -> list[tuple[str, Any]]:
-        """Returns a list of all key: value pairs of the DataEntry."""
+        """Returns a list of all key: value pairs of the DataEntry.
+
+        Returns:
+            list[tuple[str, Any]]: The (key, value) pairs
+        """
         return list(self.data.items())
 
     def __eq__(self, other: Any) -> bool:
@@ -196,6 +218,11 @@ class DataEntry(Saveable):
         self.data[key] = value
 
     def set_reports(self, reports: list[SolveReport]) -> None:
+        """Store the solver reports of this entry.
+
+        Args:
+            reports (list[SolveReport]): The solver reports
+        """
         self.reports = reports
 
 class DataContainer(Saveable):
@@ -209,21 +236,21 @@ class DataContainer(Saveable):
         """Generate one big container from a list of DataContainers
 
         Args:
-            containers (list[DataContainer]): _description_
+            containers (list[DataContainer]): The containers to combine
 
         Returns:
-            DataContainer: _description_
+            DataContainer: The first container merged with all others
         """
         return containers[0].merge_with(*containers[1:])
 
     def merge_with(self, *others: DataContainer) -> DataContainer:
-        """Combines this DataContainer with another container
+        """Combines this DataContainer with other containers
 
         Args:
-            other (DataContainer): The container to merge with
+            *others (DataContainer): The containers to merge with
 
         Returns:
-            DataContainer: _description_
+            DataContainer: The merged container
         """
         # Copy Step
         for container in others:
@@ -248,12 +275,21 @@ class DataContainer(Saveable):
             entry.print()
 
     def new(self, **variables: float) -> DataEntry:
-        """Create a new entry in the DataContainer for the given value setting"""
+        """Create a new entry in the DataContainer for the given value setting
+
+        Returns:
+            DataEntry: The new DataEntry
+        """
         entry = DataEntry(variables)
         self.entries.append(entry)
         return entry
 
     def iterate(self) -> Generator[DataEntry, None, None]:
+        """Iterate over all entries.
+
+        Yields:
+            DataEntry: The entries
+        """
         yield from self.entries
 
     @property
@@ -267,18 +303,33 @@ class DataContainer(Saveable):
         return self.entries[-1]
 
     def index(self, index: int) -> DataEntry:
-        """Returns the last added entry"""
+        """Returns the entry at an index
+
+        Args:
+            index (int): The entry index
+
+        Returns:
+            DataEntry: The entry at the given index
+        """
         return self.entries[index]
 
     def select(self, **vars: float) -> DataEntry | None:
-        """Returns the data entry corresponding to the provided parametric sweep set"""
+        """Returns the data entry corresponding to the provided parametric sweep set
+
+        Returns:
+            DataEntry | None: The matching DataEntry, or None if there is none
+        """
         for entry in self.entries:
             if entry == vars:
                 return entry
         return None
 
     def find(self, **vars: float) -> DataEntry:
-        """Returns the DataEntry closest to the provided parametric sweep setting."""
+        """Returns the DataEntry closest to the provided parametric sweep setting.
+
+        Returns:
+            DataEntry: The closest DataEntry
+        """
         return sorted(
             [(entry, entry._dist(vars)) for entry in self.entries], key=lambda x: x[1]
         )[0][0]
@@ -292,6 +343,7 @@ class DataContainer(Saveable):
         self.last[key] = value
 
     def remove_empty_datasets(self) -> None:
+        """Remove all entries without data."""
         self.entries = [entry for entry in self.entries if entry.is_non_empty()]
 
 
@@ -299,6 +351,13 @@ class BaseDataset(Generic[T, M], Saveable):
     # skip_fields = ('_datatype','_matrixtype')
 
     def __init__(self, datatype: type[T], matrixtype: type[M], scalar: bool):
+        """A dataset of simulation results, one entry per set of simulation parameters.
+
+        Args:
+            datatype (type[T]): The class of the entries
+            matrixtype (type[M]): The class used for the N-dimensional (gridded) data, None if not supported
+            scalar (bool): Whether this is a scalar dataset
+        """
         self._datatype: type[T] = datatype
         self._matrixtype: type[M] = matrixtype
         self._variables: list[dict[str, float]] = []
@@ -322,9 +381,15 @@ class BaseDataset(Generic[T, M], Saveable):
 
     @property
     def n(self) -> int:
+        """The number of entries."""
         return len(self._data_entries)
 
     def iter(self) -> Generator[T, None, None]:
+        """Iterate over all entries.
+
+        Yields:
+            T: The entries
+        """
         for item in self._data_entries:
             yield item
 
@@ -333,6 +398,14 @@ class BaseDataset(Generic[T, M], Saveable):
         return self._datatype._copy  # type: ignore
 
     def merge_with(self, *others: BaseDataset) -> BaseDataset[T, M]:
+        """Merge the entries of other datasets into this dataset.
+
+        Args:
+            *others (BaseDataset): The datasets to merge
+
+        Returns:
+            BaseDataset[T, M]: This dataset (for method chaining)
+        """
         for other in others:
             if self._datatype is not other._datatype:
                 raise TypeError(
@@ -417,18 +490,19 @@ class BaseDataset(Generic[T, M], Saveable):
         Args:
             i1 (int): Start index
             i2 (int | None, optional): final index. Defaults to None.
+            sort_by (str | None, optional): Sort the slice by this attribute of the entries. Defaults to None.
 
         Returns:
-            BaseDataset[T,M]: _description_
+            BaseDataset[T,M]: A new dataset with the selected entries
         """
         new_set = BaseDataset(self._datatype, self._matrixtype, self._scalar)
         new_set._data_entries = self._data_entries[slice(i1, i2)]
         new_set._variables = drop_constant_variables(self._variables[slice(i1, i2)])
         if sort_by is not None:
-            ids = range(self.n)
-            ids = sorted(ids, key=lambda x: getattr(self._data_entries[x], sort_by))
-            self._data_entries = [self._data_entries[i] for i in ids]
-            self._variables = [self._variables[i] for i in ids]
+            ids = range(new_set.n)
+            ids = sorted(ids, key=lambda x: getattr(new_set._data_entries[x], sort_by))
+            new_set._data_entries = [new_set._data_entries[i] for i in ids]
+            new_set._variables = [new_set._variables[i] for i in ids]
         return new_set
 
     def find(self, **variables: float) -> T:

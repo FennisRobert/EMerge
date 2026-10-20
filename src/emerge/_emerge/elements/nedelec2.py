@@ -26,7 +26,6 @@ from ..compiled import MATHLIB
 from .dofsets import DoFSet
 
 ############### Nedelec2 Class
-USE_NUMBA = False
 
 
 class DoFSplitException(Exception):
@@ -153,7 +152,7 @@ class Nedelec2(FEMBasis, Saveable):
 
     @staticmethod
     def _parse_dofcode_np(dofcodes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Pure-numpy reimplementation of compiled/ccbf.py:parse_dofcode -- kept
+        """Pure-numpy reimplementation of emr.ccbf.parse_dofcode (emr/src/compiled/ccbf.rs) -- kept
         inline (rather than imported) so this file has no relative-import
         dependency on wherever it ends up living inside EMerge.
 

@@ -179,7 +179,13 @@ class PVDisplay(EMergeDisplay):
         return str(Path(files("emerge")) / "_emerge" / "plot" / "pyvista" / filename)
     
     def show(self, screenshot: str | None = None, off_screen: bool = False, zoom: float = 1.0):
-        """Shows the Pyvista display."""
+        """Shows the Pyvista display.
+
+        Args:
+            screenshot (str | None, optional): Save a screenshot to this file. Defaults to None.
+            off_screen (bool, optional): Render off screen (no window). Defaults to False.
+            zoom (float, optional): The camera zoom factor. Defaults to 1.0.
+        """
         
         """ Set default EMerge logo as logo if none is provided by the theme. """
         if self.set.theme.logo_path is None:
@@ -228,11 +234,13 @@ class PVDisplay(EMergeDisplay):
             self._plot.remove_actor(obj)
 
     def activate_point_selector(self):
+        """Make the mesh points selectable and turn on the ruler widget."""
         self._add_selectable_points()
         self._ruler.turn_on()
 
     def activate_line_selector(self):
 
+        """Make the edges selectable; clicking an edge prints its tag, vertices, direction and center."""
         def callback(obj):
             if "_seldata" in obj.__dict__:
                 n1, n2, edge_id, center = obj._seldata
@@ -257,6 +265,7 @@ class PVDisplay(EMergeDisplay):
         # self._plot.enable_element_picking(callback, mode='edge', show=True, tolerance=0.02, left_clicking=True, picker='cell')
 
     def clean(self) -> None:
+        """Clear the display state."""
         del self._state
         self._state = None
 
@@ -286,13 +295,29 @@ class PVDisplay(EMergeDisplay):
             return None
         return _compact_grid(self._mesh.edges[:, edge_ids].T, pv.CellType.CUBIC_LINE, self._mesh.nodes)
 
-    def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid:
+    def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid | None:
+        """The surface mesh of a face selection as a PyVista grid.
+
+        Args:
+            surface (FaceSelection): The faces
+
+        Returns:
+            pv.UnstructuredGrid | None: The triangle grid, None if the faces have no triangles
+        """
         tris = self._mesh.get_triangles(surface.tags)
         if tris.shape[0] == 0:
             return None
         return _compact_grid(self._mesh.tris[:, tris].T, pv.CellType.TRIANGLE, self._mesh.nodes, self.set.z_boost)
 
     def mesh(self, obj: GeoObject | Selection | Iterable) -> pv.UnstructuredGrid | None:
+        """The mesh of an object as a PyVista grid.
+
+        Args:
+            obj (GeoObject | Selection | Iterable): The object(s) or selection(s)
+
+        Returns:
+            pv.UnstructuredGrid | None: The tetrahedron grid for domains, the triangle grid for faces, otherwise None
+        """
         if isinstance(obj, Iterable):
             obj = _merge(obj)
         else:
@@ -311,7 +336,12 @@ class PVDisplay(EMergeDisplay):
 
     @plot_item
     def add_anchors(self, anchors: list[Anchor], size: float = 1.0) -> None:
-        """Adds a list of anchors to display in the current view"""
+        """Adds a list of anchors to display in the current view
+
+        Args:
+            anchors (list[Anchor]): The anchors
+            size (float, optional): The length of the drawn anchor axes. Defaults to 1.0.
+        """
         xaxs = [f._x for f in anchors]
         yaxs = [f._y for f in anchors]
         zaxs = [f._z for f in anchors]
@@ -335,6 +365,14 @@ class PVDisplay(EMergeDisplay):
         )
 
     def mesh_volume(self, volume: DomainSelection) -> pv.UnstructuredGrid:
+        """The volume mesh of a domain selection as a PyVista grid.
+
+        Args:
+            volume (DomainSelection): The domains
+
+        Returns:
+            pv.UnstructuredGrid: The tetrahedron grid
+        """
         tets = self._mesh.get_tetrahedra(volume.tags)
         return _compact_grid(self._mesh.tets[:, tets].T, pv.CellType.TETRA, self._mesh.nodes)
 
@@ -429,18 +467,29 @@ class PVDisplay(EMergeDisplay):
             )
 
     def add_objects(self, *objects, opacity: float | None = None, minimize_opacity: bool = True, **kwargs) -> None:
-        """Add a series of objects provided as a list of arguments"""
+        """Add a series of objects provided as a list of arguments
+
+        Args:
+            *objects (GeoObject | Selection): The objects to add
+            opacity (float | None, optional): The objects plot opacity. Defaults to None.
+            minimize_opacity (bool, optional): Minimize the provided opacity with the material opacity. Defaults to True.
+            **kwargs: Passed on to add_object
+        """
         for obj in objects:
             self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
 
-    def populate(self, opacity: float | None = None, minimize_opacity: bool = True, **kwargs) -> None:
+    def populate(self, opacity: float | None = None, minimize_opacity: bool = True, skip_air: bool = False, **kwargs) -> None:
         """Populate the view with all objects in your simulation model
 
         Args:
             opacity (float, optional): The max opacity to use for all geometries. Defaults to 1.0.
             minimize_opacity (bool, optional): If the minimum of the objects natural opacity and true opacity should be chosen. Defaults to True.
+            skip_air: (bool, optional): Do not include air objects in the visualization (skips materials whose name lowercase equals "air")
         """
         for obj in self._state.current_geo_state:
+            if obj.material is not None:
+                if obj.material.name.lower() == 'air' and skip_air:
+                    continue
             self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
 
     @plot_item
@@ -495,7 +544,7 @@ class PVDisplay(EMergeDisplay):
             port (PortBC): The port boundary condition
             dv (tuple[float, float, float], optional): Slight offset to give to the port mode plot. Defaults to (0, 0, 0).
             XYZ (tuple[np.ndarray, np.ndarray, np.ndarray] | None, optional): A set of grid points where to evaluate the modal field vectors. Defaults to None.
-            field ("E","H","gradE","Ez", optional): The field component to plot. Defaults to "E".
+            field (Literal["E", "H", "gradE", "Ez"], optional): The field component to plot. Defaults to "E".
             k0 (float | None, optional): The k0 valow for which to evaluate the mode. Defaults to None.
             cmap (str | None, optional): The colormap to use. Defaults to None.
             mode_number (int | None, optional): The mode number to plot. Defaults to None.
@@ -601,6 +650,12 @@ class PVDisplay(EMergeDisplay):
 
     @plot_item
     def add_backgroundfields(self, fields: list[BackgroundField], radius: float) -> None:
+        """Draw the propagation direction and the E and H polarization of background (plane wave) fields.
+
+        Args:
+            fields (list[BackgroundField]): The background fields
+            radius (float): The distance from the origin at which the arrows are drawn
+        """
         coords = []
         ks = []
         Es = []
@@ -652,6 +707,19 @@ class PVDisplay(EMergeDisplay):
         opacity: float | None = None,
         cmap: cmap_names | None = None,
     ):
+        """Add a 3D farfield surface plot.
+
+        Args:
+            farfield_obj (EHFieldFF): The farfield data (from MWField.farfield_3d)
+            component (Literal["Ex", "Ey", "Ez", "Etheta", "Ephi", "normE", "Erhcp", "Elhcp", "AR"], optional): The field component to plot. Defaults to "normE".
+            quantity (Literal["abs", "real", "imag", "angle"], optional): The quantity of the component to plot. Defaults to "abs".
+            dB (bool, optional): Plot in dB. Defaults to False.
+            dBfloor (float, optional): The dB value that maps to radius 0. Defaults to -30.
+            rmax (float | None, optional): The radius of the maximum value. Defaults to None.
+            offset (tuple[float, float, float], optional): The center of the farfield surface. Defaults to (0, 0, 0).
+            opacity (float | None, optional): The surface opacity. Defaults to None.
+            cmap (cmap_names | None, optional): The colormap. Defaults to None.
+        """
         surfobj = farfield_obj.surfplot(
             component,
             quantity=quantity,
@@ -682,9 +750,18 @@ class PVDisplay(EMergeDisplay):
         show_scalar_bar: bool = False
     ) -> None:
         """Adds particle trajectories as smooth tubes with gradient coloring and directional arrows.
-        
-        Supports (3, N) arrays for arc-length coloring or (4, N) arrays where the 4th row 
+
+        Supports (3, N) arrays for arc-length coloring or (4, N) arrays where the 4th row
         defines custom scalar values (e.g., velocity, Poynting magnitude, time).
+
+        Args:
+            lines (list[np.ndarray] | np.ndarray): The trajectories, e.g. from MWField.trace_poynting_lines
+            tube_radius (float, optional): The tube radius. Defaults to 0.0001.
+            cmap (str, optional): The colormap. Defaults to 'coolwarm'.
+            add_arrows (bool, optional): Add direction arrows along the lines. Defaults to True.
+            num_arrows (int, optional): The number of arrows per line. Defaults to 8.
+            arrow_scale (float, optional): The arrow size. Defaults to 0.003.
+            show_scalar_bar (bool, optional): Show the scalar bar. Defaults to False.
         """
         if isinstance(lines, np.ndarray) and lines.ndim == 2:
             lines = [lines]
@@ -790,9 +867,9 @@ class PVDisplay(EMergeDisplay):
                 If tet_ids is provided, error_value must have the same
                 length as tet_ids, and only those tetrahedra are used.
             tet_ids (np.ndarray | None, optional): The tetrahedron indices
-                to plot (e.g. the output of select_refinement_indices).
+                to plot (e.g. the tets with the largest error).
                 Defaults to None (use all tetrahedra).
-            mode ("volume", "points", "surface", optional): How to render.
+            mode (Literal["volume", "points", "surface"], optional): How to render.
                 "volume" does true volumetric rendering with transparency,
                 so interior tets are actually visible through the exterior
                 -- this is almost always what you want for an error plot,
@@ -839,7 +916,7 @@ class PVDisplay(EMergeDisplay):
                 f"error_value length ({error_value.shape[0]}) must match the "
                 f"number of tetrahedra being plotted ({tet_ids.shape[0]}). "
                 "Pass tet_ids explicitly if error_value only covers a subset "
-                "(e.g. the tets flagged by select_refinement_indices)."
+                "(e.g. only the tets with the largest error)."
             )
  
         if cmap is None:

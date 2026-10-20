@@ -87,11 +87,11 @@ class Assembler:
             transient (bool): If a transient analysis is performed.
 
         """
-        from .grad import tet_stiffness_matrix, tet_mass_matrix
-        from .heatflux import assemble_surface_flux, assemble_volume_source
-        from .convection import assemble_robin_bc, assemble_radiation_bc
-        from .thinconductor import assemble_conductive_sheet
-        from .thermalcontact import assemble_thermal_contact
+        from .emr_heat import tet_stiffness_matrix, tet_mass_matrix
+        from .emr_heat import assemble_surface_flux, assemble_volume_source
+        from .emr_heat import assemble_robin_bc, assemble_radiation_bc
+        from .emr_heat import assemble_conductive_sheet
+        from .emr_heat import assemble_thermal_contact
 
         density = np.zeros((3, 3, field.mesh.n_tets), dtype=np.float64)
         cond_thermal = np.zeros((3, 3, field.mesh.n_tets), dtype=np.float64)

@@ -32,6 +32,11 @@ from emsutil import Material, Saveable
 
 class HCBoundaryConditionSet(BoundaryConditionSet):
     def __init__(self, periodic_cell: PeriodicCell | None):
+        """The boundary conditions of the heat conduction physics. Use the attributes (Convection, ...) to create them.
+
+        Args:
+            periodic_cell (PeriodicCell | None): The periodic cell of the simulation, if any
+        """
         super().__init__()
 
         self.FixedTemperatureBoundary: type[FixedTemperatureBoundary] = (
@@ -63,6 +68,14 @@ class HCBoundaryConditionSet(BoundaryConditionSet):
             "FixedTemperatureBoundary", "FixedTemperatureVolume", "HeatFluxBoundary"
         ],
     ) -> Selection:
+        """All faces with a boundary condition of a given type.
+
+        Args:
+            bctype (Literal["FixedTemperatureBoundary", "FixedTemperatureVolume", "HeatFluxBoundary"]): The boundary condition type
+
+        Returns:
+            Selection: The selection (always returned as a FaceSelection)
+        """
         tags = []
         for bc in self.boundary_conditions:
             if bctype in str(bc.__class__):
@@ -90,11 +103,9 @@ class HCBoundaryConditionSet(BoundaryConditionSet):
 
         Args:
             selection (DomainSelection | GeoVolume): The domain to include in the coupling
-            mwfield (_type_): A MWField object which ca
-            excitation_W (list[float] | None, optional): _description_. Defaults to None.
-
-        Returns:
-            None
+            mwfield (MWField): The microwave field solution whose losses are used as heat source
+            excitation_W (list[float] | None, optional): The power in Watts of each port excitation. Defaults to None
+                (use the current excitation of the field).
         """
         from ..microwave.microwave_data import MWField
 
@@ -249,15 +260,16 @@ class ThermalContact(BoundaryCondition, Saveable):
     dim: int = 2
 
     def __init__(self, face: FaceSelection | GeoSurface, heat_transfer_coeff: float):
-        super().__init__(face)
         """Initializes a Thermal contact boundary condition.
-        
+
         This boundary condition must be paced between two separate domains.
         It models a finite heat-transfer coefficient between two objects.
-        
+
         Args:
+            face (FaceSelection | GeoSurface): The contact face between the two domains
             heat_transfer_coeff (float): The heat transfer coefficient in W/m2K
         """
+        super().__init__(face)
         self.h: float = heat_transfer_coeff
 
 
@@ -291,7 +303,7 @@ class ThinConductor(BoundaryCondition, Saveable):
         """Returns the heat transfer coefficient
 
         Returns:
-            float: _description_
+            float: The thickness times the thermal conductivity
         """
         return self.thickness * self.material.cond_thermal.value
 

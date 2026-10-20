@@ -527,6 +527,7 @@ class Sorter:
     """
 
     def __init__(self):
+        """Create a sorter without a permutation."""
         self.perm = None
         self.inv_perm = None
 
@@ -541,9 +542,27 @@ class Sorter:
     def sort(
         self, A: csc_matrix, b: np.ndarray, reuse_sorting: bool = False
     ) -> tuple[csc_matrix, np.ndarray]:
+        """Reorder the system matrix and right hand side.
+
+        Args:
+            A (csc_matrix): The system matrix
+            b (np.ndarray): The right hand side
+            reuse_sorting (bool, optional): Reuse the permutation of the previous call. Defaults to False.
+
+        Returns:
+            tuple[csc_matrix, np.ndarray]: The sorted matrix and right hand side
+        """
         return A, b
 
     def unsort(self, x: np.ndarray) -> np.ndarray:
+        """Undo the reordering on a solution vector.
+
+        Args:
+            x (np.ndarray): The solution of the sorted system
+
+        Returns:
+            np.ndarray: The solution in the original ordering
+        """
         return x
 
 
@@ -579,6 +598,11 @@ class Solver:
     released_gil: bool = False
 
     def __init__(self, pre: str = ""):
+        """Create the solver.
+
+        Args:
+            pre (str, optional): The log message prefix. Defaults to "".
+        """
         self.own_preconditioner: bool = False
         self.initialized: bool = False
         self.pre: str = pre
@@ -587,17 +611,32 @@ class Solver:
         return f"{self.__class__.__name__}"
 
     def set_symmetry(self, complex_symmetric: bool) -> None:
+        """Tell the solver whether the matrix is complex symmetric.
+
+        Args:
+            complex_symmetric (bool): Whether the matrix is complex symmetric
+        """
         pass
 
     def initialize(self) -> None:
+        """Initialize the solver backend (only done once)."""
         return None
 
     def duplicate(self) -> Solver:
+        """Create a new solver of the same type with the same settings.
+
+        Returns:
+            Solver: The new solver
+        """
         return self.__class__(self.pre)
 
     def set_options(self, pivoting_threshold: float | None = None) -> None:
         """Write generic simulation options to the solver object.
-        Options may be ignored depending on the type of solver used."""
+        Options may be ignored depending on the type of solver used.
+
+        Args:
+            pivoting_threshold (float | None, optional): The pivoting threshold of direct solvers. Defaults to None.
+        """
         pass
 
     def solve(
@@ -608,6 +647,18 @@ class Solver:
         reuse_factorization: bool = False,
         id: int = -1,
     ) -> tuple[np.ndarray, SolveReport]:
+        """Solve the linear system Ax=b.
+
+        Args:
+            A (csc_matrix): The system matrix
+            b (np.ndarray): The right hand side
+            precon (Preconditioner): The preconditioner (used by iterative solvers)
+            reuse_factorization (bool, optional): Reuse the factorization of a previous solve. Defaults to False.
+            id (int, optional): The job id used in the log messages. Defaults to -1.
+
+        Returns:
+            tuple[np.ndarray, SolveReport]: The solution vector and the solve report
+        """
         raise NotImplementedError("This classes Ax=B solver method is not implemented.")
 
     def reset(self) -> None:
@@ -630,16 +681,27 @@ class EigSolver:
     req_sorter: bool = False
 
     def __init__(self, pre: str = ""):
+        """Create the eigenvalue solver.
+
+        Args:
+            pre (str, optional): The log message prefix. Defaults to "".
+        """
         self.own_preconditioner: bool = False
         self.pre: str = pre
 
     def initialize(self) -> None:
+        """Initialize the solver backend (only done once)."""
         return None
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}"
 
     def duplicate(self) -> Solver:
+        """Create a new solver of the same type with the same settings.
+
+        Returns:
+            Solver: The new solver
+        """
         return self.__class__(self.pre)
 
     def eig(
@@ -651,6 +713,19 @@ class EigSolver:
         which: str = "LM",
         sign: float = 1.0,
     ):
+        """Solve the generalized eigenvalue problem Ax=λBx.
+
+        Args:
+            A (csc_matrix): The A matrix
+            B (csc_matrix): The B matrix
+            nmodes (int, optional): The number of eigenmodes to find. Defaults to 6.
+            target_k0 (float, optional): The k0 around which to search. Defaults to 0.0.
+            which (str, optional): Which eigenvalues to find (ARPACK convention). Defaults to "LM".
+            sign (float, optional): The sign applied to the shift. Defaults to 1.0.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: The eigenvalues and eigenvectors
+        """
         raise NotImplementedError(
             "This classes eigenmdoe solver method is not implemented."
         )
@@ -793,6 +868,11 @@ class SolverBicgstab(Solver):
         self.b: np.ndarray = None
 
     def callback(self, xk):
+        """Iteration callback that logs the progress.
+
+        Args:
+            xk (np.ndarray): The current solution iterate
+        """
         self._iter += 1
         if self._iter % 10 == 0:
             logger.info(f"{self.pre}: Iteration {self._iter}")
@@ -863,6 +943,11 @@ class SolverGMRES(Solver):
 
     def callback(self, norm):
         # convergence = np.linalg.norm((self.A @ xk - self.b))
+        """Iteration callback that logs the progress.
+
+        Args:
+            norm (float): The preconditioned residual norm
+        """
         logger.info(self.pre + f"Iteration {norm:.4f}")
 
     def solve(
@@ -956,7 +1041,14 @@ class SolverSuperLU(Solver):
         self._a_hash: bytes = None
 
     def hash_A(self, A: csc_matrix) -> bytes:
-        """Hashes the A matrix"""
+        """Hashes the A matrix
+
+        Args:
+            A (csc_matrix): The system matrix
+
+        Returns:
+            bytes: The digest of the matrix
+        """
         hasher = hashlib.sha256()
         hasher.update(A.indptr.tobytes())
         hasher.update(A.indices.tobytes())
@@ -1900,6 +1992,12 @@ class SolveRoutine:
 
     def __init__(self, thread_nr: int = 0, proc_nr: int = 0):
 
+        """Create the solve routine with all available solvers.
+
+        Args:
+            thread_nr (int, optional): The thread number used in the log prefix. Defaults to 0.
+            proc_nr (int, optional): The process number used in the log prefix. Defaults to 0.
+        """
         self.pre: str = ""
         self._set_name(thread_nr, proc_nr)
 
@@ -1969,6 +2067,7 @@ class SolveRoutine:
 
     @property
     def all_solvers(self) -> list[Solver]:
+        """All available Ax=b solvers."""
         return [
                 solver
                 for solver in self.solvers.values()
@@ -1977,6 +2076,7 @@ class SolveRoutine:
 
     @property
     def all_eig_solvers(self) -> list[EigSolver]:
+        """All available eigenvalue solvers."""
         return [
                 solver
                 for solver in self.solvers.values()
@@ -2027,7 +2127,7 @@ class SolveRoutine:
         Solvers will be checked on validity for the given problem.
 
         Args:
-            solver (EMSolver | Solver): The solver objects
+            *solvers (EMSolver | EigSolver | Solver): The solver objects
         """
 
         for solver in solvers:
@@ -2044,7 +2144,7 @@ class SolveRoutine:
         Solvers will be checked on validity for the given problem.
 
         Args:
-            solver (EMSolver): The solver objects
+            *solvers (EMSolver): The solvers to disable
         """
         for solver in solvers:
             if isinstance(solver, EMSolver):
@@ -2097,7 +2197,12 @@ class SolveRoutine:
                 solver.set_options(pivoting_threshold=pivoting_threshold)
 
     def reset(self, reset_solver_preference: bool = False, hard: bool = False) -> None:
-        """Reset all solver states"""
+        """Reset all solver states
+
+        Args:
+            reset_solver_preference (bool, optional): Also clear the forced and disabled solvers. Defaults to False.
+            hard (bool, optional): Recreate all solver objects. Defaults to False.
+        """
         for solver in self.solvers.values():
             solver.reset()
         self.sorter.reset()
@@ -2125,7 +2230,7 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
 
         Returns:
@@ -2149,8 +2254,10 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
+            matrix_type (MatrixType): Type of the matrix (e.g., SPD, HPD)
+            direct (bool, optional): Whether to use a direct solver. Defaults to True.
 
         Returns:
             Solver: Returns the direct solver
@@ -2175,7 +2282,7 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
             direct (bool): If the direct solver should be used.
 
@@ -2199,7 +2306,7 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
             direct (bool): If the direct solver should be used.
 
@@ -2218,7 +2325,7 @@ class SolveRoutine:
 
     def solve(
         self,
-        A: csc_matrix | csc_matrix,
+        A: csc_matrix,
         b: np.ndarray,
         solve_ids: np.ndarray,
         direct: bool = True,
@@ -2232,14 +2339,17 @@ class SolveRoutine:
         The solve routine will go through the required steps defined in the routine to tackle the problme.
 
         Args:
-            A (np.ndarray | csc_matrix): The (Sparse) matrix
+            A (csc_matrix): The (Sparse) matrix
             b (np.ndarray): The source vector
             solve_ids (np.ndarray): A vector of ids for which to solve the problem. For EM problems this
-            implies all non-PEC degrees of freedom.
-            reuse (bool): Whether to reuse the existing factorization if it exists.
+                implies all non-PEC degrees of freedom.
+            direct (bool, optional): Use a direct solver. Defaults to True.
+            id (int, optional): An identifier of this solve used in log messages and cache file names. Defaults to -1.
+            matrix_type (MatrixType, optional): The matrix type. Classified from A if UNKNOWN. Defaults to MatrixType.UNKNOWN.
+            mldataset (MLPreconData | None, optional): Data for the machine learning preconditioner. Defaults to None.
 
         Returns:
-            np.ndarray: The resultant solution.
+            tuple[np.ndarray, SolveReport]: The solution and the solve report.
         """
         if matrix_type is MatrixType.UNKNOWN:
             matrix_type = classify_matrix(A)
@@ -2343,7 +2453,7 @@ class SolveRoutine:
     def eig_boundary(
         self,
         A: csc_matrix,
-        B: np.ndarray,
+        B: csc_matrix,
         solve_ids: np.ndarray,
         nmodes: int = 6,
         direct: bool | None = None,
@@ -2366,7 +2476,7 @@ class SolveRoutine:
             sign (float): The sign of the eigenvalue expression. Defaults to -1
 
         Returns:
-            np.ndarray: The eigen values
+            tuple[np.ndarray, np.ndarray, SolveReport]: The eigen values
             np.ndarray: The eigen vectors
             SolveReport: The solution report
         """
@@ -2405,7 +2515,7 @@ class SolveRoutine:
     def eig(
         self,
         A: csc_matrix,
-        B: np.ndarray,
+        B: csc_matrix,
         solve_ids: np.ndarray,
         nmodes: int = 6,
         direct: bool | None = None,
@@ -2416,16 +2526,15 @@ class SolveRoutine:
         Find the eigenmodes for the system Ax = λBx for a boundary mode problem
         
         Args:
-            A (csr_matrix): The Stiffness matrix
-            B (csr_matrix): The mass matrix
+            A (csc_matrix): The Stiffness matrix
+            B (csc_matrix): The mass matrix
             solve_ids (np.ndarray): The free nodes (non PEC)
-            nmodes (int): The number of modes to solve for. Defaults to 6
-            direct (bool): If the direct solver should be used (always). Defaults to False
-            target_k0 (float): The k0 value to search around
-            which (str): The search method. Defaults to 'LM' (Largest Magnitude)
-            sign (float): The sign of the eigenvalue expression. Defaults to -1\
+            nmodes (int, optional): The number of modes to solve for. Defaults to 6.
+            direct (bool | None, optional): If the direct solver should be used (always). Defaults to None.
+            target_f0 (float, optional): The eigenvalue to search around. Defaults to 0.0.
+            which (str, optional): The search method. Defaults to 'LM' (Largest Magnitude).
         Returns:
-            np.ndarray: The resultant solution.
+            tuple[np.ndarray, np.ndarray, SolveReport]: The eigenvalues, the eigenvectors and the solve report.
         """
         solver = self._get_eig_solver(A, B, direct=direct)
 
@@ -2483,7 +2592,7 @@ class AutomaticRoutine(SolveRoutine):
         self._initialized = True
 
     def pick_solver(
-        self, A: np.ndarray, b: np.ndarray, matrix_type: MatrixType, direct: bool = True
+        self, A: csc_matrix, b: np.ndarray, matrix_type: MatrixType, direct: bool = True
     ) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
 
@@ -2492,10 +2601,10 @@ class AutomaticRoutine(SolveRoutine):
         for medium sized problems or SPSolve for small ones.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
             matrix_type (MatrixType): Type of the matrix (e.g., SPD, HPD)
-            direct (bool): Whether to use a direct solver
+            direct (bool, optional): Whether to use a direct solver. Defaults to True.
 
         Returns:
             Solver: A solver object appropriate for solving the problem.

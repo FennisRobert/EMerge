@@ -9,4 +9,4 @@ MATHLIB: CompiledLib = CompiledLib
 #     MATHLIB = IRONLib
 #     logger.debug(f'Using EMerge-IRON as interpolation backend.')
 # except ImportError:
-#     logger.debug(f'Using Numba(Default) as interpolation backend.')
+#     logger.debug(f'Using EMR (Default) as interpolation backend.')

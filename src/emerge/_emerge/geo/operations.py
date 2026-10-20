@@ -39,19 +39,14 @@ def add(main: T,
         remove_tool: bool = True) -> T:
     ''' Adds two GMSH objects together, returning a new object that is the union of the two.
     
-    Parameters
-    ----------
-    main : GeoSurface | GeoVolume
-    tool : GeoSurface | GeoVolume
-    remove_object : bool, optional
-        If True, the main object will be removed from the model after the operation. Default is True.
-    remove_tool : bool, optional
-        If True, the tool object will be removed from the model after the operation. Default is True.
+    Args:
+        main (T): The main GeoSurface or GeoVolume.
+        tool (T): The tool GeoSurface or GeoVolume.
+        remove_object (bool, optional): Remove the main object from the model after the operation. Defaults to True.
+        remove_tool (bool, optional): Remove the tool object from the model after the operation. Defaults to True.
     
-    Returns
-    -------
-    GeoSurface | GeoVolume
-        A new object that is the union of the main and tool objects.
+    Returns:
+        T: A new object that is the union of the main and tool objects.
     '''
     
     out_dim_tags, out_dim_tags_map = gmsh.model.occ.fuse(main.dimtags, tool.dimtags, removeObject=remove_object, removeTool=remove_tool)
@@ -76,19 +71,14 @@ def remove(main: T, tool: T,
              remove_tool: bool = True) -> T:
     ''' Subtractes a tool object GMSH from the main object, returning a new object that is the difference of the two.
     
-    Parameters
-    ----------
-    main : GeoSurface | GeoVolume
-    tool : GeoSurface | GeoVolume
-    remove_object : bool, optional
-        If True, the main object will be removed from the model after the operation. Default is True.
-    remove_tool : bool, optional
-        If True, the tool object will be removed from the model after the operation. Default is True.
+    Args:
+        main (T): The main GeoSurface or GeoVolume.
+        tool (T): The tool GeoSurface or GeoVolume.
+        remove_object (bool, optional): Remove the main object from the model after the operation. Defaults to True.
+        remove_tool (bool, optional): Remove the tool object from the model after the operation. Defaults to True.
     
-    Returns
-    -------
-    GeoSurface | GeoVolume
-        A new object that is the difference of the main and tool objects.
+    Returns:
+        T: A new object that is the difference of the main and tool objects.
     '''
     gmsh.model.occ.synchronize()
     out_dim_tags, out_dim_tags_map = gmsh.model.occ.cut(main.dimtags, tool.dimtags, removeObject=remove_object, removeTool=remove_tool)
@@ -115,19 +105,14 @@ def intersect(main: T, tool: T,
              remove_tool: bool = True) -> T:
     ''' Intersection of a tool object GMSH with the main object, returning a new object that is the intersection of the two.
     
-    Parameters
-    ----------
-    main : GeoSurface | GeoVolume
-    tool : GeoSurface | GeoVolume
-    remove_object : bool, optional
-        If True, the main object will be removed from the model after the operation. Default is True.
-    remove_tool : bool, optional
-        If True, the tool object will be removed from the model after the operation. Default is True.
+    Args:
+        main (T): The main GeoSurface or GeoVolume.
+        tool (T): The tool GeoSurface or GeoVolume.
+        remove_object (bool, optional): Remove the main object from the model after the operation. Defaults to True.
+        remove_tool (bool, optional): Remove the tool object from the model after the operation. Defaults to True.
     
-    Returns
-    -------
-    GeoSurface | GeoVolume
-        A new object that is the difference of the main and tool objects.
+    Returns:
+        T: A new object that is the intersection of the main and tool objects.
     '''
     out_dim_tags, out_dim_tags_map = gmsh.model.occ.intersect(main.dimtags, tool.dimtags, removeObject=remove_object, removeTool=remove_tool)
     
@@ -147,16 +132,9 @@ def intersect(main: T, tool: T,
 
 def embed(main: GeoVolume, other: GeoSurface) -> None:
     ''' Embeds a surface into a volume in the GMSH model.
-    Parameters
-    ----------
-    main : GeoVolume
-        The volume into which the surface will be embedded.
-    other : GeoSurface
-        The surface to be embedded into the volume.
-    
-    Returns
-    -------
-    None
+    Args:
+        main (GeoVolume): The volume into which the surface will be embedded.
+        other (GeoSurface): The surface to be embedded into the volume.
     '''
     gmsh.model.geo.synchronize()
     gmsh.model.mesh.embed(other.dim, other.tags, main.dim, main.tags)
@@ -170,14 +148,15 @@ def rotate(main: GeoObject,
     """Rotates a GeoVolume object around an axist defined at a coordinate.
 
     Args:
-        main (GeoVolume): The object to rotate
+        main (GeoObject): The object to rotate
         c0 (tuple[float, float, float]): The point of origin for the rotation axis
         ax (tuple[float, float, float]): A vector defining the rotation axis
         angle (float): The angle in degrees (if degree is True)
+        make_copy (bool, optional): Rotate a copy instead of the object itself. Defaults to False.
         degree (bool, optional): Whether to interpret the angle in degrees. Defaults to True.
 
     Returns:
-        GeoVolume: The rotated GeoVolume object.
+        GeoObject: The rotated GeoVolume object.
     """
     if degree:
         angle = angle * np.pi/180
@@ -230,13 +209,13 @@ def mirror(main: GeoObject,
     """Mirrors a GeoVolume object along a miror plane defined by a direction originating at a point
 
     Args:
-        main (GeoVolume): The object to mirror
+        main (GeoObject): The object to mirror
         origin (tuple[float, float, float], optional): The point of origin in meters. Defaults to (0.0, 0.0, 0.0).
         direction (tuple[float, float, float], optional): The normal axis defining the plane of reflection. Defaults to (1.0, 0.0, 0.0).
         make_copy (bool, optional): Whether to make a copy first before mirroring.
 
     Returns:
-        GeoVolume: The mirrored GeoVolume object
+        GeoObject: The mirrored GeoVolume object
     """
     origin = np.array(origin)
     direction = np.array(direction)
@@ -266,7 +245,7 @@ def change_coordinate_system(main: GeoObject,
     Thus only one needs to be provided to transform to and from these coordinate systems.
 
     Args:
-        main (GeoVolume): The object to transform
+        main (GeoObject): The object to transform
         new_cs (CoordinateSystem): The new coordinate system. Defaults to GCS
         old_cs (CoordinateSystem, optional): The old coordinate system. Defaults to GCS.
 
@@ -293,11 +272,18 @@ def change_coordinate_system(main: GeoObject,
 
 def stretch(main: GeoObject, fx: float = 1, fy: float = 1, fz: float = 1, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> GeoObject:
     """Stretches a geometry with a factor fx, fy and fz along the x, y and Z axes respectively
-    
+
     The stretch origin is centered at the provided origin.
 
+    Args:
+        main (GeoObject): The object to stretch
+        fx (float, optional): The stretch factor along x. Defaults to 1.
+        fy (float, optional): The stretch factor along y. Defaults to 1.
+        fz (float, optional): The stretch factor along z. Defaults to 1.
+        origin (tuple[float, float, float], optional): The stretch origin. Defaults to (0.0, 0.0, 0.0).
+
     Returns:
-        _type_: _description_
+        GeoObject: The stretched object
     """
     gmsh.model.occ.dilate(main.dimtags, *origin, fx, fy, fz)
     
@@ -307,13 +293,13 @@ def extrude(main: GeoSurface, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0)
     """Extrudes a surface entity by a displacement
 
     Args:
-        main (GeoSurface): _description_
-        dx (float): _description_
-        dy (float): _description_
-        dz (float): _description_
+        main (GeoSurface): The surface to extrude (it is removed)
+        dx (float, optional): The x-displacement. Defaults to 0.0.
+        dy (float, optional): The y-displacement. Defaults to 0.0.
+        dz (float, optional): The z-displacement. Defaults to 0.0.
 
     Returns:
-        GeoObject: _description_
+        GeoVolume: The extruded volume
     """
     dtout = gmsh.model.occ.extrude(main.dimtags, dx, dy, dz)
     out = [dt[1] for dt in dtout if dt[0]==3]
@@ -394,7 +380,7 @@ def stick(obj: GeoObject, p1: Anchor , p2: Anchor ) -> GeoObject:
     """Glues an objects face anchor to another face anchor point with the appropriate orientation.
 
     Args:
-        object (GeoObject): The object to stick to something else
+        obj (GeoObject): The object to stick to something else
         p1 (Anchor): The main objects achor point to move
         p2 (Anchor): The anchor point to move it to
 
@@ -447,9 +433,12 @@ def connect_faces(face1: GeoSurface, face2: GeoSurface,
     Args:
         face1 (GeoSurface): The first surface to connect
         face2 (GeoSurface): The second surface to connect
+        make_solid (bool, optional): Create a solid instead of only the side surfaces. Defaults to True.
+        make_ruled (bool, optional): Create ruled (straight) side surfaces. Defaults to True.
+        parametrization (Literal["ChordLength", "Centripetal", "IsoParametric"], optional): The OCC section parametrization. Defaults to "IsoParametric".
 
     Returns:
-        GeoVolume: _description_
+        GeoVolume: The volume between the two surfaces
     """
     wire1, _ = gmsh.model.occ.getCurveLoops(face1.tags[0])
     wire2, _ = gmsh.model.occ.getCurveLoops(face2.tags[0])
@@ -461,16 +450,24 @@ def duplicate(entity: GeoObject | Selection) -> GeoObject:
     """Duplicate a geometric entity or selection there of
 
     Args:
-        entity (GeoObject | Selection): _description_
+        entity (GeoObject | Selection): The entity to copy
 
     Returns:
-        GeoObject: _description_
+        GeoObject: The copy
     """
     return GeoObject.from_dimtags(gmsh.model.occ.copy(entity.dimtags))
 
 
 def thick_wall(thickness: float, *volumes):
-    """Add thickness to volumes and return a solid expanded geometry without internal holes."""
+    """Add thickness to volumes and return a solid expanded geometry without internal holes.
+
+    Args:
+        thickness (float): The wall thickness
+        *volumes (GeoVolume): The volumes to thicken
+
+    Returns:
+        GeoVolume: The expanded solid (with AIR material)
+    """
     gmsh.model.occ.synchronize()
 
     dimtags = []

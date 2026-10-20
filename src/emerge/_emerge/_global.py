@@ -47,4 +47,5 @@ class _GlobalHandler(object):
             gmsh.finalize()
             
 def cleanup():
+    """Reset the active global EMerge state."""
     _GlobalHandler.active().reset()

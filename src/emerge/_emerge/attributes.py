@@ -32,11 +32,16 @@ class PhysicalAttribute(Saveable):
     name: str = "UnnamedAttribute"
 
     def copy(self, deep: bool = False) -> PhysicalAttribute:
-        """
-        Returns a fresh copy of this physical attribute.
-        
+        """Returns a fresh copy of this physical attribute.
+
         If deep=True, it recursively clones any nested mutable structures.
         If deep=False, it performs a standard shallow copy of the attribute's data fields.
+
+        Args:
+            deep (bool, optional): Make a deep copy. Defaults to False.
+
+        Returns:
+            PhysicalAttribute: A copy of this physical attribute
         """
         if deep:
             return copy.deepcopy(self)
@@ -71,6 +76,11 @@ class PhysicalAttribute(Saveable):
         return self.__and__(other)
     
     def to_set(self) -> PhysicalAttributeSet:
+        """Wrap this attribute in a PhysicalAttributeSet.
+
+        Returns:
+            PhysicalAttributeSet: A set containing only this attribute
+        """
         return PhysicalAttributeSet(self)
     
     def _get_value(self) -> Any:
@@ -79,6 +89,11 @@ class PhysicalAttribute(Saveable):
 class PhysicalAttributeSet(Saveable):
 
     def __init__(self, *attributes: PhysicalAttribute | Material):
+        """A set of physical attributes (and materials) assigned to a geometry.
+
+        Args:
+            *attributes (PhysicalAttribute | Material): The attributes in the set
+        """
         self.attrs: list[PhysicalAttribute | Material] = list(attributes)
 
     def __str__(self) -> str:
@@ -111,6 +126,14 @@ class PhysicalAttributeSet(Saveable):
             yield attr
 
     def copy(self, deep: bool = True) -> PhysicalAttributeSet:
+        """Copy this attribute set. Materials are always shared, not copied.
+
+        Args:
+            deep (bool, optional): Deep copy the attributes. Defaults to True.
+
+        Returns:
+            PhysicalAttributeSet: The copy
+        """
         if deep:
             new_attrs = []
             for attr in self.attrs:
@@ -143,22 +166,55 @@ class PhysicalAttributeSet(Saveable):
         self.attrs = new
 
     def add_to(self, other: PhysicalAttribute | Material) -> PhysicalAttributeSet:
+        """Add an attribute to this set, replacing any attribute of the same type.
+
+        Args:
+            other (PhysicalAttribute | Material): The attribute to add
+
+        Returns:
+            PhysicalAttributeSet: This set (for method chaining)
+        """
         self.attrs.append(other)
         self._clean_duplicates()
         return self
     
     def combine(self, other: PhysicalAttributeSet) -> PhysicalAttributeSet:
+        """Add all attributes of another set to this set, replacing attributes of the same type.
+
+        Args:
+            other (PhysicalAttributeSet): The other set
+
+        Returns:
+            PhysicalAttributeSet: This set (for method chaining)
+        """
         self.attrs.extend(other.attrs)
         self._clean_duplicates()
         return self
     
     def get(self, attr_type: Type[T]) -> Optional[T]:
+        """Get the attribute of a given type.
+
+        Args:
+            attr_type (Type[T]): The attribute class
+
+        Returns:
+            Optional[T]: The attribute, None if the set has no attribute of this type
+        """
         for a in self.attrs:
             if isinstance(a, attr_type):
                 return a
         return None
     
     def get_value(self, attr_type: PhysicalAttribute, default_value: Any) -> Any:
+        """Get the value of the attribute of a given type.
+
+        Args:
+            attr_type (PhysicalAttribute): The attribute class
+            default_value (Any): The value returned if the attribute or its value is missing
+
+        Returns:
+            Any: The attribute value or the default value
+        """
         if attr := self.get(attr_type):
             if value := attr._get_value():
                 return value
@@ -167,6 +223,16 @@ class PhysicalAttributeSet(Saveable):
         return default_value
     
     def get_attr(self, attr_type: PhysicalAttribute | Material, attribute: str, default = None) -> Any:
+        """Get a (dotted) attribute of the attribute of a given type.
+
+        Args:
+            attr_type (PhysicalAttribute | Material): The attribute class
+            attribute (str): The attribute name, may be dotted like "a.b"
+            default (Any, optional): The value returned if the set has no attribute of this type. Defaults to None.
+
+        Returns:
+            Any: The attribute value or the default value
+        """
         if attr := self.get(attr_type):
             obj = attr
             for name in attribute.split('.'):
@@ -195,6 +261,14 @@ class PhysicalAttributeSet(Saveable):
 
 
     def get_all(self, *attr_types: Type[T]) -> Optional[tuple[T,...]]:
+        """Get the attributes of several types at once.
+
+        Args:
+            *attr_types (Type[T]): The attribute classes
+
+        Returns:
+            Optional[tuple[T,...]]: The attributes in the same order, None if any of them is missing
+        """
         out = [self.get(at) for at in attr_types]
         if all(prop is not None for prop in out):
             return tuple(out)
@@ -245,6 +319,11 @@ class FiniteThickness(PhysicalAttribute):
     name: str = 'FiniteThickness'
 
     def __init__(self, thickness: float):
+        """Assign a finite thickness to a (surface) object.
+
+        Args:
+            thickness (float): The thickness in meters
+        """
         self.thickness: float = float(thickness)
 
     def _get_value(self):
@@ -257,6 +336,11 @@ class SurfaceRoughness(PhysicalAttribute):
     name: str = 'SurfaceRoughness'
 
     def __init__(self, rmsval_m: float):
+        """Assign a surface roughness to an object.
+
+        Args:
+            rmsval_m (float): The RMS surface roughness in meters
+        """
         self.rmsval: float = float(rmsval_m)
 
     def _get_value(self):
@@ -269,6 +353,12 @@ class WavePortAttribute(PhysicalAttribute):
     name: str = 'WavePort'
 
     def __init__(self, port_number: int, mode_type: Literal['TEM','TE','TM'] = 'TEM'):
+        """Mark a surface as a wave port.
+
+        Args:
+            port_number (int): The port number
+            mode_type (Literal['TEM','TE','TM'], optional): The mode type of the port. Defaults to 'TEM'.
+        """
         self.port_number: int = port_number
         self.mode_type: str = mode_type
 
@@ -283,6 +373,15 @@ class LumpedPortAttribute(PhysicalAttribute):
                  width: float,
                  height: float,
                  impedance: float = 50.0):
+        """Mark a surface as a lumped port.
+
+        Args:
+            port_number (int): The port number
+            direction (tuple[float, float, float] | Axis): The direction of the port excitation
+            width (float): The port width
+            height (float): The port height (along the direction)
+            impedance (float, optional): The port impedance. Defaults to 50.0.
+        """
         self.port_number: int = port_number
         self.width: float = width
         self.height: float = height
@@ -296,6 +395,12 @@ class MetalCoating(PhysicalAttribute):
     name: str = 'MetalCoating'
 
     def __init__(self, material: Material, thickness: float):
+        """Assign a metal coating to an object.
+
+        Args:
+            material (Material): The coating material
+            thickness (float): The coating thickness in meters
+        """
         self.material: Material = material
         self.thickness: float = float(thickness)
 
@@ -307,6 +412,13 @@ class LumpedElementAttribute(PhysicalAttribute):
     skip_fields = ['impedance_function',]
 
     def __init__(self, impedance_function: Callable, width: float, height: float):
+        """Mark a surface as a lumped element.
+
+        Args:
+            impedance_function (Callable): The element impedance as a function of frequency
+            width (float): The element width
+            height (float): The element height
+        """
         self.impedance_function: Callable = impedance_function
         self.width: float = float(width)
         self.height: float = float(height)
@@ -318,6 +430,7 @@ class VoidAttribute(PhysicalAttribute):
     name: str = 'VoidAttribute'
 
     def __init__(self):
+        """An attribute without data that only marks an object."""
         pass
 
     def __descr__(self):

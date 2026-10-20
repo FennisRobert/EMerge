@@ -70,7 +70,7 @@ class PortMode(Saveable):
             term2 = (
                 Etm[0, :] * gEzm[0, :] + Etm[1, :] * gEzm[1, :] + Etm[2, :] * gEzm[2, :]
             )
-            return const * (term1 - term2)
+            return const * (term1 + term2)
 
         kappa_m = surface_integral(
             nodes,

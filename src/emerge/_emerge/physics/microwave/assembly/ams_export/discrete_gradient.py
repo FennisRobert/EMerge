@@ -48,8 +48,11 @@ import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
 
 from .....elements.nedelec2 import Nedelec2
-from ..curlcurl import _DPTS
-from .kernels import gradient_kernel
+from .....mth.optimized import gaus_quad_tet
+from emr.ams_kernels import gradient_kernel
+
+# Volume quadrature points (the same keast(5) rule as the curl-curl assembly)
+_DPTS = gaus_quad_tet(5)
 
 
 def assemble_discrete_gradient(field: Nedelec2, rtol: float = 1e-8) -> csr_matrix:

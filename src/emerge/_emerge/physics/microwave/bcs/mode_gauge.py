@@ -44,7 +44,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ....mth.optimized import gaus_quad_tri, generate_int_data_tri
+from ....mth.optimized import gaus_quad_tri
+from emr.mth import generate_int_data_tri
 
 # Fixed test field: per component i, w_i(u) = sin(a_i . u + phi_i) + sin(b_i . u + psi_i), with
 # u = (x - centroid) / size. The wave vectors are "irrational" so w has no symmetry plane; the phases add

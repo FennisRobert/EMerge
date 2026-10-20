@@ -41,78 +41,15 @@ gradient modes), so a solver can reuse its symbolic factorization.
 from __future__ import annotations
 import hashlib
 import numpy as np
-from numba import njit, prange
+from emr.system_pattern import _locate_entries_kernel, _scatter_add_per_triangle, _scatter_add, _write_a_plus_alpha_b
 from scipy.sparse import csc_matrix, spmatrix, sparray
 
 from ....mth.csc_cast import CSCMapping
 from ....elements.nedelec2 import Nedelec2
 from ..bcs import RobinBC, ThinConductor, WavePortIH
-from .robinbc import assemble_robin_bc
-from .robin_abc_order2 import abc_order_2_matrix
+from .emr_microwave import assemble_robin_bc
+from .emr_microwave import abc_order_2_matrix
 from .wpbc import wpbc_dofs, wpbc_rowcol
-
-
-############################################################
-#                      NUMBA KERNELS                       #
-############################################################
-
-_LINEAR_SCAN_THRESHOLD = 16
-
-
-@njit(cache=True, inline="always")
-def _find_row_in_column(indices: np.ndarray, lo: int, hi: int, row: int) -> int:
-    """Position of `row` in the sorted slice indices[lo:hi], or -1 if absent.
-    Linear scan for short columns, binary search otherwise."""
-    if hi - lo <= _LINEAR_SCAN_THRESHOLD:
-        for k in range(lo, hi):
-            if indices[k] == row:
-                return k
-        return -1
-    while lo < hi:
-        mid = (lo + hi) >> 1
-        val = indices[mid]
-        if val == row:
-            return mid
-        elif val < row:
-            lo = mid + 1
-        else:
-            hi = mid
-    return -1
-
-
-@njit(cache=True, parallel=True)
-def _locate_entries_kernel(
-    indices: np.ndarray, indptr: np.ndarray, rows: np.ndarray, cols: np.ndarray, data_indices: np.ndarray
-) -> None:
-    for i in prange(rows.shape[0]):
-        c = cols[i]
-        data_indices[i] = _find_row_in_column(indices, indptr[c], indptr[c + 1], rows[i])
-
-
-@njit(cache=True, nogil=True)
-def _scatter_add_per_triangle(
-    out: np.ndarray, data_indices: np.ndarray, unit_values: np.ndarray, tri_coeffs: np.ndarray, values_per_tri: int
-) -> None:
-    """out[data_indices[k]] += tri_coeffs[k // values_per_tri] * unit_values[k].
-    Repeated data indices accumulate."""
-    for i in range(tri_coeffs.shape[0]):
-        c = tri_coeffs[i]
-        for k in range(i * values_per_tri, (i + 1) * values_per_tri):
-            out[data_indices[k]] += c * unit_values[k]
-
-
-@njit(cache=True, nogil=True)
-def _scatter_add(out: np.ndarray, data_indices: np.ndarray, values: np.ndarray, scale: complex) -> None:
-    """out[data_indices[k]] += scale * values[k]. Repeated data indices accumulate."""
-    for k in range(values.shape[0]):
-        out[data_indices[k]] += scale * values[k]
-
-
-@njit(cache=True, nogil=True, parallel=True)
-def _write_a_plus_alpha_b(out: np.ndarray, a: np.ndarray, b: np.ndarray, alpha: complex) -> None:
-    """out = a + alpha * b"""
-    for i in prange(out.shape[0]):
-        out[i] = a[i] + alpha * b[i]
 
 
 def locate_entries_in_pattern(indptr: np.ndarray, indices: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
@@ -123,8 +60,8 @@ def locate_entries_in_pattern(indptr: np.ndarray, indices: np.ndarray, rows: np.
     entry is not part of the pattern.
     """
     data_indices = np.empty(rows.shape[0], dtype=np.int64)
-    _locate_entries_kernel(indices, indptr, rows.astype(indices.dtype, copy=False),
-                           cols.astype(indices.dtype, copy=False), data_indices)
+    _locate_entries_kernel(np.ascontiguousarray(indices, dtype=np.int64), np.ascontiguousarray(indptr, dtype=np.int64),
+                           np.ascontiguousarray(rows, dtype=np.int64), np.ascontiguousarray(cols, dtype=np.int64), data_indices)
     if (data_indices < 0).any():
         raise ValueError("Some (row, col) entries are not present in the sparsity pattern.")
     return data_indices

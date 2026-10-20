@@ -201,10 +201,11 @@ def test_contact_jump():
         np.array([0.0]), np.array([0.0]), np.array([z_above])
     ).T[0]
 
-    expected_jump = Q / h_contact
+    # Contact jump plus the conduction drop over the 2 cm between the two sample points
+    expected_jump = Q / h_contact + Q * (z_above - z_below) / KAPPA
     actual_jump = T_below - T_above
 
-    assert abs(actual_jump - expected_jump) / expected_jump < 0.1, (
+    assert abs(actual_jump - expected_jump) / expected_jump < 1e-6, (
         f"Contact jump {actual_jump:.3f} K != expected {expected_jump:.3f} K"
     )
 

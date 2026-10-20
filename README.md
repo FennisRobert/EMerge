@@ -121,13 +121,17 @@ pip install https://gmsh.info/python-packages-dev/gmsh/gmsh-5.0.0.dev1-py2.py3-n
 
 ## Required libraries
 
+EMerge ships compiled Rust kernels (the `emr` module, source in `emr/`). PyPI wheels include them; installing from source
+(`pip install /path/to/EMerge` or `pip install git+https://github.com/FennisRobert/EMerge.git`) compiles them automatically
+and requires a Rust toolchain (https://rustup.rs).
+
+
 To run this FEM library you need the following libraries
 
  - numpy
  - scipy
  - gmsh
  - loguru
- - numba
  - matplotlib (for the matplotlib base display)
  - pyvista (for the PyVista base display)
  - mkl (x86 devices only)

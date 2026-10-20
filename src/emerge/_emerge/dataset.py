@@ -49,7 +49,7 @@ class SimulationDataset(Saveable):
             datasets (list[SimulationDataset]): The datasets to merge
 
         Returns:
-            DataContainer: _description_
+            SimulationDataset: The first dataset with all others merged into it
         """
         base, *others = datasets
         base.merge_with(*others)
@@ -59,10 +59,10 @@ class SimulationDataset(Saveable):
         """Combines this SimulationDataset with other SimulationDatasets
 
         Args:
-            *other (SimulationDataset): The container to merge with
+            *others (SimulationDataset): The datasets to merge with
 
         Returns:
-            DataContainer: _description_
+            SimulationDataset: The merged dataset
         """
         for other in others:
           self.mw.merge_with(other.mw)

@@ -9,11 +9,12 @@ def surface_model(mwdata: MWData, farfield_boundary: FaceSelection | GeoSurface 
     """Generate a dataset that Optycal can interpret to form a surface model for Near and Farfield calculations
 
     Args:
-        dataset (MWData): _description_
-        farfield_boundary (FaceSelection | GeoSurface | None, optional): _description_. Defaults to None.
+        mwdata (MWData): The simulation data set.
+        farfield_boundary (FaceSelection | GeoSurface | None, optional): The surface whose fields form the model.
+            Defaults to None.
 
     Returns:
-        SimpleNamespace: _description_
+        dict: The model with the per frequency 'solutions' and the surface 'vertices', 'triangles' and 'normals'.
     """
     dataset = dict(
         solutions=[],
@@ -79,11 +80,15 @@ def farfield_model(mwdata: MWData,
     """Generate a dataset that Optycal can interpret to form a farfield model for Near and Farfield calculations
 
     Args:
-        dataset (MWData): _description_
-        farfield_boundary (FaceSelection | GeoSurface | None, optional): _description_. Defaults to None.
+        mwdata (MWData): The simulation data set.
+        farfield_boundary (FaceSelection | GeoSurface | None, optional): The surface used for the near to far field
+            transformation. Defaults to None.
+        dangle_deg (float, optional): The angular resolution of the far field grid in degrees. Defaults to 1.0.
+        syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes of
+            the simulation domain, where Ex is E-symmetry in x=0. Defaults to None.
 
     Returns:
-        SimpleNamespace: _description_
+        dict: The model with the per frequency 'solutions' on the 'thetas' x 'phis' grid.
     """
 
     dangle_rad = dangle_deg * np.pi/180

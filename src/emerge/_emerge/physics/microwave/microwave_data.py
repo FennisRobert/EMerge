@@ -347,6 +347,17 @@ class Sparam:
 
 @dataclass
 class PortProperties(Saveable):
+    """The properties of a port mode at one frequency.
+
+    Args:
+        port_number (int, optional): The port number. Defaults to -1.
+        k0 (float | None, optional): The free space propagation constant. Defaults to None.
+        beta (float | None, optional): The propagation constant of the port mode. Defaults to None.
+        Z0 (float | complex | None, optional): The port impedance. Defaults to None.
+        Pout (float | None, optional): The port mode power. Defaults to None.
+        mode_number (int, optional): The mode number. Defaults to 1.
+        smat_index (int | float, optional): The S-matrix index of the port mode. Defaults to 1.
+    """
     port_number: int = -1
     k0: float | None = None
     beta: float | None = None
@@ -361,6 +372,7 @@ class MWData(Saveable):
     field: BaseDataset[MWField, None]
 
     def __init__(self):
+        """Container for all microwave simulation results (scalar data, field data and solver reports)."""
         self.scalar = BaseDataset[MWScalar, MWScalarNdim](MWScalar, MWScalarNdim, True)
         self.field = BaseDataset[MWField, None](MWField, None, False)
         self.sim: DataContainer = DataContainer()
@@ -377,6 +389,12 @@ class MWData(Saveable):
         return self
 
     def setreport(self, report, **vars):
+        """Store the solver reports for a set of simulation parameters.
+
+        Args:
+            report (list[SolveReport]): The solver reports
+            **vars: The simulation parameter values the reports belong to
+        """
         self.sim.new(**vars).set_reports(report)
 
     def export_farfields(
@@ -401,7 +419,7 @@ class MWData(Saveable):
             origin (tuple[float, float, float] | None, optional): An optional array for a radiation origin 
                 used to determine the normal vectors of farfield boundaries if inside vs. outside 
                 is not well defined. Defaults to None.
-            syms ("Ex","Ey","Ez","Hx","Hy","Hz" | None), optional): Optional simulation domain symmetries. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
             precision (int, optional): The number of decimals for the output file. Defaults to 4.
             frequencies (list[float] | None, optional): The frequencies to pick for the output. Defaults to None.
         """
@@ -481,6 +499,7 @@ class _EHSign(Saveable):
 
 class MWField(Saveable):
     def __init__(self):
+        """The field solution of a single frequency (and parameter) point."""
         self._der: np.ndarray = None
         self._dur: np.ndarray = None
         self._dsig: np.ndarray = None
@@ -530,6 +549,17 @@ class MWField(Saveable):
         Z0: float | complex | None,
         Pout: float,
     ) -> None:
+        """Store the properties of a port mode of this solution.
+
+        Args:
+            port_number (int): The port number
+            mode_number (int): The mode number
+            smat_index (int | float): The S-matrix index of the port mode
+            k0 (float): The free space propagation constant
+            beta (float): The propagation constant of the port mode
+            Z0 (float | complex | None): The port impedance
+            Pout (float): The port mode power
+        """
         self.port_modes.append(
             PortProperties(
                 port_number=port_number,
@@ -543,19 +573,27 @@ class MWField(Saveable):
         )
 
     def add_field_properties(self, field: bf.BackgroundField):
+        """Store a background field used in this solution.
+
+        Args:
+            field (bf.BackgroundField): The background field
+        """
         self.background_fields.append(field)
 
     @property
     def mesh(self) -> Mesh3D:
+        """The mesh of this solution."""
         return self.basis.mesh
 
     @property
     def cache(self) -> MWField:
+        """This field, with the interpolation point mapping cached for the next evaluations."""
         self._cache_mapping = True
         return self
     
     @property
     def k0(self) -> float:
+        """The free space propagation constant of this solution."""
         return self.freq * 2 * np.pi / 299792458
 
     @property
@@ -597,12 +635,12 @@ class MWField(Saveable):
 
         Args:
             x (np.ndarray): An array of X-coordinates
-            y (np.ndarray): An array of X-coordinates
-            z (np.ndarray): An array of X-coordinates
+            y (np.ndarray): An array of Y-coordinates
+            z (np.ndarray): An array of Z-coordinates
             mask (np.ndarray): A binary mask array that tells this funtion on which coordinates to evaluate the field.
 
         Returns:
-            np.ndarray: _description_
+            np.ndarray: The (3, N) background E-field, NaN outside the mask
         """
         out = np.zeros((3, x.shape[0]), dtype=np.complex128)
         out[:, ~mask] = np.nan
@@ -615,12 +653,12 @@ class MWField(Saveable):
 
         Args:
             x (np.ndarray): An array of X-coordinates
-            y (np.ndarray): An array of X-coordinates
-            z (np.ndarray): An array of X-coordinates
+            y (np.ndarray): An array of Y-coordinates
+            z (np.ndarray): An array of Z-coordinates
             mask (np.ndarray): A binary mask array that tells this funtion on which coordinates to evaluate the field.
 
         Returns:
-            np.ndarray: _description_
+            np.ndarray: The (3, N) background H-field, NaN outside the mask
         """
         out = np.zeros((3, x.shape[0]), dtype=np.complex128)
         out[:, ~mask] = np.nan
@@ -642,8 +680,8 @@ class MWField(Saveable):
         """Excite a single port provided by a given port number
 
         Args:
-            number (int): The port number to excite
-            coefficient (complex): The port excitation. Defaults to 1.0 + 0.0j
+            number (int | float): The port number to excite
+            excitation (complex, optional): The port excitation. Defaults to 1.0 + 0.0j
         """
         if self._active_ports is not None and number not in self._active_ports:
             raise KeyError(
@@ -657,8 +695,8 @@ class MWField(Saveable):
     def set_excitations(self, *excitations: complex) -> None:
         """Set bulk port excitations by an ordered array of excitation coefficients.
 
-        Returns:
-            *complex: A sequence of complex numbers
+        Args:
+            *excitations (complex): The excitation coefficient of each port, in port order.
         """
         self.excitation = {key: 0.0 for key in self._fields.keys()}
         for imode, coeff in enumerate(excitations):
@@ -668,13 +706,13 @@ class MWField(Saveable):
         """Activate a specific background field
 
         Args:
-            index (int): _description_
+            bf (BackgroundField): The background field to excite (all others are switched off)
         """
         self.excitation = {key: 0.0 for key in self._fields.keys()}
         self.excitation[bf] = 1.0
 
     def combine_ports(self, p1: int, p2: int) -> MWField:
-        """Combines ports p1 and p2 into a cifferential and common mode port respectively.
+        """Combines ports p1 and p2 into a differential and common mode port respectively.
 
         The p1 index becomes the differential mode port
         The p2 index becomes the common mode port
@@ -684,7 +722,7 @@ class MWField(Saveable):
             p2 (int): The second port number
 
         Returns:
-            MWField: _description_
+            MWField: This field object (for method chaining)
         """
 
         fp1 = self._fields[p1]
@@ -697,7 +735,18 @@ class MWField(Saveable):
     def interpolate(
         self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, usenan: bool = True, mapping: np.ndarray | None = None
     ) -> EHField:
-        """Interpolate the dataset in the provided xs, ys, zs values"""
+        """Interpolate the dataset in the provided xs, ys, zs values
+
+        Args:
+            xs (np.ndarray): The X-coordinates
+            ys (np.ndarray): The Y-coordinates
+            zs (np.ndarray): The Z-coordinates
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+            mapping (np.ndarray | None, optional): A precomputed point to tetrahedron mapping. Defaults to None.
+
+        Returns:
+            EHField: The field at the provided coordinates
+        """
         # fmt: off
         if isinstance(xs, (float, int, complex)):
             xs = np.array([xs,])
@@ -788,7 +837,16 @@ class MWField(Saveable):
         return error_tet, max_elem_size
 
     def integrate(self, surface: FaceSelection, gqo: int = 4) -> EHField:
-        from ...mth.optimized import generate_int_data_tri
+        """Interpolate the field at the Gauss quadrature points of a surface (deprecated, use int_surf).
+
+        Args:
+            surface (FaceSelection): The integration surface
+            gqo (int, optional): The Gauss quadrature order. Defaults to 4.
+
+        Returns:
+            EHField: The field at the quadrature points, with the areas and weights in its aux data
+        """
+        from emr.mth import generate_int_data_tri
         from ...mth.integrals import gaus_quad_tri
 
         logger.warning("Use int_surf instead!")
@@ -807,18 +865,18 @@ class MWField(Saveable):
 
     def int_surf(
         self, surface: FaceSelection, argument: Callable, gqo: int = 4
-    ) -> EHField:
-        """Performs a surface integral on the provided surface object.
+    ) -> complex | np.ndarray:
+        """Performs a surface integral of a quantity computed from the EM field.
 
         Args:
             surface (FaceSelection): The surface to integrate
-            quantity (Callable): A function that takes an EH field as argument
+            argument (Callable): A function that takes the interpolated EHField and returns the integrand (scalar (N,) or vector (3, N))
             gqo (int, optional): Gauss Quadrature order. Defaults to 4.
 
         Returns:
-            EHField: _description_
+            complex | np.ndarray: The integral, a scalar or a vector (3,) for a vector integrand
         """
-        from ...mth.optimized import generate_int_data_tri
+        from emr.mth import generate_int_data_tri
         from ...mth.integrals import gaus_quad_tri
 
         DPTS = gaus_quad_tri(gqo)
@@ -841,18 +899,19 @@ class MWField(Saveable):
 
     def int_vol(
         self, domain: DomainSelection, argument: Callable, gqo: int = 4
-    ) -> EHField:
-        """Performs a surface integral on the provided surface object.
+    ) -> complex | np.ndarray:
+        """Performs a volume integral of a quantity computed from the EM field.
 
         Args:
-            domain (DomainSelection): The surface to integrate
-            quantity (Callable): A function that takes an EH field as argument
+            domain (DomainSelection): The domain to integrate
+            argument (Callable): A function that takes the interpolated EHField and returns the integrand (scalar (N,) or vector (3, N))
             gqo (int, optional): Gauss Quadrature order. Defaults to 4.
 
         Returns:
-            EHField: _description_
+            complex | np.ndarray: The integral, a scalar or a vector (3,) for a vector integrand
         """
-        from ...mth.optimized import gaus_quad_tet, generate_int_data_tet
+        from ...mth.optimized import gaus_quad_tet
+        from emr.mth import generate_int_data_tet
         # from ...mth.integrals import gaus_quad_tet
 
         DPTS = gaus_quad_tet(gqo)
@@ -875,7 +934,7 @@ class MWField(Saveable):
 
     def int_line(
         self, line: Line | list[tuple[float, float, float]], argument: Callable
-    ) -> EHField:
+    ) -> complex:
         """Performs a line integral on the provided line with the an integral argument.
 
         Args:
@@ -883,7 +942,7 @@ class MWField(Saveable):
             argument (Callable): a function that takes an EMfield and returns a scalar argument. Example lambda x: x.Ex
 
         Returns:
-            EHField: _description_
+            complex: The line integral
         """
         if not isinstance(line, Line):
             x, y, z = zip(*line)
@@ -905,16 +964,17 @@ class MWField(Saveable):
         lumped_element: LumpedElement,
         axis: Axis | tuple[float, float, float] | np.ndarray,
         quantity: Literal["E", "H", "S"] = "E",
-    ) -> float:
+    ) -> complex:
         """Performs a voltage integration of a lumped element.
         It needs an integration direction axis to work.
 
         Args:
             lumped_element (LumpedElement): The lumped element object.
-            axis (Axis | tuple[float,float,float]): The integration axis direction
+            axis (Axis | tuple[float, float, float] | np.ndarray): The integration axis direction
+            quantity (Literal["E", "H", "S"], optional): The field quantity to integrate along the axis. Defaults to "E".
 
         Returns:
-            float: _description_
+            complex: The integral (voltage for "E") averaged over all integration lines
         """
         logger.debug(" - Finding Lumped Element integration points")
         field_axis = _parse_axis(axis).np
@@ -951,7 +1011,14 @@ class MWField(Saveable):
         return sum(voltages) / len(voltages)
 
     def boundary(self, selection: FaceSelection) -> EHField:
-        """Interpolate the field on the node coordinates of the surface."""
+        """Interpolate the field on the node coordinates of the surface.
+
+        Args:
+            selection (FaceSelection): The surface
+
+        Returns:
+            EHField: The field on the surface nodes
+        """
         boundary = self.mesh.boundary_surface(selection.tags)
         x = boundary.nodes[0, :]
         y = boundary.nodes[1, :]
@@ -976,6 +1043,14 @@ class MWField(Saveable):
         evaluated at triangle centers using small offsets along the face normal.
         Triangle currents are projected onto the tangent plane and transferred
         to nodes using area-weighted averaging.
+
+        Args:
+            selection (FaceSelection): The boundary surface
+            eps (float, optional): The offset distance along the face normal at which H is sampled on both sides. Defaults to 1e-6.
+            n_samples (int, optional): The number of offsets (between 0.75 and 1.25 eps) averaged per side. Defaults to 3.
+
+        Returns:
+            EHField: The field with the estimated surface current density
         """
         _validate_selection(selection)
         boundary = self.mesh.boundary_surface(selection.tags)
@@ -1137,6 +1212,7 @@ class MWField(Saveable):
             x (float | None, optional): The X-coordinate in case of a YZ-plane. Defaults to None.
             y (float | None, optional): The Y-coordinate in case of an XZ-plane. Defaults to None.
             z (float | None, optional): The Z-coordinate in case of an XY-plane. Defaults to None.
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
 
         Returns:
             EHField: The resultant EHField object
@@ -1172,6 +1248,10 @@ class MWField(Saveable):
             point: (x0,y0,z0), a point on the plane
             normal: (nx,ny,nz), plane normal vector
             npoints: number of grid points per axis
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+
+        Returns:
+            EHField: The field on the cut plane
         """
 
         n = np.array(normal, dtype=float)
@@ -1227,6 +1307,10 @@ class MWField(Saveable):
         Args:
             ds (float, optional): the sampling grid size. Defaults to None (uses N)
             N (int, optional): The approximate total number of sample points. Defaults to 10,000
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+            x_range (tuple[float, float] | None, optional): The x-range of the grid. Defaults to None (the mesh bounds).
+            y_range (tuple[float, float] | None, optional): The y-range of the grid. Defaults to None (the mesh bounds).
+            z_range (tuple[float, float] | None, optional): The z-range of the grid. Defaults to None (the mesh bounds).
 
         Returns:
             EHField: Storage container for data
@@ -1263,11 +1347,11 @@ class MWField(Saveable):
         For animations, make sure to always use the complex metric.
 
         Args:
-            field ('E','H'): The field to return
-            metric ([]'real','imag','complex'], optional): the metric to impose on the field. Defaults to 'real'.
+            field (Literal["E", "H"]): The field to return
+            metric (Literal["real", "imag", "complex"], optional): the metric to impose on the field. Defaults to 'real'.
 
         Returns:
-            tuple[np.ndarray,...]: The X,Y,Z,Fx,Fy,Fz arrays
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The X,Y,Z,Fx,Fy,Fz arrays
         """
         if field == "E":
             Fx, Fy, Fz = self.Ex, self.Ey, self.Ez
@@ -1291,11 +1375,11 @@ class MWField(Saveable):
         For animations, make sure to select the complex metric.
 
         Args:
-            field (str): The field to plot
-            metric (str, optional): The metric to impose on the plot. Defaults to 'real'.
+            field (Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz", "normE", "normH"]): The field to plot
+            metric (Literal["abs", "real", "imag", "complex"], optional): The metric to impose on the plot. Defaults to 'real'.
 
         Returns:
-            (X,Y,Z,Field): The coordinates plus field scalar
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The X, Y, Z coordinates plus the field scalar
         """
         field = getattr(self, field)
         if metric == "abs":
@@ -1326,11 +1410,11 @@ class MWField(Saveable):
             faces (FaceSelection | GeoSurface): The faces to integrate over
             ang_range (tuple[float, float], optional): The angular rage limits. Defaults to (-180, 180).
             Npoints (int, optional): The number of angular points. Defaults to 201.
-            origin (tuple[float, float, float], optional): The farfield origin. Defaults to (0,0,0).
-            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+            origin (tuple[float, float, float], optional): The farfield origin. Defaults to None.
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
 
         Returns:
-            tuple[np.ndarray, np.ndarray, np.ndarray]: Angles (N,), E(3,N), H(3,N)
+            EHFieldFF: The farfield E and H fields (3,N) at the N sampled angles
         """
         refdir = _parse_axis(ref_direction).np
         plane_normal_parsed = _parse_axis(plane_normal).np
@@ -1358,9 +1442,9 @@ class MWField(Saveable):
             thetas (np.ndarray, optional): The 1D array of theta values. Defaults to None.
             phis (np.ndarray, optional): A 1D array of phi values. Defaults to None.
             origin (tuple[float, float, float], optional): The boundary normal alignment origin. Defaults to (0,0,0).
-            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
         Returns:
-            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The 2D theta, phi, E and H matrices.
+            EHFieldFF: The 2D theta, phi, E and H matrices.
         """
         if thetas is None:
             thetas = np.linspace(0, np.pi, 91)
@@ -1462,6 +1546,18 @@ class MWField(Saveable):
         origin: tuple[float, float, float] | None = None,
         syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
     ) -> EHFieldFF:
+        """Compute the farfield at the provided theta and phi angles.
+
+        Args:
+            theta (np.ndarray): The theta angles (any shape)
+            phi (np.ndarray): The phi angles (same shape as theta)
+            faces (FaceSelection | GeoSurface): The integration faces
+            origin (tuple[float, float, float] | None, optional): The boundary normal alignment origin. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+
+        Returns:
+            EHFieldFF: The farfield E and H fields with shape (3,) + theta.shape
+        """
         E, H, Ptot = self._farfield(
             theta.flatten(), phi.flatten(), faces, origin=origin, syms=syms
         )
@@ -1485,7 +1581,7 @@ class MWField(Saveable):
             phi (np.ndarray): The Phi coordinates as (N,) 1D Array
             faces (FaceSelection | GeoSurface): the faces to use as integration boundary
             origin (tuple[float, float, float], optional): A normal alignment origin. Optional use in cases where the "inside" is not clear.
-            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
 
         Returns:
             tuple[np.ndarray, np.ndarray, float]: The E and H field as (3,N) arrays and the total radiated power
@@ -1561,10 +1657,10 @@ class MWField(Saveable):
         """Export this models exterior to an Optical acceptable dataset
 
         Args:
-            faces (FaceSelection | GeoSurface): The faces to export. Defaults to None
+            faces (FaceSelection | GeoSurface | None, optional): The faces to export. Defaults to None (the exterior faces).
 
         Returns:
-            tuple: _description_
+            tuple: The vertices, triangles, edges, normals, E-field, H-field and k0
         """
         if faces is None:
             tags = self.mesh.exterior_face_tags
@@ -1592,9 +1688,11 @@ class MWField(Saveable):
 
         Args:
             faces (FaceSelection | GeoSurface): The faces to export. Defaults to None
+            origin (tuple[float, float, float] | None, optional): The radiation origin used to orient the farfield surface normals. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
 
         Returns:
-            tuple: _description_
+            dict: The frequency and the farfield function f(theta, phi, k0) -> Ex, Ey, Ez, Hx, Hy, Hz
         """
         freq = self.freq
 
@@ -1641,7 +1739,7 @@ class MWField(Saveable):
         """Importance-sample seed points on a FaceSelection, concentrated on
         triangles (and sub-triangle locations) with high |E|, |H|, or |E|*|H|.
         Uses the same Gauss-quadrature machinery as int_surf."""
-        from ...mth.optimized import generate_int_data_tri
+        from emr.mth import generate_int_data_tri
         from ...mth.integrals import gaus_quad_tri
 
         DPTS = gaus_quad_tri(quad_order)
@@ -1662,7 +1760,8 @@ class MWField(Saveable):
         """Importance-sample seed points in a DomainSelection, concentrated on
         tets (and sub-tet locations) with high |E|, |H|, or |E|*|H|.
         Uses the same Gauss-quadrature machinery as int_vol."""
-        from ...mth.optimized import gaus_quad_tet, generate_int_data_tet
+        from ...mth.optimized import gaus_quad_tet
+        from emr.mth import generate_int_data_tet
 
         DPTS = gaus_quad_tet(quad_order)
         tets = self.mesh.get_tetrahedra(domain.tags)
@@ -1751,26 +1850,26 @@ class MWField(Saveable):
         is the local wave impedance Z = |E|/|H| at that point.
 
         Args:
-            seed_points: Explicit start coordinates, either shape (3,N) or a tuple
-                (xs, ys, zs) of 1D arrays. Takes priority over everything else.
-            seed_surface: FaceSelection to seed particles from.
-            seed_domain: DomainSelection to seed particles from.
-            density: 'sparse' (just nodes), 'medium' (+ edge centers), or
+            seed_points (np.ndarray | tuple | None, optional): Explicit start coordinates, either shape (3,N) or a tuple
+                (xs, ys, zs) of 1D arrays. Takes priority over everything else. Defaults to None.
+            seed_surface (FaceSelection | None, optional): FaceSelection to seed particles from. Defaults to None.
+            seed_domain (DomainSelection | None, optional): DomainSelection to seed particles from. Defaults to None.
+            density (str, optional): 'sparse' (just nodes), 'medium' (+ edge centers), or
                 'dense' (+ triangle centers / tet centroids -- everything).
                 Only used for *unweighted* seeding (weight_by is None), with
-                seed_surface or seed_domain.
-            weight_by: If set to 'E', 'H', or 'EH', seed points are instead
+                seed_surface or seed_domain. Defaults to 'medium'.
+            weight_by (Literal['E','H','EH'] | None, optional): If set to 'E', 'H', or 'EH', seed points are instead
                 importance-sampled from Gauss-quadrature points across the
                 surface/domain, weighted by |E|, |H|, or |E|*|H| (times the
                 local area/volume element) -- i.e. more seeds land on
                 triangles/tets with higher local field energy, with
                 sub-triangle/sub-tet placement precision. Requires
-                seed_surface or seed_domain, and an explicit n_particles.
-            quad_order: Gauss quadrature order used to generate the candidate
+                seed_surface or seed_domain, and an explicit n_particles. Defaults to None.
+            quad_order (int, optional): Gauss quadrature order used to generate the candidate
                 points when weight_by is set (higher = more candidate points
                 per triangle/tet = finer sub-element resolution, at the cost
                 of more field evaluations). Defaults to 4, matching int_surf/int_vol.
-            n_particles: Cap on the number of seed points. Default None means
+            n_particles (int | None, optional): Cap on the number of seed points. Default None means
                 "use every candidate point at the chosen density" for
                 unweighted seeding -- only when a limit is given does it
                 randomly subsample down to that many points. Required
@@ -1778,18 +1877,22 @@ class MWField(Saveable):
                 sampling needs an explicit target count. For the fallback
                 random-bounding-box seeding (no seed source given at all),
                 None falls back to 200 points.
-            max_steps: Hard cap on integrator iterations (safety stop).
-            ds_init/ds_min/ds_max: Arc-length step-size bounds. Defaults are
-                derived from the model's bounding-box diagonal.
-            rtol/atol: Relative/absolute local error tolerance for step control.
-            normalize: If True (recommended), integrate the unit tangent dr/ds =
+            max_steps (int, optional): Hard cap on integrator iterations (safety stop). Defaults to 5000.
+            ds_init (float | None, optional): The initial arc-length step size. Defaults to None (derived from the model's bounding-box diagonal).
+            ds_min (float | None, optional): The minimum arc-length step size. Defaults to None (derived from the model's bounding-box diagonal).
+            ds_max (float | None, optional): The maximum arc-length step size. Defaults to None (derived from the model's bounding-box diagonal).
+            rtol (float, optional): Relative local error tolerance for step control. Defaults to 1e-4.
+            atol (float, optional): Absolute local error tolerance for step control. Defaults to 1e-9.
+            normalize (bool, optional): If True (recommended), integrate the unit tangent dr/ds =
                 S/|S| (stable arc-length parameterization). If False, integrates
-                the raw field as a literal velocity field (dr/dt = S).
-            direction: +1 to trace along the Poynting vector, -1 to trace against it.
-            stagnation_eps: |S| below this is treated as a stagnation point (terminate).
-            safety: Safety factor (<1) applied to the adaptive step-size update.
-            verbose: Print periodic progress.
-            dx, dy, dz: Constant offset applied to all generated seed points.
+                the raw field as a literal velocity field (dr/dt = S). Defaults to True.
+            direction (int, optional): +1 to trace along the Poynting vector, -1 to trace against it. Defaults to 1.
+            stagnation_eps (float, optional): |S| below this is treated as a stagnation point (terminate). Defaults to 1e-12.
+            safety (float, optional): Safety factor (<1) applied to the adaptive step-size update. Defaults to 0.9.
+            verbose (bool, optional): Print periodic progress. Defaults to False.
+            dx (float, optional): Constant x-offset applied to all generated seed points. Defaults to 0.0.
+            dy (float, optional): Constant y-offset applied to all generated seed points. Defaults to 0.0.
+            dz (float, optional): Constant z-offset applied to all generated seed points. Defaults to 0.0.
 
         Returns:
             list[np.ndarray]: one (4, n_i) array per particle: [x, y, z, Z_local].
@@ -1985,7 +2088,11 @@ class MWScalar(Saveable):
         self._aaa_tol: float | None = None
         
     def init_sp(self, portnumbers: list[int | float]) -> None:
-        """Initialize the S-parameter dataset with the given number of ports."""
+        """Initialize the S-parameter dataset with the given port numbers.
+
+        Args:
+            portnumbers (list[int | float]): The port (mode) numbers
+        """
         self._portnumbers = portnumbers
         i = 0
         for n in portnumbers:
@@ -1998,6 +2105,13 @@ class MWScalar(Saveable):
         self.beta = np.zeros((i,), dtype=np.complex128)
 
     def write_S(self, i: int | float, j: int | float, value: complex) -> None:
+        """Write an S-parameter.
+
+        Args:
+            i (int | float): The receiving port number
+            j (int | float): The excited port number
+            value (complex): The S-parameter value
+        """
         self.Sp[self._portmap[i], self._portmap[j]] = value
 
     def S(self, i: int | float, j: int | float) -> complex:
@@ -2024,6 +2138,17 @@ class MWScalar(Saveable):
         Z0: float | complex,
         Pout: float,
     ) -> None:
+        """Store the properties of a port mode.
+
+        Args:
+            port_number (int): The port number
+            mode_number (int): The mode number
+            smat_index (int | float): The S-matrix index of the port mode
+            k0 (float): The free space propagation constant
+            beta (float): The propagation constant of the port mode
+            Z0 (float | complex): The port impedance
+            Pout (float): The port mode power
+        """
         i = self._portmap[smat_index]
         self.beta[i] = beta
         self.Z0[i] = Z0
@@ -2035,6 +2160,7 @@ class MWScalarNdim(Saveable):
     _copy: list[str] = ["_portmap", "_portnumbers", "_aaa_tol"]
 
     def __init__(self):
+        """The scalar (S-parameter) results of a sweep as N-dimensional arrays."""
         self.freq: np.ndarray = None
         self.k0: np.ndarray = None
         self.Sp: np.ndarray = None
@@ -2054,6 +2180,14 @@ class MWScalarNdim(Saveable):
         self._active_ports: set[int | float] | None = None
 
     def renormalize(self, Z0ref: np.ndarray | float | complex) -> MWScalarNdim:
+        """Renormalize the S-parameters to a new reference impedance.
+
+        Args:
+            Z0ref (np.ndarray | float | complex): The new reference impedance (per port or a single value)
+
+        Returns:
+            MWScalarNdim: A new dataset with the renormalized S-parameters
+        """
         if isinstance(Z0ref, (float, complex, int)):
             Z0ref = np.ones_like(self.Z0) * Z0ref
 
@@ -2125,12 +2259,26 @@ class MWScalarNdim(Saveable):
         The p1 index becomes the differential mode port
         The p2 index becomes the common mode port
 
+        The mixed-mode conversion is only exact if both single-ended ports share the same
+        reference impedance Z. The differential port is then referenced to 2·Z and the common
+        mode port to Z/2. For ports whose reference impedance differs per port or is complex
+        (e.g. modal ports, whose Z0 is the computed mode impedance), provide Z0renorm to first
+        renormalize all ports to a common reference.
+
+        The stored Z0 of the two combined ports remains the single-ended reference Z, so
+        S(p1, p1) is the differential mode reflection referenced to 2·Z and S(p2, p2) the common
+        mode reflection referenced to Z/2. Keep this in mind when renormalizing or exporting
+        the result afterwards.
+
         Args:
-            p1 (int): The first port number
-            p2 (int): The second port number
+            p1 (int): The first port number (becomes the differential mode port)
+            p2 (int): The second port number (becomes the common mode port)
+            Z0renorm (np.ndarray | float | complex | None, optional): If given, first renormalize
+                all ports to this reference impedance (and store it as the new Z0). Defaults to None
+                (use the S-parameters as they are, referenced to the current port impedances).
 
         Returns:
-            MWScalarNdim: _description_
+            MWScalarNdim: This dataset with the combined ports
         """
         if p1 == p2:
             raise ValueError("p1 and p2 must be different port numbers")
@@ -2147,24 +2295,28 @@ class MWScalarNdim(Saveable):
         ii = self._portmap[p1]
         jj = self._portmap[p2]
 
-        Sout = self.Sp.copy()
+        S = self.Sp
         if Z0renorm is not None:
-            Sout = renormalise_s(Sout, Z0renorm, self.Z0)
+            S = renormalise_s(S, self.Z0, Z0renorm)
+            self.Z0 = np.broadcast_to(
+                np.asarray(Z0renorm, dtype=np.complex128), self.Z0.shape
+            ).copy()
+        Sout = S.copy()
 
         idx = np.ones(N, dtype=np.bool)
         idx[[ii, jj]] = False
         others = np.nonzero(idx)[0]
         isqrt2 = 1.0 / np.sqrt(2.0)
 
-        Sout[:, others, ii] = (self.Sp[:, others, ii] - self.Sp[:, others, jj]) * isqrt2
-        Sout[:, others, jj] = (self.Sp[:, others, ii] + self.Sp[:, others, jj]) * isqrt2
-        Sout[:, ii, others] = (self.Sp[:, ii, others] - self.Sp[:, jj, others]) * isqrt2
-        Sout[:, jj, others] = (self.Sp[:, ii, others] + self.Sp[:, jj, others]) * isqrt2
+        Sout[:, others, ii] = (S[:, others, ii] - S[:, others, jj]) * isqrt2
+        Sout[:, others, jj] = (S[:, others, ii] + S[:, others, jj]) * isqrt2
+        Sout[:, ii, others] = (S[:, ii, others] - S[:, jj, others]) * isqrt2
+        Sout[:, jj, others] = (S[:, ii, others] + S[:, jj, others]) * isqrt2
 
-        Sii = self.Sp[:, ii, ii]
-        Sij = self.Sp[:, ii, jj]
-        Sji = self.Sp[:, jj, ii]
-        Sjj = self.Sp[:, jj, jj]
+        Sii = S[:, ii, ii]
+        Sij = S[:, ii, jj]
+        Sji = S[:, jj, ii]
+        Sjj = S[:, jj, jj]
 
         Sout[:, ii, ii] = 0.5 * (Sii - Sij - Sji + Sjj)
         Sout[:, ii, jj] = 0.5 * (Sii + Sij - Sji - Sjj)
@@ -2264,6 +2416,9 @@ class MWScalarNdim(Saveable):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Returns the required date for a Heavi S-parameter component
 
+        Args:
+            f_sample (np.ndarray | None, optional): The frequencies at which to evaluate the S-parameter model. Defaults to None (the simulated frequencies).
+
         Returns:
             tuple[np.ndarray, np.ndarray]: Heavi data
         """
@@ -2321,10 +2476,12 @@ class MWScalarNdim(Saveable):
         Args:
             i (int): The first S-parameter index
             j (int): The second S-parameter index
-            freq (np.ndarray | optional): The frequency sample points. Defaults to None
-            Npoles (int | 'auto', optional): VF only: The number of poles to use (approx 2x divice order). Defaults to 'auto'.
+            freq (np.ndarray | None, optional): The frequency sample points. Defaults to None
+            Npoles (int | Literal["auto"], optional): VF only: The number of poles to use (approx 2x divice order). Defaults to 'auto'.
             inc_real (bool, optional): VF only: Wether to allow for a real-pole. Defaults to True.
-            method ('auto' | 'aaa' | 'vf', optional): The fitting method. Defaults to 'auto'.
+            maxpoles (int, optional): VF only: the maximum number of poles. Defaults to 30.
+            minpoles (int, optional): VF only: the minimum number of poles. Defaults to 1.
+            method (Literal["auto", "aaa", "vf"], optional): The fitting method. Defaults to 'auto'.
             tol (float | None, optional): AAA only: The fit tolerance. Defaults to that of the adaptive sweep, or 5e-4.
 
         Returns:
@@ -2388,7 +2545,7 @@ class MWScalarNdim(Saveable):
             frequencies (np.ndarray): The sample frequencies
             Npoles (int, optional): VF only: The number of poles to fit. Defaults to 10.
             inc_real (bool, optional): VF only: Wether allow for a real pole. Defaults to True.
-            method ('auto' | 'aaa' | 'vf', optional): The fitting method. Defaults to 'auto'.
+            method (Literal["auto", "aaa", "vf"], optional): The fitting method. Defaults to 'auto'.
             tol (float | None, optional): AAA only: The fit tolerance. Defaults to that of the adaptive sweep, or 5e-4.
 
         Returns:
@@ -2444,10 +2601,11 @@ class MWScalarNdim(Saveable):
         Args:
             filename (str): The File name
             Z0ref (float): The reference impedance to normalize to. Defaults to None
-            format (Literal[DB, RI, MA]): The dataformat used in the touchstone file.
+            format (Literal["RI", "MA", "DB"]): The dataformat used in the touchstone file.
             custom_comments : list[str], optional. List of custom comment strings to add to the touchstone file header.
                                                     Each string will be prefixed with "! " automatically.
-            dense_freq (np.ndarray | optional): An optional dense interpolation frequency range
+            funit (Literal["Hz", "KHz", "MHz", "GHz"], optional): The frequency unit written to the file. Defaults to "GHz".
+            dense_freq (np.ndarray | None, optional): An optional dense interpolation frequency range
         """
 
         logger.info(f"Exporting S-data to {filename}")
@@ -2500,7 +2658,8 @@ class MWScalarNdim(Saveable):
             format (Literal["RI","MA",'DB], optional): The S-parameter format. Defaults to 'RI'.
             custom_comments : list[str], optional. List of custom comment strings to add to the touchstone file header.
                                                     Each string will be prefixed with "! " automatically.
-            Z0_override (np.ndarray | optional): Reference impedance array
+            funit (Literal["Hz", "KHz", "MHz", "GHz"], optional): The frequency unit written to the file. Defaults to "GHz".
+            Z0_override (np.ndarray | None, optional): Reference impedance array
                 matching Smatrix's port axis, for when it's a subset of the
                 full self.Z0 (e.g. active ports only). Defaults to self.Z0.
         """

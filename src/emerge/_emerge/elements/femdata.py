@@ -106,8 +106,6 @@ class FEMBasis(Saveable):
         tetids: np.ndarray | None = None,
     ) -> Callable:
         """Generates the Interpolation function as a function object for a given coordiante basis and origin."""
-        from ..mth.optimized import matmul
-
         if basis is None:
             basis = np.eye(3)
 
@@ -118,12 +116,11 @@ class FEMBasis(Saveable):
 
         def func(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndarray:
             xyz = np.array([xs, ys, zs]) + origin[:, np.newaxis]
-            xyzg = matmul(basis, xyz)
+            xyzg = basis @ xyz
             tet_mapping = self.interpolate_index(
                 xyzg[0, :], xyzg[1, :], xyzg[2, :], tetids, usenan=False
             )
-            return matmul(
-                ibasis,
+            return ibasis @ (
                 np.array(
                     self.interpolate(
                         field,
@@ -134,7 +131,7 @@ class FEMBasis(Saveable):
                         tetids,
                         usenan=False,
                     )
-                ),
+                )
             )
 
         return func

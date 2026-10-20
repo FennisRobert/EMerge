@@ -173,23 +173,6 @@ class UpdatesCommand(Command):
             print(f"Cleared {n} notice(s). They will not be shown again.")
 
 
-class CompileCommand(Command):
-    name = "compile"
-    help_text = "Precompiles all numba code for smooth execution"
-
-    def execute(self, args):
-        print('Compiling numba libraries. Please wait...')
-        from ._emerge.compiled.base import interp
-        from ._emerge import mesher
-        from ._emerge.mth import integrals, optimized, pairing
-        from ._emerge.physics.microwave import adaptive_mesh, sc
-        from ._emerge.physics.microwave.assembly import curlcurl, generalized_eigen_hb, periodicbc, robin_abc_order2, robinbc
-        from ._emerge.compiled.ccbf import _eval_curl_f_2d, _eval_curl_f_3d, _eval_div_f_2d, _eval_div_f_3d, _eval_f_2d, _eval_f_3d
-        print('Compilation complete!')
-
-    def configure(self, parser):
-        pass
-    
 class InstallSolverCommand(Command):
     name = "install-solver"
     help_text = "Install an optional solver backend"

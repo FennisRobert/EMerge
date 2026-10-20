@@ -33,9 +33,8 @@ warnings.filterwarnings(
 ############################################################
 
 import os
-import sys
 
-__version__ = "3.0.0a24"
+__version__ = "3.0.0a25"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -46,11 +45,6 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", NTHREADS)
 os.environ.setdefault("VECLIB_NUM_THREADS", NTHREADS)
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", NTHREADS)
 os.environ.setdefault("NUMEXPR_NUM_THREADS", NTHREADS)
-# Numba reads these on every compile and refuses a changed thread count once its
-# threads run, so leave them alone if numba was already imported (e.g. via emcad).
-if "numba" not in sys.modules:
-    os.environ.setdefault("NUMBA_NUM_THREADS", "4")
-    os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 os.environ.setdefault("RSLAB_NUM_THREADS", "1")
 
 ############################################################
@@ -92,10 +86,6 @@ from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttrib
 from . import optycal
 from . import plot 
 howto = _HowtoClass()
-
-from ._emerge.install_check import run_installation_checks
-
-run_installation_checks()
 
 if _is_main_process:
     from ._emerge._launch_checks import run_launch_checks

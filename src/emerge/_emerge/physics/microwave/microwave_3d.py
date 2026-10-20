@@ -401,6 +401,11 @@ class Microwave3D(GenericPhysics3D):
     This class contains all physics dependent features to perform EM simuation in the time-harmonic
     formulation.
 
+    Args:
+        state (SimState): The simulation state
+        mesher (Mesher): The mesher
+        settings (Settings): The simulation settings
+        order (int, optional): The discretization order. Defaults to 2.
     """
 
     def __init__(
@@ -1020,7 +1025,7 @@ class Microwave3D(GenericPhysics3D):
             return job
 
         if not parallel:
-            logger.info(f"Starting single threaded solve of {len(jobs)} jobs.")
+            logger.info(f"Starting serial solve of {len(jobs)} jobs.")
             return [run_job_single(job) for job in jobs]
 
         if not multi_processing:
@@ -1182,22 +1187,20 @@ class Microwave3D(GenericPhysics3D):
     ) -> None:
         """Execute a modal analysis on a given ModalPort boundary condition.
 
-        Parameters:
-        -----------
-            port : ModalPort
-                The port object to execute the analysis for.
-            direct : bool
-                Whether to use the direct solver (LAPACK) if True. Otherwise it uses the iterative
-                ARPACK solver. The ARPACK solver required an estimate for the propagation constant and is faster
-                for a large number of Degrees of Freedom.
-            TEM : bool = True
-                Whether to estimate the propagation constant assuming its a TEM transmisison line.
-            target_k0 : float
-                The expected propagation constant to find a mode for (direct = False).
-            target_neff : float
-                The expected effective mode index defined as kz/k0 (1.0 = free space, <1 = TE/TM, >1=slow wavees)
-            freq : float = None
-                The desired frequency at which the mode is solved. If None then it uses the lowest frequency of the provided range.
+        Args:
+            port (ModalPort): The port object to execute the analysis for.
+            nmodes (int, optional): The number of modes to solve for. Defaults to 6.
+            direct (bool, optional): Whether to use the direct solver (LAPACK) if True. Otherwise it uses the iterative
+                ARPACK solver, which requires an estimate of the propagation constant and is faster for a large number
+                of degrees of freedom. Defaults to True.
+            TEM (bool, optional): Whether to estimate the propagation constant assuming its a TEM transmission line.
+                Defaults to False.
+            target_kz (float | None, optional): The expected propagation constant to find a mode for (direct = False).
+                Defaults to None.
+            target_neff (float | None, optional): The expected effective mode index defined as kz/k0 (1.0 = free space,
+                <1 = TE/TM, >1 = slow waves). Defaults to None.
+            freq (float | None, optional): The desired frequency at which the mode is solved. If None then it uses the
+                lowest frequency of the provided range. Defaults to None.
         """
         T0 = time.time()
         logger.info(f"Port {port.port_number}: Starting Mode Analysis for port {port}.")
@@ -1225,10 +1228,6 @@ class Microwave3D(GenericPhysics3D):
         if freq is None:
             freq = self.frequencies[0]
 
-        # Align port normal vector
-        inward_normal = self.mesh.inward_normal(port.tags)
-        if sum(port.cs.zax.np * inward_normal) < 0:
-            port.cs.flip_z()
         # Materials is now a list of materials and in the materials themselves
         # They know what values are assigned to which index. This is not uniform
         # because coordinate dependent material properties/materials are possible.
@@ -1247,6 +1246,11 @@ class Microwave3D(GenericPhysics3D):
         for geo in self._state.all3d:
             if geo.properties.get(VoidAttribute):
                 void[self.mesh.get_tetrahedra(geo.tags)] = 1
+
+        # Align the port z-axis with the inward normal (into the non-void side), computed once for this analysis.
+        inward_normal = self.mesh.inward_normal(port.tags, exclude_tets=void == 1)
+        if sum(port.cs.zax.np * inward_normal) < 0:
+            port.cs.flip_z()
         # Evaluating the relavant function er, tand etc on these functions automatically
         # only assigned these material values to those arrays where they are valid.
         # The materials know (high coupling, I know) which tet-indices they are assigned to.
@@ -1324,7 +1328,8 @@ class Microwave3D(GenericPhysics3D):
             neff_estimate = port.neff_estimate(k0)
             if neff_estimate is not None:
                 target_kz = neff_estimate * k0
-            target_kz = ((ermax * urmax + ermin * urmin) / 2) ** 0.5 * 1.0 * k0
+            else:
+                target_kz = ((ermax * urmax + ermin * urmin) / 2) ** 0.5 * 1.0 * k0
 
         logger.debug(f"Solving for {solve_ids.shape[0]} degrees of freedom.")
 
@@ -1350,8 +1355,8 @@ class Microwave3D(GenericPhysics3D):
         # Quadrature of the port face for the canonical mode gauge (see bcs/mode_gauge.py)
         gauge_quad = port_face_quadrature(
             self.mesh.nodes,
-            self.mesh.tris[:, self.mesh.get_triangles(port.tags)],
-            self.mesh.inward_normal(port.tags),
+            self.mesh.tris[:, itri_port],
+            inward_normal,
         )
 
         # For each found mode
@@ -1365,9 +1370,10 @@ class Microwave3D(GenericPhysics3D):
             beta = np.emath.sqrt(-eigen_values[i])
             # beta = min(k0 * np.sqrt(ermax * urmax), beta_base)
 
-            # Correct for et = kz Et, ez = -j Ez
+            # The eigenproblem is solved for e_t = beta E_t and e_z = -j E_z (fields ~ exp(-j beta z)),
+            # so E_t = e_t / beta and E_z = j e_z.
             Emode[: nlf.n_xy] = Emode[: nlf.n_xy] / beta
-            Emode[nlf.n_xy :] = Emode[nlf.n_xy :] / (1j)
+            Emode[nlf.n_xy :] = Emode[nlf.n_xy :] * 1j
 
             # Phase correct for a phase of 0 degree at the port maximum.
             Emode = Emode * np.exp(
@@ -1414,7 +1420,7 @@ class Microwave3D(GenericPhysics3D):
 
             # These return field interpolation class objects.
             portfE = nlf.interpolate_Ef(Emode)
-            portfH = nlf.interpolate_Hf(Emode, k0, ur, beta)
+            portfH = nlf.interpolate_Hf(Emode, k0, ur[:, :, itri_port], beta)
 
             logger.debug("Inferring port mode type...")
 
@@ -1474,17 +1480,17 @@ class Microwave3D(GenericPhysics3D):
 
             mode.modetype = mode_type
 
-            # port power normalization
-            inward_normal = self.mesh.inward_normal(port.tags)
+            # Port power normalization. Rescaling or flipping the mode cannot change the sign of its power,
+            # so a non-positive flux into the model means E and H (or the normal) are inconsistent.
             power = compute_avg_power_flux(nlf, portfE, portfH, inward_normal)
-            logger.debug(f".. Port power flux = {power:.3e} [W]")
-            mode.normalize_power(np.abs(power))
-            logger.debug(f".. Inward normal = {inward_normal}")
-            # flip port mode direction
-            if power < 0.0:
-                logger.warning(
-                    "Negative port power, unhandled case. Its not clear if this even matters."
+            logger.debug(f".. Port power flux = {power:.3e} [W], inward normal = {inward_normal}")
+            if power <= 0.0:
+                logger.error(
+                    f"{port}: mode {i + 1} ({mode_type}, beta = {beta:.3f} rad/m) carries {power:.3e} W "
+                    f"along the inward normal {inward_normal}. Its fields or the port orientation are inconsistent."
                 )
+            mode.normalize_power(np.abs(power))
+            # After normalization the mode carries 1 W.
             power = 1.0
 
             # Final port post processing. If the port is to be considered a TEM mode port:
@@ -1608,18 +1614,19 @@ class Microwave3D(GenericPhysics3D):
         frequency indices will be precomputed and then solved: [[1,2,3,4],[5,6,7,8],[9,10,11]]
 
         Args:
+            parallel (bool, optional): Solve the frequency points in parallel. Defaults to False.
             n_workers (int, optional): The number of workers. Defaults to 2.
-            harddisc_threshold (int, optional): The number of DOF limit. Defaults to None.
             harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
             frequency_groups (int, optional): The number of frequency points in a solve group. Defaults to -1.
-            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to False.
-            multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines).
+            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
+            multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines). Defaults to False.
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
 
         Raises:
             SimulationError: An error associated witha a problem during the simulation.
 
         Returns:
-            MWSimData: The dataset.
+            MWData: The dataset.
         """
         self._completed = False
         self._simstart = time.time()
@@ -1692,9 +1699,10 @@ class Microwave3D(GenericPhysics3D):
                 Defaults to None, meaning every driven port -- equivalent to a
                 full port sweep, so pass an explicit subset to avoid that cost
                 during DD development/testing.
+            solver (SolverName, optional): The Krylov solver of the interface problem. Defaults to 'gmres'.
 
         Returns:
-            MWData: _description_
+            MWData: The dataset.
         """
 
         self._completed = False
@@ -1996,18 +2004,19 @@ class Microwave3D(GenericPhysics3D):
         frequency indices will be precomputed and then solved: [[1,2,3,4],[5,6,7,8],[9,10,11]]
 
         Args:
+            parallel (bool, optional): Solve the frequency points in parallel. Defaults to False.
             n_workers (int, optional): The number of workers. Defaults to 2.
-            harddisc_threshold (int, optional): The number of DOF limit. Defaults to None.
+            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
             harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
             frequency_groups (int, optional): The number of frequency points in a solve group. Defaults to -1.
-            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to False.
-            multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines).
+            multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines). Defaults to False.
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
 
         Raises:
             SimulationError: An error associated witha a problem during the simulation.
 
         Returns:
-            MWSimData: The dataset.
+            MWData: The dataset.
         """
         self._completed = False
         self._simstart = time.time()
@@ -2172,7 +2181,6 @@ class Microwave3D(GenericPhysics3D):
         nmodes: int = 6,
         k0_limit: float = 1,
         direct: bool = False,
-        deep_search: bool = False,
         mode: Literal["LM", "LR", "SR", "LI", "SI"] = "LM",
     ) -> MWData:
         """Executes an eigenmode study
@@ -2181,13 +2189,15 @@ class Microwave3D(GenericPhysics3D):
 
         Args:
             search_frequency (float): The frequency around which you would like to search
-            nmodes (int, optional): The number of jobs. Defaults to 6.
-            k0_limit (float): The lowest k0 value before which a mode is considered part of the null space. Defaults to 1e-3
+            nmodes (int, optional): The number of modes. Defaults to 6.
+            k0_limit (float, optional): The lowest k0 value before which a mode is considered part of the null space. Defaults to 1.
+            direct (bool, optional): Use a direct solver for the shift-invert step. Defaults to False.
+            mode (Literal["LM", "LR", "SR", "LI", "SI"], optional): Which eigenvalues to find (ARPACK convention). Defaults to "LM".
         Raises:
             SimulationError: An error associated witha a problem during the simulation.
 
         Returns:
-            MWSimData: The dataset.
+            MWData: The dataset.
         """
 
         self._simstart = time.time()
@@ -2663,7 +2673,7 @@ class Microwave3D(GenericPhysics3D):
         boundary conditions.
 
         Returns:
-            FaceSelection: _description_
+            FaceSelection: The conducting faces
         """
         tags = set()
         for bc in self.bc.get_conductors():

@@ -81,17 +81,15 @@ def unpack_lists(_list: Any, collector: list | None = None) -> list[Any]:
 
 class Mesher:
     def __init__(self):
+        """Manages the GMSH mesh size constraints and mesh generation of the model."""
         self.objects: list[GeoObject] = []
         self.size_definitions: list[tuple[int, float]] = []
         self.mesh_fields: list[int] = []
         self.max_mesh_fields: list[int] = []
         self.curved_boundary_segments: float = 10.0
 
-        self._error_size_view_tags: list[int] = []
-        self._error_size_field_tags: list[int] = []
         self._coarse_tags: list[int] = []
 
-        self._amr_fields: list[int] = []
         # Wavelength-based size range set by set_frequency, in physical meters. Used as the default
         # maximum size by the size helpers below, which convert it to modelling units (x self._scale).
         self.min_size: float = None
@@ -103,18 +101,22 @@ class Mesher:
 
     @property
     def edge_tags(self) -> list[int]:
+        """The tags of all edges in the model."""
         return [tag[1] for tag in gmsh.model.getEntities(1)]
 
     @property
     def face_tags(self) -> list[int]:
+        """The tags of all faces in the model."""
         return [tag[1] for tag in gmsh.model.getEntities(2)]
 
     @property
     def node_tags(self) -> list[int]:
+        """The tags of all points in the model."""
         return [tag[1] for tag in gmsh.model.getEntities(0)]
 
     @property
     def volumes(self) -> list[GeoVolume]:
+        """All existing GeoVolume objects of the model."""
         return [
             obj for obj in self.objects if isinstance(obj, GeoVolume) and obj._exists
         ]
@@ -128,6 +130,7 @@ class Mesher:
 
     @property
     def domain_internal_face_tags(self) -> list[int]:
+        """The tags of all faces that are not on the outer boundary of the domains."""
         alltags = self.face_tags
         boundary = self.domain_boundary_face_tags
         return [tag for tag in alltags if tag not in boundary]
@@ -150,7 +153,7 @@ class Mesher:
         """Takes al ist of GeoObjects and computes the fragment.
 
         Args:
-            objects (list[GeoObject]): The set of GeoObjects
+            objects (GeoObject | list[GeoObject] | list[list[GeoObject]]): The set of GeoObjects
         """
 
         if not isinstance(objects, list):
@@ -204,15 +207,28 @@ class Mesher:
         ]
         gmsh.model.mesh.set_periodic(2, face2.tags, face1.tags, translation)
 
-    def set_algorithm(self, algorithm: Algorithm3D) -> None:
+    def set_algorithm(self, 
+                      algorithm: Algorithm3D,
+                      nthreads: int = 1) -> None:
 
-        gmsh.option.setNumber("General.NumThreads", 16)
+        """Set the GMSH 3D meshing algorithm.
+
+        Args:
+            algorithm (Algorithm3D): The meshing algorithm
+            nthreads (int): The number of threads to use (HXT only if installed correctly). Default to 1
+        """
+        gmsh.option.setNumber("General.NumThreads", nthreads)
         gmsh.option.setNumber("Mesh.Algorithm3D", algorithm.value)
 
     def set_periodic_cell(
         self, cell: PeriodicCell, excluded_faces: Selection | None = None
     ):
-        """Sets the periodic cell information based on the PeriodicCell class object"""
+        """Sets the periodic cell information based on the PeriodicCell class object
+
+        Args:
+            cell (PeriodicCell): The periodic cell
+            excluded_faces (Selection | None, optional): Faces to exclude from the periodic face pairs. Defaults to None.
+        """
         if excluded_faces is None:
             for f1, f2, lat in cell.cell_data():
                 self._set_mesh_periodicity(f1, f2, lat)
@@ -270,11 +286,6 @@ class Mesher:
         gmsh.model.mesh.field.set_numbers(ctag, "CurvesList", tags)
         gmsh.model.mesh.field.set_number(ctag, "VIn", max_size)
         self.mesh_fields.append(ctag)
-
-    def _reset_amr_points(self) -> None:
-        for tag in self._amr_fields:
-            gmsh.model.mesh.field.remove(tag)
-        self._amr_fields = []
 
     def _configure_bc_size(self, bcs: list[BoundaryCondition]) -> None:
         """Writes size constraints for the boundary conditions
@@ -385,7 +396,7 @@ class Mesher:
                 self._set_size_in_domain([tag,],size,)
 
         gmsh.model.mesh.field.setNumbers(
-            mintag, "FieldsList", self.mesh_fields + self._amr_fields
+            mintag, "FieldsList", self.mesh_fields
         )
 
         if len(self.max_mesh_fields) > 0:
@@ -419,7 +430,11 @@ class Mesher:
         self.curved_boundary_segments = factor
 
     def unset_constraints(self, dimtags: list[tuple[int, int]]):
-        """Unset the mesh constraints for the given dimension tags."""
+        """Unset the mesh constraints for the given dimension tags.
+
+        Args:
+            dimtags (list[tuple[int, int]]): The (dim, tag) pairs
+        """
         logger.trace(f"Unsetting mesh size constraint for domains: {dimtags}")
         for dimtag in dimtags:
             gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
@@ -437,7 +452,7 @@ class Mesher:
         The growth rate determines how quickly the mesh size is allowed to increase away from the face boundary.
 
         Args:
-            boundary (GeoSurface | FaceSelection | Iterable): The boundary/surface object to refine the mesh on
+            boundary (GeoObject | Selection | Iterable): The boundary/surface object to refine the mesh on
             size (float): The mesh size limit in meters
             growth_rate (float, optional): The mesh growth rate. Defaults to 3.
             max_size (float, optional): The maximum mesh size. Defaults to None.
@@ -503,7 +518,8 @@ class Mesher:
             growth_rate (float, optional): How quickly the mesh size is allowed to grow. Defaults to 3.0.
             min_size (float, optional): The minimum size of the mesh in meters. Defaults to 1e-5.
             max_size (float | None, optional): The maximum size to constrain to. Defaults to None.
-            min_overlap (float | optional): The minimum overlap for two edges to be refined. Defaults to 0.75 = 75%
+            edge_size (float | None, optional): If given, an additional boundary mesh size constraint on the trace edges. Defaults to None.
+            min_overlap (float, optional): The minimum overlap for two edges to be refined. Defaults to 0.75 = 75%
 
         Raises:
             MeshError: _description_
@@ -597,7 +613,7 @@ class Mesher:
         """Manually set the maximum element size inside a domain
 
         Args:
-            obj (GeoVolume | Selection): The volumetric domain
+            obj (GeoObject | Selection): The volumetric domain
             size (float): The maximum mesh size
         """
         if obj.dim != 3:
@@ -674,6 +690,15 @@ class Mesher:
             self._set_size_on_point(obj.tags, size)
 
     def refine_conductor_edge(self, dimtags: list[tuple[int, int]], size):
+        """Refine the mesh near the edges of conductor surfaces.
+
+        The mesh size is limited to size up to 0.2 size away from the edges and grows to the
+        global size at 5 size away.
+
+        Args:
+            dimtags (list[tuple[int, int]]): The (dim, tag) pairs of the conductor surfaces
+            size (float): The mesh size at the edges
+        """
         nodes = gmsh.model.getBoundary(dimtags, combined=False, oriented=False, recursive=False)
 
         # for node in nodes:
@@ -711,85 +736,4 @@ class Mesher:
         for dimtag in dimtags:
             gmsh.model.mesh.setSizeFromBoundary(dimtag[0], dimtag[1], 0)
 
-    def set_error_size_field(
-        self, nodes: np.ndarray, tets: np.ndarray, size_at_node: np.ndarray
-    ) -> int:
-        """Installs a per-NODE, error-driven mesh size field via a NodeData
-        view on a frozen auxiliary gmsh model, used as a PostView background
-        field. Registered into self.mesh_fields, same as every other size
-        source -- participates in the normal Min-combination
-        _configure_mesh_size already builds.
-    
-        Args:
-            nodes: (3, N) current mesh node coordinates
-            tets: (4, M) current mesh tet connectivity (node indices into `nodes`)
-            size_at_node: (N,) target size per node
-    
-        Returns:
-            field_tag: the PostView field's tag (already appended to self.mesh_fields)
-        """
-        real_model = gmsh.model.getCurrent()
-    
-        n_nodes = nodes.shape[1]
-        n_tets = tets.shape[1]
-    
-        # gmsh tags are 1-based and must be unique -- local index + 1 is fine
-        # since this auxiliary model is self-contained and doesn't need to
-        # correspond to the real model's own node/element tags at all.
-        node_tags = np.arange(1, n_nodes + 1, dtype=np.int64)
-        elem_tags = np.arange(1, n_tets + 1, dtype=np.int64)
-        node_coords_flat = nodes.T.reshape(-1)          # (3N,) x,y,z per node
-        tet_node_tags_flat = (tets + 1).T.reshape(-1)    # (4M,) 1-based node tags per tet
-    
-        aux_name = "_error_size_field_aux"
-        if aux_name not in gmsh.model.list():
-            gmsh.model.add(aux_name)
-            gmsh.model.addDiscreteEntity(3, 1)
-        gmsh.model.setCurrent(aux_name)
-    
-        gmsh.model.mesh.addNodes(3, 1, node_tags.tolist(), node_coords_flat.tolist())
-        gmsh.model.mesh.addElementsByType(1, 4, elem_tags.tolist(), tet_node_tags_flat.tolist())
-    
-        view_tag = gmsh.view.add("ErrorSizeField")
-        gmsh.view.addHomogeneousModelData(
-            view_tag, 0, aux_name, "NodeData",
-            node_tags, np.asarray(size_at_node, dtype=np.float64),
-            time=0.0, numComponents=1,
-        )
-    
-        gmsh.model.setCurrent(real_model)
-    
-        field_tag = gmsh.model.mesh.field.add("PostView")
-        gmsh.model.mesh.field.setNumber(field_tag, "ViewTag", view_tag)
-    
-        self.mesh_fields.append(field_tag)
-        self._error_size_view_tags.append(view_tag)
-        self._error_size_field_tags.append(field_tag)
-        self._error_size_aux_model = aux_name
-    
-        return field_tag
-    
-    
-    def clear_error_size_field(self) -> None:
-        """Removes any previously-installed error-driven size field(s), their
-        backing views, and clears (but does not remove) the auxiliary model's
-        mesh data so the next call starts fresh. Call before installing a new
-        one each AMR pass.
-        """
-        real_model = gmsh.model.getCurrent()
-    
-        for tag in self._error_size_field_tags:
-            if tag in self.mesh_fields:
-                self.mesh_fields.remove(tag)
-            gmsh.model.mesh.field.remove(tag)
-        for tag in self._error_size_view_tags:
-            gmsh.view.remove(tag)
-        self._error_size_field_tags = []
-        self._error_size_view_tags = []
-    
-        aux_name = getattr(self, "_error_size_aux_model", None)
-        if aux_name is not None and aux_name in gmsh.model.list():
-            gmsh.model.setCurrent(aux_name)
-            gmsh.model.mesh.clear()
-            gmsh.model.setCurrent(real_model)
     

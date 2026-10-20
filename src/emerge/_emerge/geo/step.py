@@ -34,9 +34,9 @@ import re
 def _select_num(num1: float | None, num2: float | None) -> float:
     if num1 is None and num2 is None:
         return 0.0
-    if isinstance(num1, float) and num2 is None:
+    if num2 is None:
         return num1
-    if num1 is None and isinstance(num2, float):
+    if num1 is None:
         return num2
     return max(num1, num2)
 
@@ -73,13 +73,17 @@ class StepVolume(GeoVolume):
 
     @property
     def face_slice(self) -> _FaceSliceSelector:
+        """A selector that selects faces by slicing the face numbers, e.g. vol.face_slice[2:5]."""
         return _FaceSliceSelector(self._face_numbers, self.faces)
 
     def faces(self, *numbers: int) -> FaceSelection:
         """Select a set of faces by number
 
+        Args:
+            *numbers (int): The face numbers
+
         Returns:
-            FaceSelection: _description_
+            FaceSelection: The selected faces
         """
         names = [f"Face{num}" for num in numbers]
         return super().faces(*names)
@@ -87,6 +91,12 @@ class StepVolume(GeoVolume):
 
 class STEPNameGenerator:
     def __init__(self, filename: str, string_parser: Callable | None):
+        """Generates names for the objects imported from a STEP file.
+
+        Args:
+            filename (str): The STEP file
+            string_parser (Callable | None): A function applied to every name, None to keep names as they are
+        """
         self.filename: str = filename
         self.parser: Callable | None = string_parser
         self.names: list[str] = []
@@ -96,22 +106,41 @@ class STEPNameGenerator:
             self.parser = lambda x: x
 
     def gen_new(self) -> str:
+        """Generate a new unique name.
+
+        Returns:
+            str: The name "Obj<counter>"
+        """
         name = f"Obj{self.counter}"
         self.counter += 1
         return name
 
     def sanitize(self, name: str) -> str:
+        """Replace the Open CASCADE translator name by "OCC".
+
+        Args:
+            name (str): The name
+
+        Returns:
+            str: The sanitized name
+        """
         pattern = r"Open CASCADE STEP translator \d+\.\d+(?:\.\d+)?"
         name = re.sub(pattern, "OCC", name)
         return name
 
     def pull_from_file(self) -> None:
+        """Read the volume names from the STEP file (only done once)."""
         if self.pulled is None:
             self.names = get_volume_names(self.filename)
             if any(self.names):
                 self.pulled = True
 
     def get_from_file(self) -> str:
+        """Take the next volume name from the STEP file.
+
+        Returns:
+            str: The name, empty if no names are left
+        """
         self.pull_from_file()
         if not self.pulled or not self.names:
             return ""
@@ -119,6 +148,15 @@ class STEPNameGenerator:
         return name
 
     def get_name(self, dim: int, tag: int) -> str:
+        """The name of an imported entity: its GMSH name, else the next STEP file name, else a generated name.
+
+        Args:
+            dim (int): The entity dimension
+            tag (int): The entity tag
+
+        Returns:
+            str: The parsed and sanitized name
+        """
         name = gmsh.model.getEntityName(dim, tag)
         if not name:
             name = self.get_from_file()
@@ -141,8 +179,10 @@ class STEPItems:
         Specify the unit in case of scaling issues where mm units are not taken into consideration.
 
         Args:
+            name (str): The name of the imported object
             filename (str): The filename
             unit (float, optional): The STEP file size unit. Defaults to 1.0.
+            string_parser (Callable, optional): A function applied to every volume name read from the STEP file. Defaults to None.
 
         Raises:
             FileNotFoundError: If a file does not exist
@@ -186,12 +226,13 @@ class STEPItems:
         """A list of all object names
 
         Returns:
-            list[str]: _description_
+            list[str]: The names of all imported objects
         """
         return [obj.name for obj in self.objects]
 
     @property
     def dictionary(self) -> dict[str, GeoObject]:
+        """A dictionary of all imported objects by name."""
         return {obj.name: obj for obj in self.objects}
 
     @property
@@ -199,7 +240,7 @@ class STEPItems:
         """Returns a list of all objects in the STEP file
 
         Returns:
-            tuple[GeoObject,...]: _description_
+            tuple[GeoObject,...]: All imported points, edges, surfaces and volumes
         """
         return tuple(self.points + self.edges + self.surfaces + self.volumes)
 
@@ -256,16 +297,16 @@ class STEPItems:
         y_margins: tuple[float, float] = (None, None),
         z_margins: tuple[float, float] = (None, None),
     ) -> tuple[float, float, float, tuple[float, float, float]]:
-        """Create an enclosing bounding box for the step model.
+        """Compute the size and position of a box enclosing the step model.
 
         Args:
-            margin (float, optional): _description_. Defaults to 0.
-            x_margins (tuple[float, float], optional): _description_. Defaults to (0., 0.).
-            y_margins (tuple[float, float], optional): _description_. Defaults to (0., 0.).
-            z_margins (tuple[float, float], optional): _description_. Defaults to (0., 0.).
+            margin (float, optional): The margin added on all sides. Defaults to None (0).
+            x_margins (tuple[float, float], optional): The (-x, +x) margins, the larger of this and margin is used. Defaults to (None, None).
+            y_margins (tuple[float, float], optional): The (-y, +y) margins, the larger of this and margin is used. Defaults to (None, None).
+            z_margins (tuple[float, float], optional): The (-z, +z) margins, the larger of this and margin is used. Defaults to (None, None).
 
         Returns:
-            Box: _description_
+            tuple[float, float, float, tuple[float, float, float]]: The width, depth, height and minimum corner of the box
         """
         xminm = _select_num(margin, x_margins[0])
         xmaxm = _select_num(margin, x_margins[1])
@@ -306,13 +347,13 @@ class STEPItems:
         """Create an enclosing bounding box for the step model.
 
         Args:
-            margin (float, optional): _description_. Defaults to 0.
-            x_margins (tuple[float, float], optional): _description_. Defaults to (0., 0.).
-            y_margins (tuple[float, float], optional): _description_. Defaults to (0., 0.).
-            z_margins (tuple[float, float], optional): _description_. Defaults to (0., 0.).
+            margin (float, optional): The margin added on all sides. Defaults to None (0).
+            x_margins (tuple[float, float], optional): The (-x, +x) margins, the larger of this and margin is used. Defaults to (None, None).
+            y_margins (tuple[float, float], optional): The (-y, +y) margins, the larger of this and margin is used. Defaults to (None, None).
+            z_margins (tuple[float, float], optional): The (-z, +z) margins, the larger of this and margin is used. Defaults to (None, None).
 
         Returns:
-            Box: _description_
+            Box: The enclosing box (as a background object)
         """
 
         return Box(

@@ -88,7 +88,7 @@ port_sel = feed.boundary(
 
 # --- Boundary conditions -----------------------------------------------------
 abc = model.mw.bc.AbsorbingBoundary(abc_sel)  # open-space termination
-abc.optimize_for_maximum_angle(45)
+
 port_obj = model.mw.bc.LumpedPort(
     port_sel, 1, feed_poly.length, porth, em.ZAX, Z0=130
 )  # lumped port (Z-axis)

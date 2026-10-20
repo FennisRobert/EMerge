@@ -240,11 +240,18 @@ def _odd_even_from_k(z0, k):
     return ze, zo
 
 
-# Microstrip characteristic impedance.
-# Args: W trace width [m], th substrate height [m], er relative permittivity, t conductor thickness [m].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def microstrip_z0(W: float, th: float, er: float, t: float = 0.0):
+    """Microstrip characteristic impedance (quasi-static).
+
+    Args:
+        W (float): The trace width [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+
+    Returns:
+        np.ndarray: The characteristic impedance [Ohm]
+    """
     W = _asf(W)
     h = float(th)
     u = np.maximum(W / h, 1e-12)
@@ -266,11 +273,18 @@ def microstrip_z0(W: float, th: float, er: float, t: float = 0.0):
     )
 
 
-# Microstrip effective permittivity.
-# Args: W trace width [m], th substrate height [m], er relative permittivity, t conductor thickness [m].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def microstrip_eeff(W: float, th: float, er: float, t: float = 0.0):
+    """Microstrip effective permittivity (quasi-static).
+
+    Args:
+        W (float): The trace width [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+
+    Returns:
+        np.ndarray: The effective relative permittivity
+    """
     W = _asf(W)
     h = float(th)
     u = np.maximum(W / h, 1e-12)
@@ -287,14 +301,21 @@ def microstrip_eeff(W: float, th: float, er: float, t: float = 0.0):
     return eeff
 
 
-# Microstrip effective permittivity with frequency dispersion.
-# Args: W trace width [m], th substrate height [m], er relative permittivity, f frequency [Hz], t thickness [m].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def microstrip_eeff_dispersion(
     W: float, th: float, er: float, f: float, t: float = 0.0
 ):
-    """Microstrip effective permittivity with frequency dispersion (Kirschning/Jansen)."""
+    """Microstrip effective permittivity with frequency dispersion (Kirschning/Jansen).
+
+    Args:
+        W (float): The trace width [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        f (float): The frequency [Hz]
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+
+    Returns:
+        np.ndarray: The effective relative permittivity at f
+    """
     W = _asf(W)
     h = float(th)
     f = float(f)
@@ -316,12 +337,19 @@ def microstrip_eeff_dispersion(
     return er - (er - ee0) / (1.0 + p)
 
 
-# Microstrip characteristic impedance with frequency dispersion.
-# Args: W trace width [m], th substrate height [m], er relative permittivity, f frequency [Hz], t thickness [m].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def microstrip_z0_dispersion(W: float, th: float, er: float, f: float, t: float = 0.0):
-    """Microstrip characteristic impedance with frequency dispersion (Kirschning/Jansen)."""
+    """Microstrip characteristic impedance with frequency dispersion (Kirschning/Jansen).
+
+    Args:
+        W (float): The trace width [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        f (float): The frequency [Hz]
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+
+    Returns:
+        np.ndarray: The characteristic impedance [Ohm] at f
+    """
     W = _asf(W)
     h = float(th)
     f = float(f)
@@ -366,11 +394,18 @@ def microstrip_z0_dispersion(W: float, th: float, er: float, f: float, t: float 
     return z0_0 * d
 
 
-# Centered stripline characteristic impedance.
-# Args: W strip width [m], b ground-to-ground spacing [m], er relative permittivity, t conductor thickness [m].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def stripline_z0(W: float, b: float, er: float, t: float = 0.0):
+    """Centered stripline characteristic impedance.
+
+    Args:
+        W (float): The trace width [m]
+        b (float): The ground-to-ground spacing (cavity height) [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+
+    Returns:
+        np.ndarray: The characteristic impedance [Ohm]
+    """
     W = _asf(W)
     b = float(b)
     t = float(t)
@@ -393,11 +428,18 @@ def stripline_z0(W: float, b: float, er: float, t: float = 0.0):
     )
 
 
-# Edge-coupled stripline odd-mode impedance.
-# Args: W width [m], S edge spacing [m], b cavity height [m], er relative permittivity.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coupled_stripline_zodd(W: float, S: float, b: float, er: float):
+    """Edge-coupled stripline odd-mode impedance.
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The edge spacing [m]
+        b (float): The ground-to-ground spacing (cavity height) [m]
+        er (float): The relative permittivity
+
+    Returns:
+        np.ndarray: The odd-mode impedance [Ohm]
+    """
     W = _asf(W)
     b = float(b)
     s = _asf(S)
@@ -409,18 +451,21 @@ def coupled_stripline_zodd(W: float, S: float, b: float, er: float):
     return (n0 / (4.0 * np.sqrt(er))) * _ellip_ratio(k0)
 
 
-# Edge-coupled stripline differential impedance.
-# Args: W width [m], S edge spacing [m], b cavity height [m], er relative permittivity.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coupled_stripline_zdiff(W: float, S: float, b: float, er: float):
+    """Edge-coupled stripline differential impedance.
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The edge spacing [m]
+        b (float): The ground-to-ground spacing (cavity height) [m]
+        er (float): The relative permittivity
+
+    Returns:
+        np.ndarray: The differential impedance [Ohm]
+    """
     return 2.0 * coupled_stripline_zodd(W, S, b, er)
 
 
-# Broadside-coupled stripline differential and common-mode impedances.
-# Args: W strip width [m], G broadside gap [m], b cavity height [m], er relative permittivity.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def broadside_stripline_zdiff_zcm(W: float, G: float, b: float, er: float):
     # Full Cohn broadside-coupled stripline (zero-thickness conductors):
     #   Z0e = (188.3/sqrt(er)) * K(k')/K(k)
@@ -428,6 +473,17 @@ def broadside_stripline_zdiff_zcm(W: float, G: float, b: float, er: float):
     # with implicit relation for width ratio (w = W/b, s = G/b):
     #   w = (2/pi) * atanh(R) - s * atanh(R/k)
     #   R = sqrt((k - s) / (1/k - s))
+    """Broadside-coupled stripline differential and common-mode impedances (Cohn, zero-thickness strips).
+
+    Args:
+        W (float): The trace width [m]
+        G (float): The broadside gap between the strips [m]
+        b (float): The ground-to-ground spacing (cavity height) [m]
+        er (float): The relative permittivity
+
+    Returns:
+        tuple: The differential and common-mode impedances (Zdiff, Zcm) [Ohm]
+    """
     ws = _asf(W)
     g = float(G)
     b = float(b)
@@ -487,10 +543,6 @@ def broadside_stripline_zdiff_zcm(W: float, G: float, b: float, er: float):
     return out_zd, out_zc
 
 
-# CPW/GCPW characteristic impedance.
-# Args: W center width [m], S slot [m], th substrate height [m], er relative permittivity, t thickness [m], has_metal_backside model flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def cpw_z0(
     W: float,
     S: float,
@@ -499,6 +551,19 @@ def cpw_z0(
     t: float = 0.0,
     has_metal_backside: bool = False,
 ):
+    """CPW/GCPW characteristic impedance (quasi-static).
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The slot width between the center conductor and the ground [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+        has_metal_backside (bool, optional): Model a grounded CPW (GCPW) with a metal backside. Defaults to False.
+
+    Returns:
+        np.ndarray: The characteristic impedance [Ohm]
+    """
     W = _asf(W)
     h = float(th)
     s = float(S)
@@ -538,10 +603,6 @@ def cpw_z0(
     return zr / np.sqrt(eeff)
 
 
-# CPW/GCPW effective permittivity.
-# Args: W center width [m], S slot [m], th substrate height [m], er relative permittivity, t thickness [m], has_metal_backside model flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def cpw_eeff(
     W: float,
     S: float,
@@ -550,6 +611,19 @@ def cpw_eeff(
     t: float = 0.0,
     has_metal_backside: bool = False,
 ):
+    """CPW/GCPW effective permittivity (quasi-static).
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The slot width between the center conductor and the ground [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+        has_metal_backside (bool, optional): Model a grounded CPW (GCPW) with a metal backside. Defaults to False.
+
+    Returns:
+        np.ndarray: The effective relative permittivity
+    """
     W = _asf(W)
     h = float(th)
     s = float(S)
@@ -573,10 +647,6 @@ def cpw_eeff(
     return eeff
 
 
-# CPW/GCPW effective permittivity with frequency dispersion.
-# Args: W center width [m], S slot [m], th substrate height [m], er relative permittivity, f frequency [Hz], t thickness [m], has_metal_backside model flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def cpw_eeff_dispersion(
     W: float,
     S: float,
@@ -586,7 +656,20 @@ def cpw_eeff_dispersion(
     t: float = 0.0,
     has_metal_backside: bool = False,
 ):
-    """CPW/GCPW effective permittivity with Qucs-style frequency dispersion."""
+    """CPW/GCPW effective permittivity with Qucs-style frequency dispersion.
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The slot width between the center conductor and the ground [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        f (float): The frequency [Hz]
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+        has_metal_backside (bool, optional): Model a grounded CPW (GCPW) with a metal backside. Defaults to False.
+
+    Returns:
+        np.ndarray: The effective relative permittivity at f
+    """
     ee0 = _asf(cpw_eeff(W, S, th, er, t=t, has_metal_backside=has_metal_backside))
     f = float(f)
     if f <= 0.0 or er <= 1.0:
@@ -608,10 +691,6 @@ def cpw_eeff_dispersion(
     return sr_er_f * sr_er_f
 
 
-# CPW/GCPW impedance with frequency dispersion.
-# Args: W center width [m], S slot [m], th substrate height [m], er relative permittivity, f frequency [Hz], t thickness [m], has_metal_backside model flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def cpw_z0_dispersion(
     W: float,
     S: float,
@@ -621,7 +700,20 @@ def cpw_z0_dispersion(
     t: float = 0.0,
     has_metal_backside: bool = False,
 ):
-    """CPW/GCPW characteristic impedance with Qucs-style frequency dispersion."""
+    """CPW/GCPW characteristic impedance with Qucs-style frequency dispersion.
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The slot width between the center conductor and the ground [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        f (float): The frequency [Hz]
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+        has_metal_backside (bool, optional): Model a grounded CPW (GCPW) with a metal backside. Defaults to False.
+
+    Returns:
+        np.ndarray: The characteristic impedance [Ohm] at f
+    """
     z0_qs = _asf(cpw_z0(W, S, th, er, t=t, has_metal_backside=has_metal_backside))
     ee0 = _asf(cpw_eeff(W, S, th, er, t=t, has_metal_backside=has_metal_backside))
     eef = _asf(
@@ -666,21 +758,33 @@ def _cpw_cap_per_len(
     return c, c_air, z
 
 
-# Coax characteristic impedance.
-# Args: d_inner inner conductor diameter [m], d_outer outer conductor diameter [m], er relative permittivity.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coax_z0(d_inner: float, d_outer: float, er: float):
+    """Coax characteristic impedance.
+
+    Args:
+        d_inner (float): The inner conductor diameter [m]
+        d_outer (float): The outer conductor diameter [m]
+        er (float): The relative permittivity
+
+    Returns:
+        np.ndarray: The characteristic impedance [Ohm]
+    """
     d_inner = _asf(d_inner)
     d_outer = _asf(d_outer)
     return (n0 / (2.0 * PI * np.sqrt(er))) * np.log(d_outer / d_inner)
 
 
-# Coax inner-diameter inverse solve from target impedance.
-# Args: Z0 target impedance [Ohm], d_outer outer diameter [m], er relative permittivity.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coax_d_for_z0(Z0: float, d_outer: float, er: float):
+    """Coax inner conductor diameter for a target impedance.
+
+    Args:
+        Z0 (float): The target impedance [Ohm]
+        d_outer (float): The outer conductor diameter [m]
+        er (float): The relative permittivity
+
+    Returns:
+        float: The inner conductor diameter [m]
+    """
     return float(d_outer) / np.exp(2.0 * PI * np.sqrt(er) * float(Z0) / n0)
 
 
@@ -779,10 +883,6 @@ def _coax_mode_root(n: int, m: int, d_inner: float, d_outer: float, mode: str):
     raise ValueError(f"Failed to find coax {mode.upper()}({n},{m}) root.")
 
 
-# Coax TE cutoff frequency.
-# Args: d_inner inner diameter [m], d_outer outer diameter [m], er/mur medium constants, n/m mode indices, exact exact-root flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coax_cutoff_te(
     d_inner: float,
     d_outer: float,
@@ -792,6 +892,20 @@ def coax_cutoff_te(
     m: int = 1,
     exact: bool = True,
 ):
+    """Coax TE(n,m) mode cutoff frequency.
+
+    Args:
+        d_inner (float): The inner conductor diameter [m]
+        d_outer (float): The outer conductor diameter [m]
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+        n (int, optional): The azimuthal mode index. Defaults to 1.
+        m (int, optional): The radial mode index. Defaults to 1.
+        exact (bool, optional): Solve for the exact Bessel root instead of using the approximation. Defaults to True.
+
+    Returns:
+        float: The cutoff frequency [Hz]
+    """
     if not exact:
         return _coax_cutoff_te_approx(d_inner, d_outer, er=er, mur=mur)
     try:
@@ -801,10 +915,6 @@ def coax_cutoff_te(
         return _coax_cutoff_te_approx(d_inner, d_outer, er=er, mur=mur)
 
 
-# Coax TM cutoff frequency.
-# Args: d_inner inner diameter [m], d_outer outer diameter [m], er/mur medium constants, n/m mode indices, exact exact-root flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coax_cutoff_tm(
     d_inner: float,
     d_outer: float,
@@ -814,6 +924,20 @@ def coax_cutoff_tm(
     m: int = 1,
     exact: bool = True,
 ):
+    """Coax TM(n,m) mode cutoff frequency.
+
+    Args:
+        d_inner (float): The inner conductor diameter [m]
+        d_outer (float): The outer conductor diameter [m]
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+        n (int, optional): The azimuthal mode index. Defaults to 0.
+        m (int, optional): The radial mode index. Defaults to 1.
+        exact (bool, optional): Solve for the exact Bessel root instead of using the approximation. Defaults to True.
+
+    Returns:
+        float: The cutoff frequency [Hz]
+    """
     if not exact:
         return _coax_cutoff_tm_approx(d_inner, d_outer, er=er, mur=mur)
     try:
@@ -823,10 +947,6 @@ def coax_cutoff_tm(
         return _coax_cutoff_tm_approx(d_inner, d_outer, er=er, mur=mur)
 
 
-# Twisted-pair effective permittivity correction.
-# Args: d_center center spacing [m], d_wire wire diameter [m], er bulk dielectric, er1 reference dielectric, twists_per_len turns/m, ptfe PTFE branch flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def twisted_pair_eeff(
     d_center: float,
     d_wire: float,
@@ -835,6 +955,19 @@ def twisted_pair_eeff(
     twists_per_len: float = 0.0,
     ptfe: bool = False,
 ):
+    """Twisted-pair effective permittivity.
+
+    Args:
+        d_center (float): The center-to-center wire spacing [m]
+        d_wire (float): The wire diameter [m]
+        er (float): The relative permittivity of the wire insulation
+        er1 (float, optional): The relative permittivity of the surrounding medium. Defaults to 1.0.
+        twists_per_len (float, optional): The number of twists per meter. Defaults to 0.0.
+        ptfe (bool, optional): Use the PTFE insulation correction. Defaults to False.
+
+    Returns:
+        float: The effective relative permittivity
+    """
     d_center = float(d_center)
     d_wire = float(d_wire)
     if d_center <= d_wire:
@@ -844,10 +977,6 @@ def twisted_pair_eeff(
     return float(er1 + q * (er - er1))
 
 
-# Twisted-pair characteristic impedance.
-# Args: d_center center spacing [m], d_wire wire diameter [m], er bulk dielectric, er1 reference dielectric, twists_per_len turns/m, ptfe PTFE branch flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def twisted_pair_z0(
     d_center: float,
     d_wire: float,
@@ -856,6 +985,19 @@ def twisted_pair_z0(
     twists_per_len: float = 0.0,
     ptfe: bool = False,
 ):
+    """Twisted-pair characteristic impedance.
+
+    Args:
+        d_center (float): The center-to-center wire spacing [m]
+        d_wire (float): The wire diameter [m]
+        er (float): The relative permittivity of the wire insulation
+        er1 (float, optional): The relative permittivity of the surrounding medium. Defaults to 1.0.
+        twists_per_len (float, optional): The number of twists per meter. Defaults to 0.0.
+        ptfe (bool, optional): Use the PTFE insulation correction. Defaults to False.
+
+    Returns:
+        float: The characteristic impedance [Ohm]
+    """
     eeff = twisted_pair_eeff(
         d_center, d_wire, er, er1=er1, twists_per_len=twists_per_len, ptfe=ptfe
     )
@@ -863,10 +1005,6 @@ def twisted_pair_z0(
     return n0 / (PI * np.sqrt(eeff)) * np.arccosh(arg)
 
 
-# Twisted-pair inverse solve for center spacing.
-# Args: z0 target impedance [Ohm], d_wire wire diameter [m], er bulk dielectric, er1 reference dielectric, twists_per_len turns/m, ptfe PTFE branch flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def twisted_pair_d_center_for_z0(
     z0: float,
     d_wire: float,
@@ -875,6 +1013,19 @@ def twisted_pair_d_center_for_z0(
     twists_per_len: float = 0.0,
     ptfe: bool = False,
 ):
+    """Twisted-pair center spacing for a target impedance.
+
+    Args:
+        z0 (float): The target impedance [Ohm]
+        d_wire (float): The wire diameter [m]
+        er (float): The relative permittivity of the wire insulation
+        er1 (float, optional): The relative permittivity of the surrounding medium. Defaults to 1.0.
+        twists_per_len (float, optional): The number of twists per meter. Defaults to 0.0.
+        ptfe (bool, optional): Use the PTFE insulation correction. Defaults to False.
+
+    Returns:
+        float: The center-to-center spacing [m]
+    """
     eeff = twisted_pair_eeff(
         d_center=max(2.0 * float(d_wire), float(d_wire) + 1e-12),
         d_wire=d_wire,
@@ -887,10 +1038,6 @@ def twisted_pair_d_center_for_z0(
     return float(float(d_wire) * k)
 
 
-# Twisted-pair inverse solve for wire diameter.
-# Args: z0 target impedance [Ohm], d_center center spacing [m], er bulk dielectric, er1 reference dielectric, twists_per_len turns/m, ptfe PTFE branch flag.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def twisted_pair_d_wire_for_z0(
     z0: float,
     d_center: float,
@@ -899,6 +1046,19 @@ def twisted_pair_d_wire_for_z0(
     twists_per_len: float = 0.0,
     ptfe: bool = False,
 ):
+    """Twisted-pair wire diameter for a target impedance.
+
+    Args:
+        z0 (float): The target impedance [Ohm]
+        d_center (float): The center-to-center wire spacing [m]
+        er (float): The relative permittivity of the wire insulation
+        er1 (float, optional): The relative permittivity of the surrounding medium. Defaults to 1.0.
+        twists_per_len (float, optional): The number of twists per meter. Defaults to 0.0.
+        ptfe (bool, optional): Use the PTFE insulation correction. Defaults to False.
+
+    Returns:
+        float: The wire diameter [m]
+    """
     eeff = twisted_pair_eeff(
         d_center=d_center,
         d_wire=max(0.5 * float(d_center), 1e-12),
@@ -915,13 +1075,22 @@ def twisted_pair_d_wire_for_z0(
     return float(float(d_center) / k)
 
 
-# Rectangular-waveguide cutoff frequency for mode (m, n).
-# Args: a broad wall [m], b narrow wall [m], m/n mode indices, er/mur medium constants.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_fc(
     a: float, b: float, m: int = 1, n: int = 0, er: float = 1.0, mur: float = 1.0
 ):
+    """Rectangular waveguide cutoff frequency of mode (m, n).
+
+    Args:
+        a (float): The broad wall width [m]
+        b (float): The narrow wall height [m]
+        m (int, optional): The first mode index. Defaults to 1.
+        n (int, optional): The second mode index. Defaults to 0.
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+
+    Returns:
+        float: The cutoff frequency [Hz]
+    """
     a = float(a)
     b = float(b)
     if a <= 0.0 or b <= 0.0:
@@ -932,10 +1101,6 @@ def rectwg_fc(
     return 0.5 * C0 * kxy / np.sqrt(float(er) * float(mur))
 
 
-# Rectangular-waveguide propagation constant.
-# Args: f frequency [Hz], a/b dimensions [m], m/n mode indices, er/mur medium constants.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_beta(
     f: float,
     a: float,
@@ -945,6 +1110,20 @@ def rectwg_beta(
     er: float = 1.0,
     mur: float = 1.0,
 ):
+    """Rectangular waveguide propagation constant of mode (m, n).
+
+    Args:
+        f (float): The frequency [Hz]
+        a (float): The broad wall width [m]
+        b (float): The narrow wall height [m]
+        m (int, optional): The first mode index. Defaults to 1.
+        n (int, optional): The second mode index. Defaults to 0.
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+
+    Returns:
+        float: The propagation constant [rad/m], 0 below cutoff
+    """
     f = float(f)
     if f <= 0.0:
         raise ValueError("Frequency must be > 0.")
@@ -956,10 +1135,6 @@ def rectwg_beta(
     return float(np.sqrt(k * k - kc * kc))
 
 
-# Rectangular-waveguide TE mode impedance.
-# Args: f frequency [Hz], a/b dimensions [m], m/n mode indices, er/mur medium constants.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_z_te(
     f: float,
     a: float,
@@ -969,6 +1144,20 @@ def rectwg_z_te(
     er: float = 1.0,
     mur: float = 1.0,
 ):
+    """Rectangular waveguide TE mode wave impedance.
+
+    Args:
+        f (float): The frequency [Hz]
+        a (float): The broad wall width [m]
+        b (float): The narrow wall height [m]
+        m (int, optional): The first mode index. Defaults to 1.
+        n (int, optional): The second mode index. Defaults to 0.
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+
+    Returns:
+        float: The wave impedance [Ohm], inf below cutoff
+    """
     f = float(f)
     fc = rectwg_fc(a, b, m=m, n=n, er=er, mur=mur)
     if f <= fc:
@@ -976,10 +1165,6 @@ def rectwg_z_te(
     return float(n0 * np.sqrt(float(mur) / float(er)) / np.sqrt(1.0 - (fc / f) ** 2))
 
 
-# Rectangular-waveguide TM mode impedance.
-# Args: f frequency [Hz], a/b dimensions [m], m/n mode indices, er/mur medium constants.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_z_tm(
     f: float,
     a: float,
@@ -989,6 +1174,20 @@ def rectwg_z_tm(
     er: float = 1.0,
     mur: float = 1.0,
 ):
+    """Rectangular waveguide TM mode wave impedance.
+
+    Args:
+        f (float): The frequency [Hz]
+        a (float): The broad wall width [m]
+        b (float): The narrow wall height [m]
+        m (int, optional): The first mode index. Defaults to 1.
+        n (int, optional): The second mode index. Defaults to 1.
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+
+    Returns:
+        float: The wave impedance [Ohm], 0 below cutoff
+    """
     f = float(f)
     fc = rectwg_fc(a, b, m=m, n=n, er=er, mur=mur)
     if f <= fc:
@@ -996,10 +1195,6 @@ def rectwg_z_tm(
     return float(n0 * np.sqrt(float(mur) / float(er)) * np.sqrt(1.0 - (fc / f) ** 2))
 
 
-# Rectangular-waveguide guided wavelength.
-# Args: f frequency [Hz], a/b dimensions [m], m/n mode indices, er/mur medium constants.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_lambda_g(
     f: float,
     a: float,
@@ -1009,28 +1204,56 @@ def rectwg_lambda_g(
     er: float = 1.0,
     mur: float = 1.0,
 ):
+    """Rectangular waveguide guided wavelength.
+
+    Args:
+        f (float): The frequency [Hz]
+        a (float): The broad wall width [m]
+        b (float): The narrow wall height [m]
+        m (int, optional): The first mode index. Defaults to 1.
+        n (int, optional): The second mode index. Defaults to 0.
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+
+    Returns:
+        float: The guided wavelength [m], inf below cutoff
+    """
     beta = rectwg_beta(f, a, b, m=m, n=n, er=er, mur=mur)
     if beta <= 0.0:
         return np.inf
     return float(TAU / beta)
 
 
-# Rectangular-waveguide inverse solve for broad wall a from cutoff.
-# Args: fc cutoff frequency [Hz], er/mur medium constants, m mode index.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_a_for_fc(fc: float, er: float = 1.0, mur: float = 1.0, m: int = 1):
+    """Rectangular waveguide broad wall width for a target cutoff frequency.
+
+    Args:
+        fc (float): The cutoff frequency [Hz]
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+        m (int, optional): The mode index along the broad wall. Defaults to 1.
+
+    Returns:
+        float: The broad wall width [m]
+    """
     fc = float(fc)
     if fc <= 0.0 or m <= 0:
         raise ValueError("fc and mode index m must be > 0.")
     return float(m * C0 / (2.0 * fc * np.sqrt(float(er) * float(mur))))
 
 
-# TE10 inverse solve for broad wall a from target TE impedance and frequency.
-# Args: z0 target TE impedance [Ohm], f frequency [Hz], er/mur medium constants.
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def rectwg_te10_a_for_z0(z0: float, f: float, er: float = 1.0, mur: float = 1.0):
+    """Rectangular waveguide broad wall width for a target TE10 wave impedance.
+
+    Args:
+        z0 (float): The target TE10 wave impedance [Ohm]
+        f (float): The frequency [Hz]
+        er (float, optional): The relative permittivity. Defaults to 1.0.
+        mur (float, optional): The relative permeability. Defaults to 1.0.
+
+    Returns:
+        float: The broad wall width [m]
+    """
     z0 = float(z0)
     f = float(f)
     if z0 <= 0.0 or f <= 0.0:
@@ -1044,10 +1267,6 @@ def rectwg_te10_a_for_z0(z0: float, f: float, er: float = 1.0, mur: float = 1.0)
     return rectwg_a_for_fc(fc, er=er, mur=mur, m=1)
 
 
-# Coupled microstrip even/odd modal impedances (Kirschning/Jansen).
-# Args: W line width [m], S edge spacing [m], th substrate height [m], er relative permittivity, t thickness [m], f optional frequency [Hz].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def coupled_microstrip_z0_even_odd(
     W: float,
     S: float,
@@ -1056,7 +1275,19 @@ def coupled_microstrip_z0_even_odd(
     t: float = 0.0,
     f: float | None = None,
 ):
-    """Kirschning/Jansen coupled microstrip model with optional frequency dispersion."""
+    """Coupled microstrip even/odd mode impedances (Kirschning/Jansen) with optional frequency dispersion.
+
+    Args:
+        W (float): The trace width [m]
+        S (float): The edge spacing [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+        f (float | None, optional): The frequency [Hz] for dispersion, None for the quasi-static result. Defaults to None.
+
+    Returns:
+        tuple[float, float]: The even and odd mode impedances (Zeven, Zodd) [Ohm]
+    """
     h = float(th)
     w = float(W)
     s = float(S)
@@ -1318,10 +1549,6 @@ def coupled_microstrip_z0_even_odd(
     return float(z_even), float(z_odd)
 
 
-# Differential CPW/DCPWG model returning (Zdiff, Zcm).
-# Args: W width [m], S_ground trace-to-ground slot [m], S_pair pair gap [m], th substrate height [m], er relative permittivity, t thickness [m], has_metal_backside model flag, f optional frequency [Hz].
-# Returns: Numeric result for the requested quantity; may be scalar, ndarray, tuple, or dict depending on the function.
-# Notes: Core formula functions use SI units (meters, Hz, Ohms) unless explicitly stated otherwise.
 def differential_cpw_zdiff_zcm(
     W: float,
     S_ground: float,
@@ -1332,6 +1559,21 @@ def differential_cpw_zdiff_zcm(
     has_metal_backside: bool = False,
     f: float | None = None,
 ):
+    """Differential CPW/DCPWG differential and common-mode impedances.
+
+    Args:
+        W (float): The trace width [m]
+        S_ground (float): The trace-to-ground slot width [m]
+        S_pair (float): The gap between the two traces [m]
+        th (float): The substrate height [m]
+        er (float): The relative permittivity
+        t (float, optional): The conductor thickness [m]. Defaults to 0.0.
+        has_metal_backside (bool, optional): Model a grounded CPW (GCPW) with a metal backside. Defaults to False.
+        f (float | None, optional): The frequency [Hz] for dispersion, None for the quasi-static result. Defaults to None.
+
+    Returns:
+        tuple: The differential and common-mode impedances (Zdiff, Zcm) [Ohm]
+    """
     w = _asf(W)
     sg = float(S_ground)
     sp = float(S_pair)
@@ -2383,6 +2625,13 @@ class PCBCalculator:
     # Returns: Numeric result for the requested quantity; may be a tuple or dict for grouped outputs.
     # Notes: Geometry args are in stackup units and are converted internally using self._pcb.unit.
     def __init__(self, layers: np.ndarray, materials: list[Material], unit: float):
+        """Transmission line calculator for a PCB stack.
+
+        Args:
+            layers (np.ndarray): The z-coordinates of the copper layers (in PCB units)
+            materials (list[Material]): The dielectric material between each pair of layers
+            unit (float): The PCB unit in meters
+        """
         self.layers: np.ndarray = np.asarray(layers, dtype=float)
         self.mat: list[Material] = materials
         self.unit: float = float(unit)
@@ -2420,6 +2669,19 @@ class PCBCalculator:
         er: float | None = None,
         include_dispersion: bool = True,
     ) -> float:
+        """The microstrip trace width for a target characteristic impedance.
+
+        Args:
+            Z0 (float): The target impedance [Ohm]
+            layer (int, optional): The trace layer. Defaults to -1.
+            ground_layer (int, optional): The reference ground layer. Defaults to 0.
+            f0 (float, optional): The design frequency [Hz]. Defaults to 1e9.
+            er (float | None, optional): Override the relative permittivity of the stack. Defaults to None.
+            include_dispersion (bool, optional): Include frequency dispersion. Defaults to True.
+
+        Returns:
+            float: The trace width (in PCB units)
+        """
         return self.microstrip.w_for_z0(
             Z0,
             layer=layer,
@@ -2434,6 +2696,14 @@ class PCBCalculator:
     # Returns: Numeric result for the requested quantity; may be a tuple or dict for grouped outputs.
     # Notes: Geometry args are in stackup units and are converted internally using self._pcb.unit.
     def layer_index(self, layer: int) -> int:
+        """Resolve a (possibly negative) layer number to a layer index.
+
+        Args:
+            layer (int): The layer number, negative numbers count from the top
+
+        Returns:
+            int: The layer index
+        """
         idx = int(layer)
         if idx < 0:
             idx += len(self.layers)
@@ -2446,6 +2716,14 @@ class PCBCalculator:
     # Returns: Numeric result for the requested quantity; may be a tuple or dict for grouped outputs.
     # Notes: Geometry args are in stackup units and are converted internally using self._pcb.unit.
     def z(self, layer: int) -> float:
+        """The z-coordinate of a layer.
+
+        Args:
+            layer (int): The layer number
+
+        Returns:
+            float: The z-coordinate (in PCB units)
+        """
         return float(self.layers[self.layer_index(layer)])
 
     # Physical distance between two layers.
@@ -2453,6 +2731,15 @@ class PCBCalculator:
     # Returns: Numeric result for the requested quantity; may be a tuple or dict for grouped outputs.
     # Notes: Geometry args are in stackup units and are converted internally using self._pcb.unit.
     def layer_distance(self, a: int, b: int) -> float:
+        """The distance between two layers.
+
+        Args:
+            a (int): The first layer number
+            b (int): The second layer number
+
+        Returns:
+            float: The distance [m]
+        """
         return abs(self.z(a) - self.z(b)) * self.unit
 
     # Effective dielectric constant between two layers.
@@ -2462,6 +2749,17 @@ class PCBCalculator:
     def effective_er(
         self, layer: int, ground_layer: int, f0: float, er: float | None = None
     ) -> float:
+        """The thickness weighted relative permittivity of the dielectrics between two layers.
+
+        Args:
+            layer (int): The trace layer
+            ground_layer (int): The reference ground layer
+            f0 (float): The frequency at which the material permittivity is evaluated [Hz]
+            er (float | None, optional): If given, this value is returned instead. Defaults to None.
+
+        Returns:
+            float: The relative permittivity
+        """
         if er is not None:
             return float(er)
         i1 = self.layer_index(layer)

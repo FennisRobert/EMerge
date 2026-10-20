@@ -79,9 +79,11 @@ class Box(GeoVolume):
             width (float): The x-size
             depth (float): The y-size
             height (float): The z-size
-            position (tuple, optional): The position of the box. Defaults to (0,0,0).
+            position (tuple | Anchor, optional): The position of the box. Defaults to (0,0,0).
             alignment (Alignment, optional): Which point of the box is placed at the position. 
                 Defaults to Alignment.CORNER.
+            cs (CoordinateSystem, optional): The coordinate system in which the object is placed. Defaults to GCS.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         if alignment is Alignment.CENTER:
             position = (position[0]-width/2, position[1]-depth/2, position[2]-height/2)
@@ -173,7 +175,7 @@ class Sphere(GeoVolume):
 
         Args:
             radius (float): The sphere radius
-            position (tuple, optional): The center position. Defaults to (0,0,0).
+            position (tuple | Anchor, optional): The center position. Defaults to (0,0,0).
         """
         super().__init__([])
         x,y,z = _parse_vector(position)
@@ -219,6 +221,7 @@ class XYPlate(GeoSurface):
             depth (float): The y-size of the plate
             position (tuple, optional): The position of the alignment node. Defaults to (0,0,0).
             alignment (Alignment, optional): Which node to align to. Defaults to Alignment.CORNER.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         super().__init__([], name=name)
         if alignment is Alignment.CENTER:
@@ -259,9 +262,10 @@ class Plate(GeoSurface):
             p3 = o+v
             p4 = o+u+v
         Args:
-            origin (tuple[float, float, float]): The origin of the plate in meters
+            origin (tuple[float, float, float] | Anchor): The origin of the plate in meters
             u (tuple[float, float, float]): The u-axis of the plate
             v (tuple[float, float, float]): The v-axis of the plate
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         
         origin = _parse_vector(origin)
@@ -327,14 +331,15 @@ class Cylinder(GeoVolume):
             height (float): The height of the Cylinder
             cs (CoordinateSystem, optional): The coordinate system. Defaults to GCS.
             Nsections (int, optional): The number of sections. Defaults to None.
+            compensate_radius (bool, optional): Scale the radius of the Nsections polygon such that it approximates the true circle. Defaults to False.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         ax = cs.zax.np
 
-        if compensate_radius:
+        if compensate_radius and Nsections is not None:
             C_comp = np.pi/ (Nsections*np.sin(np.pi/Nsections))
             A_comp = ((2*np.pi)/(Nsections*np.sin(2*np.pi/Nsections)))**0.5
             radius = radius * C_comp
-            print(C_comp)
         if Nsections:
             from .polybased import XYPolygon
             cyl = XYPolygon.circle(radius, Nsections=Nsections).extrude(height, cs)
@@ -369,7 +374,16 @@ class Cylinder(GeoVolume):
         self.anch.init(cs.origin + height*cs.zax.np/2, cs.xax.np, cs.yax.np, cs.zax.np)
 
     def face_points(self, nRadius: int = 10, Angle: int = 10, face_number: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns the points of the cylinder."""
+        """Returns the points of the cylinder.
+
+        Args:
+            nRadius (int, optional): The number of radial sample points. Defaults to 10.
+            Angle (int, optional): The angular step in degrees. Defaults to 10.
+            face_number (int, optional): The cap face, 1 for the bottom and 2 for the top. Defaults to 1.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The X, Y and Z coordinates of the face points
+        """
         rs = np.linspace(0, self.radius, nRadius)
         angles = np.linspace(0, 2 * np.pi, int(360 / Angle), endpoint=False)
         R, A = np.meshgrid(rs, angles)
@@ -435,10 +449,12 @@ class CoaxCylinder(GeoVolume):
         by an extrusion of a regular N-sided polygon.
 
         Args:
-            radius (float): The radius of the Cylinder
-            height (float): The height of the Cylinder
+            rout (float): The outer radius of the coax
+            rin (float): The inner radius of the coax
+            height (float): The height (length) of the coax
             cs (CoordinateSystem, optional): The coordinate system. Defaults to GCS.
-            Nsections (int, optional): The number of sections. Defaults to None.
+            Nsections (int | None, optional): The number of polygon sections. Defaults to None (true cylinder).
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         if rout <= rin:
             raise ValueError("Outer radius must be greater than inner radius.")
@@ -466,7 +482,16 @@ class CoaxCylinder(GeoVolume):
         self.anch.init(cs.origin + height*cs.zax.np/2, cs.xax.np, cs.yax.np, cs.zax.np)
 
     def face_points(self, nRadius: int = 10, Angle: int = 10, face_number: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Returns the points of the coaxial cylinder."""
+        """Returns the points of the coaxial cylinder.
+
+        Args:
+            nRadius (int, optional): The number of radial sample points. Defaults to 10.
+            Angle (int, optional): The angular step in degrees. Defaults to 10.
+            face_number (int, optional): The cap face, 1 for the bottom and 2 for the top. Defaults to 1.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray]: The X, Y and Z coordinates of the face points
+        """
         rs = np.linspace(self.rin, self.rout, nRadius)
         angles = np.linspace(0, 2 * np.pi, int(360 / Angle), endpoint=False)
         R, A = np.meshgrid(rs, angles)
@@ -549,7 +574,7 @@ class HalfSphere(GeoVolume):
         """The flat disc face that cuts the sphere in half
 
         Returns:
-            FaceSelection: _description_
+            FaceSelection: The disc face
         """
         return self.face('disc')
 
@@ -572,7 +597,8 @@ class OldBox(GeoVolume):
             width (float): The x-size
             depth (float): The y-size
             height (float): The z-size
-            position (tuple, optional): The position of the box. Defaults to (0,0,0).
+            position (tuple | Anchor, optional): The position of the box. Defaults to (0,0,0).
+            cs (CoordinateSystem, optional): The coordinate system in which the object is placed. Defaults to GCS.
             alignment (Alignment, optional): Which point of the box is placed at the position. 
                 Defaults to Alignment.CORNER.
         """
@@ -752,10 +778,11 @@ class Cone(GeoVolume):
         r1 is the start radius and r2 the end radius. The magnitude of direction determines its length.
 
         Args:
-            p0 (tuple[float, float, float]): _description_
-            direction (tuple[float, float, float]): _description_
-            r1 (float): _description_
-            r2 (float): _description_
+            p0 (tuple[float, float, float] | Anchor): The center of the start face
+            direction (tuple[float, float, float] | Axis): The cone axis, its magnitude is the cone length
+            r1 (float): The start radius
+            r2 (float): The end radius
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         p0 = _parse_vector(p0)
         direction = _parse_vector(direction)

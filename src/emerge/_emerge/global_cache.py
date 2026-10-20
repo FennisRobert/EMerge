@@ -18,7 +18,7 @@
 """
 Persistent global cache that survives between EMerge sessions.
 
-The cache is a JSON file stored next to the installed package (like Numba's
+The cache is a JSON file stored next to the installed package (like the
 __pycache__ binaries). If the install directory is not writable it falls back
 to a per-user cache directory.
 

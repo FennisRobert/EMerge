@@ -77,6 +77,14 @@ class HeatConduction3D(GenericPhysics3D):
         self, state: SimState, mesher: Mesher, settings: Settings, order: int = 2
     ):
 
+        """The heat conduction physics. Access it through Simulation.hc.
+
+        Args:
+            state (SimState): The simulation state
+            mesher (Mesher): The mesher
+            settings (Settings): The simulation settings
+            order (int, optional): The discretization order (always 2). Defaults to 2.
+        """
         self._settings: Settings = settings
 
         self.T_initial_K: float = 293.15
@@ -107,10 +115,12 @@ class HeatConduction3D(GenericPhysics3D):
 
     @property
     def mesh(self) -> Mesh3D:
+        """The mesh of the simulation."""
         return self._state.mesh
 
     @property
     def data(self) -> HCData:
+        """The heat conduction dataset of the simulation."""
         return self._state.data.hc
 
     def _check_meshed(self) -> None:
@@ -246,7 +256,7 @@ class HeatConduction3D(GenericPhysics3D):
             self.solveroutine.use_preconditioner = True
 
         # Finally solve the problems for each frequency individually.
-        logger.info("Starting single threaded solve.")
+        logger.info("Starting serial solve.")
         job = run_job_single(job)
 
         self.solveroutine.reset()
@@ -429,6 +439,8 @@ class HeatConduction3D(GenericPhysics3D):
             max_nonlinear_iter (int, optional): The maximum number of iterations
             nonlinear_tol (float, optional): The tolerance before a solution is considered converged
             anderson_m (int, optional): The window size for the Anderson update calculation.
+            anderson_beta (float, optional): The Anderson mixing parameter. Defaults to 1.0.
+            anderson_reg (float, optional): The Anderson regularization parameter. Defaults to 0.0.
 
         Copyright clarification:
         The logic of the solve loop including the Anderson update is a mix of hand written code

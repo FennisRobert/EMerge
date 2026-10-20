@@ -28,7 +28,7 @@ interpolation operator has to be applied instead.
 ## Constructing the duals without knowing them analytically
 
 EMerge defines this element by its basis functions (see `elements/dofsets.py`
-and the sympy generator that produced `compiled/ccbf.py`), not by a dual
+and the generated basis functions in `emr/src/compiled/ccbf.rs`), not by a dual
 basis. The duals are nonetheless uniquely determined: choose any 20 linearly
 independent, ENTITY-LOCAL functionals `m_i`, form `Q[i][j] = m_i(N_j)`, and
 the dual basis is `ell = Q^-1 m`. The interpolant of any field `u` is then
@@ -62,7 +62,7 @@ import numpy as np
 from scipy.sparse import coo_matrix, csr_matrix
 
 from .....elements.nedelec2 import Nedelec2
-from .kernels import interpolation_kernel
+from emr.ams_kernels import interpolation_kernel
 
 # 4-point Gauss-Legendre on [0, 1] -- exact to degree 7 along an edge
 _GX, _GW = np.polynomial.legendre.leggauss(4)

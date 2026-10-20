@@ -21,6 +21,7 @@ from typing import Literal
 
 class Settings:
     def __init__(self):
+        """The simulation settings with their default values (see the comment under each attribute)."""
         self.mw_2dbc: bool = True
         # Automatically assign 2D boundary conditions based on material properties.
 

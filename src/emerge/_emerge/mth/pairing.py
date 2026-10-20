@@ -28,44 +28,7 @@ ALL PAIRED NODES ARE NO LONGER VISITED
 """
 
 import numpy as np
-from numba import njit, f8, i8 # type: ignore
-
-
-############################################################
-#                  NUMBA COMPILED FUNCTION                 #
-############################################################
-
-
-@njit(i8[:,:](f8[:,:], i8[:], i8[:], f8[:], f8), cache=True, nogil=True)
-def link_coords(coords: np.ndarray, ids1: np.ndarray, ids2: np.ndarray, disp: np.ndarray, dsmax: float) -> np.ndarray:
-    D = dsmax**2
-    N = ids1.shape[0]
-    ids2_mapped = np.zeros_like(ids2)
-
-    available = np.ones_like(ids2)
-    id_start = 0
-
-    for i1 in range(N):
-        ictr = 0
-        c1 = coords[:,ids1[i1]]
-        for i2 in range(id_start, N):
-            if available[i2] == 0:
-                continue
-            c2 = coords[:,ids2[i2]]-disp
-            dist = (c2[0]-c1[0])**2 + (c2[1]-c1[1])**2 + (c2[2]-c1[2])**2
-            if dist > D:
-                ictr += 1
-                continue
-            if ictr==0:
-                id_start += 1
-            ids2_mapped[i1] = ids2[i2]
-            available[i2] = 0
-            break
-        
-    out = np.zeros((2, N), dtype=np.int64)
-    out[0,:] = ids1
-    out[1,:] = ids2_mapped
-    return out
+from emr.mth import link_coords
 
 
 ############################################################

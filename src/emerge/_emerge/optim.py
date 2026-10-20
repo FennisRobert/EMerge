@@ -60,6 +60,7 @@ OptimizerMethod = Literal[
 class Optimizer:
     
     def __init__(self):
+        """Create an optimizer without parameters."""
         self.clear_mesh: bool = True
         self.value_cache: dict[np.ndarray, float] = dict()
         self._param_data: list[tuple[str, tuple[float, float, float]]] = []
@@ -73,26 +74,32 @@ class Optimizer:
         
     @property
     def bounds(self) -> list[tuple[float, float]]:
+        """The (lower, upper) bounds of all parameters."""
         return [(p[1][1], p[1][2]) for p in self. _param_data]
     
     @property
     def x0(self) -> np.ndarray:
+        """The initial values of all parameters."""
         return np.array([p[1][0] for p in self._param_data])
     
     @property
     def last(self) -> tuple[float, ...]:
+        """The parameter values of the last iteration."""
         return tuple([x for x in self.last_iter])
 
     @property
     def params(self) -> dict[str, float]:
+        """The parameter values of the last iteration by name."""
         return {p[0]: value for p, value in zip(self._param_data, self.last_iter)}
     
     def print_python(self) -> None:
+        """Print the best parameter values as Python assignments."""
         for param,value in self.best[0].items():
             print(f'{param} = {value}')
 
     @property
     def N(self):
+        """The number of evaluated iterations."""
         return len(self.value_cache)
     
     def maximize(self) -> None:
@@ -135,9 +142,9 @@ class Optimizer:
         """Add a new optimization parameter to the optimizer
 
         Args:
-            name (str): _description_
-            x0 (float): _description_
-            bounds (tuple[float, float], optional): _description_. Defaults to (None, None).
+            name (str): The parameter name
+            x0 (float): The initial value
+            bounds (tuple[float, float], optional): The (lower, upper) bounds. Defaults to (None, None).
         """
         logger.debug(f'Adding {name}={x0} ∈ ({bounds[0]},{bounds[1]})')
         self._param_data.append((name, (x0, bounds[0], bounds[1])))
@@ -244,17 +251,19 @@ class Optimizer:
         """Call this function to inform the optimizer of the latest result
 
         Args:
-            value (float): _description_
+            value (float): The metric value of the latest iteration
         """
         logger.info(f'Latest iteration metric: {value}')
         self.value_cache[tuple(self.last_iter)] = value
         self._updated = True
 
     def stop(self) -> None:
+        """Stop the optimization after the current iteration."""
         self._stop = True
         
     @property
     def best(self) -> tuple[dict[str, float], float]:
+        """The best parameter values (by name) and the corresponding metric value."""
         if not self._maximize:
             smallest_key = sorted(self.value_cache.keys(), key=lambda x: self.value_cache[x])[0]
         else:

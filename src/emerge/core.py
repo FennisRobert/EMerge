@@ -34,9 +34,8 @@ warnings.filterwarnings(
 ############################################################
 
 import os
-import sys
 
-__version__ = "3.0.0a24"
+__version__ = "3.0.0a25"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -47,11 +46,6 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", NTHREADS)
 os.environ.setdefault("VECLIB_NUM_THREADS", NTHREADS)
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", NTHREADS)
 os.environ.setdefault("NUMEXPR_NUM_THREADS", NTHREADS)
-# Numba reads these on every compile and refuses a changed thread count once its
-# threads run, so leave them alone if numba was already imported (e.g. via emcad).
-if "numba" not in sys.modules:
-    os.environ.setdefault("NUMBA_NUM_THREADS", "4")
-    os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 
 
 ############################################################
@@ -97,10 +91,6 @@ from emsutil import themes
 howto = _HowtoClass()
 
 logger.debug('Importing complete!')
-
-from ._emerge.install_check import run_installation_checks
-
-run_installation_checks()
 
 
 ############################################################

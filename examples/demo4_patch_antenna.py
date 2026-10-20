@@ -147,7 +147,7 @@ model.display.populate()
 field = data.field.find(freq=1.59e9)
 ff3d = field.farfield_3d(boundary_selection, origin=(0, 0, 0))
 model.display.add_farfield3d(ff3d, rmax=40 * mm, offset=(0, 0, 40 * mm))
-model.display.cbar("Stored Energy [W/m³]").animate().add_field(
-    field.grid(N=100_000, z_range=(-th, Rair)).scalar("We_t", "complex"), symmetrize=False
+model.display.cbar("Ey [V/m]").animate().add_field(
+    field.grid(N=100_000, z_range=(-th, Rair)).scalar("Ey", "complex"), symmetrize=True
 )
 model.display.show()

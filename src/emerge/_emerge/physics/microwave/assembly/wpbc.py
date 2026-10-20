@@ -22,7 +22,7 @@ import numpy as np
 from typing import Callable
 from ....elements import Nedelec2
 from ....const import MU0, C0
-from .robinbc import assemble_robin_bc_bvec
+from .emr_microwave import assemble_robin_bc_bvec
 
 
 ############################################################
@@ -72,19 +72,20 @@ def assemble_wpbc(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Assembles the dense (full modal) Wave Port Boundary Condition.
 
-    The port mode overlap vector G = ∫ (γ_m e_tm - ∇e_zm) · N dS is computed by
+    The port mode overlap vector G = ∫ (γ_m e_tm + ∇e_zm) · N dS is computed by
     reusing the Robin BC force-vector assembly (identical Nedelec2 overlap
-    integral), once for the effective mode profile `mprof` and once for the
-    transverse mode field `mode_xy`. G is then used to build the rank-1 system
-    matrix contribution 1/(j w0 mu0 kappa_m) * G Gᵀ and the excitation vector
-    -2 gamma_m * G_xy.
+    integral) for the effective mode profile `mprof`. G builds both the rank-1
+    system matrix contribution -1/(j w0 mu0 kappa_m) * G Gᵀ and the excitation
+    vector -2 G: with w = γ e_t + ∇e_z, the port operator is
+    n×∇×E = w ∫E_t·w dS / ∫e_t·w dS - 2 a_inc w, so the incident mode enters
+    through the same w (including its E_z part) as the matrix term.
 
     Args:
         field (Nedelec2): The Nedelec2 field object.
         surf_triangle_indices (np.ndarray): Indices of the port surface triangles.
         active_dof_ids (np.ndarray): The port DoFs to expand the block over (see wpbc_dofs).
-        mprof (Callable): The effective mode profile function γ_m e_tm - ∇e_zm.
-        mode_xy (Callable): The transverse mode field function e_tm.
+        mprof (Callable): The effective mode profile function γ_m e_tm + ∇e_zm.
+        mode_xy (Callable): The transverse mode field function e_tm (unused, kept for the call signature).
         kappa_m (complex): The port mode kappa coefficient.
         gamma_m (complex): The port mode propagation constant (j*beta).
         k0 (float): The free space wavenumber.
@@ -94,8 +95,7 @@ def assemble_wpbc(
         wpbc_rowcol(active_dof_ids)) and the excitation vector.
     """
     G = assemble_robin_bc_bvec(field, surf_triangle_indices, mprof)
-    G_xy = assemble_robin_bc_bvec(field, surf_triangle_indices, mode_xy)
 
     w0 = C0 * k0
     Bvec = assemble_Bmatrix_entries(G, -1.0 / (1j * w0 * MU0 * kappa_m), active_dof_ids)
-    return Bvec, - 2 * gamma_m * G_xy
+    return Bvec, -2 * G

@@ -49,7 +49,7 @@ def _discretize_curve(xfunc: Callable,
     Returns:
         tuple[np.ndarray, np.ndarray]: _description_
     """
-    from ..mth.optimized import _subsample_coordinates
+    from emr.mth import _subsample_coordinates
     
     td = np.linspace(t0, t1, 10_001)
     xs = xfunc(td)
@@ -73,7 +73,7 @@ def rotate_point(point: tuple[float, float, float],
         degrees (bool): If True, `ang` is interpreted in degrees; otherwise in radians.
 
     Returns:
-        (x,y,z) : tuple with the rotated coordinates.
+        tuple[float, float, float]: The rotated (x, y, z) coordinates.
     """
 
     p = np.asarray(point, dtype=float)
@@ -122,12 +122,15 @@ def orthonormalize(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray
 
 
 class GeoPrism(GeoVolume):
-    """The GepPrism class generalizes the GeoVolume for extruded convex polygons.
-    Besides having a volumetric definitions, the class offers a .front_face 
+    """The GeoPrism class generalizes the GeoVolume for extruded convex polygons.
+    Besides having a volumetric definitions, the class offers a .front_face
     and .back_face property that selects the respective faces.
 
     Args:
-        GeoVolume (_type_): _description_
+        volume_tag (int): The GMSH tag of the volume.
+        front_tag (int | None, optional): The GMSH tag of the front face (the extruded polygon). Defaults to None.
+        side_tags (list[int] | None, optional): The GMSH tags of the side faces. Defaults to None.
+        name (str | None, optional): The name of the object. Defaults to None.
     """
     def __init__(self,
                  volume_tag: int,
@@ -231,8 +234,8 @@ class XYPolygon:
 
         The resolution parameter will define if points are removed if they are too close. Default limit is 1 um.
         Args:
-            xs (np.ndarray, optional): The starting stet of X-points
-            ys (np.ndarray, optional): The starting stet of Y-points
+            xs (np.ndarray | list[float] | tuple[float,...] | None, optional): The starting stet of X-points
+            ys (np.ndarray | list[float] | tuple[float,...] | None, optional): The starting stet of Y-points
             cs (CoordinateSystem, optional): The coordinate system to put the XYPolygon in. Optional can be provided later.
             resolution (float, optional): The numerical resolution to use for polygon simplification. 1e-6 is the default.
         """
@@ -287,7 +290,14 @@ class XYPolygon:
         return 0.5*np.abs(np.dot(self.x,np.roll(self.y,1))-np.dot(self.y,np.roll(self.x,1)))
 
     def incs(self, cs: CoordinateSystem) -> XYPolygon:
-        """ Sets a coordinate system and returns the same XYPolygon object. """
+        """ Sets a coordinate system and returns the same XYPolygon object.
+
+        Args:
+            cs (CoordinateSystem): The coordinate system of the polygon
+
+        Returns:
+            XYPolygon: This XYPolygon object
+        """
         self._cs = cs
         return self
 
@@ -306,7 +316,11 @@ class XYPolygon:
         return self
     
     def iterate(self) -> Generator[tuple[float, float],None, None]:
-        """ Iterates over the x,y coordinates as a tuple."""
+        """ Iterates over the x,y coordinates as a tuple.
+
+        Yields:
+            tuple[float, float]: The (x, y) coordinate of each polygon point
+        """
         for i in range(self.N):
             yield (self.x[i], self.y[i])
 
@@ -319,6 +333,9 @@ class XYPolygon:
         Args:
             radius (float): The radius
             *indices (int): The indices for which to apply the fillet.
+
+        Returns:
+            XYPolygon: This XYPolygon object
         """
         for i in indices:
             self.fillets.append((radius, i))
@@ -423,10 +440,12 @@ class XYPolygon:
         of sections N.
 
         Args:
-            length (length): The length of the extrusion.
+            length (float): The length of the extrusion.
+            cs (CoordinateSystem | None, optional): The coordinate system in which the polygon is placed. Defaults to None (GCS).
+            name (str, optional): The name of the object. Defaults to 'Extrusion'.
 
         Returns:
-            GeoVolume: The resultant Volumetric object.
+            GeoPrism: The resultant Volumetric object.
         """
         if cs is None:
             cs = GCS
@@ -443,6 +462,7 @@ class XYPolygon:
 
         Args:
             cs (CoordinateSystem, optional): The Coordinate system of which the XY plane will be used. Defaults to None.
+            name (str, optional): The name of the object. Defaults to 'GeoPolygon'.
 
         Returns:
             GeoPolygon: The resultant object.
@@ -461,14 +481,14 @@ class XYPolygon:
         """Applies a revolution to the XYPolygon along the provided rotation ais
 
         Args:
-            cs (CoordinateSystem, optional): _description_. Defaults to None.
-            origin: tuple[float, float, float]: The origin of the revolution axis
-            axis: tuple[float, float, float] | Axis: The revolution axis.
-            angle: float - The revolution angle. Defaults to 360 degrees
-            angle (float, optional): _description_. Defaults to 360.0.
+            cs (CoordinateSystem): The coordinate system in which the polygon is placed (None uses GCS)
+            origin (tuple[float, float, float] | Anchor): The origin of the revolution axis
+            axis (tuple[float, float, float] | Axis): The revolution axis.
+            angle (float, optional): The revolution angle in degrees. Defaults to 360.0.
+            name (str, optional): The name of the object. Defaults to 'Revolution'.
 
         Returns:
-            Prism: The resultant 
+            GeoPrism: The resultant revolved volume
         """
         
         if cs is None:
@@ -527,7 +547,7 @@ class XYPolygon:
         Args:
             width (float): The width (X)
             height (float): The height (Y)
-            origin (tuple[float, float]): The origin (x,y)
+            origin (tuple[float, float] | Anchor): The origin (x,y)
             alignment (Alignment, optional): What point the origin describes. Defaults to Alignment.CORNER.
 
         Returns:
@@ -561,13 +581,14 @@ class XYPolygon:
         Args:
             xfunc (Callable): The x-coordinate function.
             yfunc (Callable): The y-coordinate function
-            tolerance (float): A maximum distance tolerance. Defaults to 10um.
+            xmin (float, optional): The minimum distance between subsequent points. Defaults to 1e-3.
+            tolerance (float, optional): A maximum distance tolerance. Defaults to 1e-5.
             tmin (float, optional): The start value of the t-parameter. Defaults to 0.
             tmax (float, optional): The end value of the t-parameter. Defaults to 1.
-            reverse (bool, optional): Reverses the curve.
+            reverse (bool, optional): Reverses the curve. Defaults to False.
 
         Returns:
-            XYPolygon: _description_
+            XYPolygon: This XYPolygon object
         """
         xs, ys = _discretize_curve(xfunc, yfunc, tmin, tmax, xmin, tolerance)
 
@@ -599,7 +620,7 @@ class XYPolygon:
             offset (float, optional): The offset of the first corrugation in percentage of a single period. Defaults to 0.0.
 
         Returns:
-            XYPolygon: _description_
+            XYPolygon: This XYPolygon object
         """
         ds = _parse_vector(direction)
         if corr_axis is not None:
@@ -647,6 +668,7 @@ class XYPolygon:
         
         Args:
             other (XYPolygon): _descrThe otheiption_
+            name (str, optional): The name of the object. Defaults to 'Connection'.
 
         Returns:
             GeoVolume: The resultant volume object
@@ -745,10 +767,12 @@ class Disc(GeoSurface):
         """Creates a circular Disc surface.
 
         Args:
-            origin (tuple[float, float, float]): The center of the disc
+            origin (tuple[float, float, float] | Anchor): The center of the disc
             radius (float): The radius of the disc
-            axis (tuple[float, float, float], optional): The disc normal axis. Defaults to (0,0,1.0).
-            radius_opt (float, None): Secondary radius in case where one wants to make an ellipse.
+            axis (tuple[float, float, float] | Axis, optional): The disc normal axis. Defaults to (0,0,1.0).
+            radius_opt (float | None): Secondary radius in case where one wants to make an ellipse.
+            axis_opt (tuple[float, float, float] | None, optional): The secondary (x) axis, required when radius_opt is given. Defaults to None.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         origin = _parse_vector(origin)
         axis = _parse_vector(axis)
@@ -780,19 +804,17 @@ class Curve(GeoEdge):
         """Generate a Spline/Bspline or Bezier curve based on a series of points
 
         This calls the different curve features in OpenCASCADE.
-        
-        The dstart parameter defines the departure direction of the curve. If not provided this is inferred as the
-        discrete derivative from the first to second coordinate. 
-        
+
         Args:
             xpts (np.ndarray): The X-coordinates
             ypts (np.ndarray): The Y-coordinates
             zpts (np.ndarray): The Z-coordinates
             degree (int, optional): The BSpline degree parameter. Defaults to 3.
             weights (list[float] | None, optional): An optional point weights list. Defaults to None.
-            knots (list[float] | None, optional): A nkots list. Defaults to None.
+            knots (list[float] | None, optional): A knots list. Defaults to None.
+            multiplicities (list[float] | None, optional): The multiplicity of each knot. Defaults to None.
             ctype (Literal['Spline','BSpline','Bezier'], optional): The type of curve. Defaults to 'Spline'.
-            dstart (tuple[float, float, float] | None, optional): The departure direction. Defaults to None.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         self.xpts: np.ndarray = xpts
         self.ypts: np.ndarray = ypts
@@ -842,12 +864,13 @@ class Curve(GeoEdge):
         """Generates a Helical curve
 
         Args:
-            pstart (tuple[float, float, float]): The start of the center of rotation (not the start of the curve)
-            pend (tuple[float, float, float]): The end of the center of rotation
+            pstart (tuple[float, float, float] | Anchor): The start of the center of rotation (not the start of the curve)
+            pend (tuple[float, float, float] | Anchor): The end of the center of rotation
             r_start (float): The (start) radius of the helix
             pitch (float): The pitch angle of the helix
             r_end (float | None, optional): The ending radius. If default, the same is used as the start. Defaults to None.
             _narc (int, optional): The number of Spline arc sections used. Defaults to 8.
+            startfeed (float, optional): The length of an extra feed section added at the start of the helix. Defaults to 0.0 (none).
 
         Returns:
             Curve: The Curve geometry object
@@ -921,12 +944,13 @@ class Curve(GeoEdge):
         """Generates a Helical curve
 
         Args:
-            pstart (tuple[float, float, float]): The start of the center of rotation (not the start of the curve)
-            pend (tuple[float, float, float]): The end of the center of rotation
+            pstart (tuple[float, float, float] | Anchor): The start of the center of rotation (not the start of the curve)
+            pend (tuple[float, float, float] | Anchor): The end of the center of rotation
             r_start (float): The (start) radius of the helix
             pitch (float): The pitch angle of the helix
             r_end (float | None, optional): The ending radius. If default, the same is used as the start. Defaults to None.
             _narc (int, optional): The number of Spline arc sections used. Defaults to 8.
+            startfeed (float, optional): The length of an extra feed section added at the start of the helix. Defaults to 0.0 (none).
 
         Returns:
             Curve: The Curve geometry object
@@ -1005,8 +1029,10 @@ class Curve(GeoEdge):
         Args:
             crossection (GeoSurface | XYPolygon): The cross section definition to be used
             max_mesh_size (float, optional): The maximum mesh size. Defaults to None
-            start_tangent (Axis, tuple, ndarray, optional): The input polygon plane normal direction. Defaults to None
-            x_axis (Axis, tuple, ndarray optional): The reference X-axis to align the input polygon. Defaults to None
+            start_tangent (Axis | tuple[float, float, float] | np.ndarray | None, optional): The input polygon plane normal direction. Defaults to None
+            x_axis (Axis | tuple[float, float, float] | np.ndarray | None, optional): The reference X-axis to align the input polygon. Defaults to None
+            trihedron (Literal["DiscreteTrihedron", "CorrectedFrenet", "Fixed", "Frenet", "ConstantNormal", "Darboux", "GuideAC", "GuidePlan", "GuideACWithContact", "GuidePlanWithContact"], optional): The GMSH/OCC trihedron mode used for the sweep. Defaults to "GuidePlan".
+            name (str, optional): The name of the object. Defaults to 'PipedVolume'.
         Returns:
             GeoVolume: The resultant volume object
         """

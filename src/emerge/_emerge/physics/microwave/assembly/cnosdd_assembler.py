@@ -25,7 +25,7 @@ from scipy.sparse import csc_matrix
 from loguru import logger
 from ....const import EPS0, C0
 import time
-from .dd_tools import generate_reduction_matrix
+from .emr_microwave import generate_reduction_matrix
 
 _PBC_DSMAX = 1e-15
 
@@ -154,7 +154,7 @@ class CNOSDDAssembler:
         domains: list[GeoVolume | DomainSelection],
     ) -> tuple[CNOSDDData, np.ndarray, np.ndarray, np.ndarray]:
 
-        from .curlcurl import tet_mass_stiffness_matrices_subdom
+        from .emr_microwave import tet_mass_stiffness_matrices_subdom
 
         self.assy_field = field
         self.assy_freq = frequency
@@ -308,14 +308,14 @@ class CNOSDDAssembler:
 
     def _robin_bc_to_csc(self, tri_ids: np.ndarray, gamma: complex) -> csc_matrix:
         """Assembles a Robin-type surface integral over tri_ids into a global CSC matrix."""
-        from .robinbc import assemble_robin_bc
+        from .emr_microwave import assemble_robin_bc
         field = self.assy_field
         B = assemble_robin_bc(field, field.empty_tri_matrix(), tri_ids, gamma)
         return csc_matrix((B, (field._rows, field._cols)), shape=(field.n_field, field.n_field), dtype=np.complex128)
 
     def _get_robin_mat(self, bc: RobinBC) -> csc_matrix:
-        from .robinbc import assemble_robin_bc_bvec
-        from .robin_abc_order2 import abc_order_2_matrix
+        from .emr_microwave import assemble_robin_bc_bvec
+        from .emr_microwave import abc_order_2_matrix
 
         field = self.assy_field
         K0 = 2 * np.pi * self.assy_freq / C0

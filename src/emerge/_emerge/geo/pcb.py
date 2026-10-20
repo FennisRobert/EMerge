@@ -133,10 +133,10 @@ def normalize(vector: np.ndarray) -> np.ndarray:
     """Convenience function for normalizing vectors by L2 norm
 
     Args:
-        vector (np.ndarray): _description_
+        vector (np.ndarray): The vector to normalize
 
     Returns:
-        np.ndarray: _description_
+        np.ndarray: The normalized vector (unchanged if its norm is zero)
     """
     norm = np.linalg.norm(vector)
     if norm == 0:
@@ -163,6 +163,16 @@ def _rot_mat(angle: float) -> np.ndarray:
 
 @dataclass
 class Via:
+    """A via between two copper layers.
+
+    Args:
+        x (float): The x-coordinate
+        y (float): The y-coordinate
+        layer1 (int): The start layer
+        layer2 (int): The end layer
+        radius (float): The via radius
+        segments (int): The number of polygon segments of the via cross section (0 for a true cylinder)
+    """
     x: float
     y: float
     layer1: int
@@ -172,6 +182,7 @@ class Via:
 
     @property
     def pnt(self) -> Anchor:
+        """An Anchor at the via center on its starting layer, in global coordinates."""
         unit = _GlobalHandler.active().pcbmanager.unit
         cs = _GlobalHandler.active().pcbmanager.cs
         pcb = _GlobalHandler.active().pcbmanager.pcb
@@ -185,6 +196,7 @@ class RouteElement:
     _UNIT: float = 1.0
 
     def __init__(self):
+        """Base class of the trace route elements of a StripPath."""
         self.width: float = None
         self.x: float = None
         self.y: float = None
@@ -214,6 +226,7 @@ class RouteElement:
 
     @property
     def pnt(self) -> Anchor:
+        """An Anchor at the end of this element, oriented along its direction, in global coordinates."""
         unit = _GlobalHandler.active().pcbmanager.unit
         cs = _GlobalHandler.active().pcbmanager.cs
         ux = np.array(
@@ -230,10 +243,12 @@ class RouteElement:
 
     @property
     def xy(self) -> tuple[float, float]:
+        """The (x, y) coordinate of this element."""
         return self.x, self.y
 
     @property
     def nr(self) -> tuple[float, float]:
+        """The right edge point of this element at its (x, y) coordinate."""
         return (
             self.x + self.dirright[0] * self.width / 2,
             self.y + self.dirright[1] * self.width / 2,
@@ -241,6 +256,7 @@ class RouteElement:
 
     @property
     def nl(self) -> tuple[float, float]:
+        """The left edge point of this element at its (x, y) coordinate."""
         return (
             self.x - self.dirright[0] * self.width / 2,
             self.y - self.dirright[1] * self.width / 2,
@@ -248,10 +264,12 @@ class RouteElement:
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         raise NotImplementedError()
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         raise NotImplementedError()
 
     def __eq__(self, other: RouteElement) -> bool:
@@ -273,6 +291,15 @@ class StripLine(RouteElement):
         width: float,
         direction: tuple[float, float],
     ):
+        """A straight trace section.
+
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            layer (int): The copper layer
+            width (float): The trace width
+            direction (tuple[float, float]): The incoming direction as a (dx, dy) tuple
+        """
         x, y, _ = argparse_xyz(x, y)
         self.x = x
         self.y = y
@@ -290,6 +317,7 @@ class StripLine(RouteElement):
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         return [
             (
                 self.x + self.width / 2 * self.dirright[0],
@@ -299,6 +327,7 @@ class StripLine(RouteElement):
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         return [
             (
                 self.x - self.width / 2 * self.dirright[0],
@@ -322,6 +351,18 @@ class StripTurn(RouteElement):
         champher_distance: float | None = None,
         dsratio: float = 1.0,
     ):
+        """A sharp trace corner.
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            layer (int): The copper layer
+            width (float): The trace width
+            direction (tuple[float, float]): The incoming direction as a (dx, dy) tuple
+            angle (float): The turning angle in degrees
+            corner_type (str, optional): The corner type ("square", "champher" or "miter"). Defaults to "square".
+            champher_distance (float | None, optional): The champher cut distance. Defaults to None.
+            dsratio (float, optional): The cut ratio for champher/miter corners. Defaults to 1.0.
+        """
         x, y, _ = argparse_xyz(x, y)
         self.layer: int = layer
         self.xold: float = x
@@ -366,6 +407,7 @@ class StripTurn(RouteElement):
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         if self.angle > 0:
             return []
 
@@ -408,6 +450,7 @@ class StripTurn(RouteElement):
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         if self.angle < 0:
             return []
 
@@ -461,6 +504,17 @@ class StripCurve(StripTurn):
         radius: float,
         dang: float = 10.0,
     ):
+        """A curved trace bend.
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            layer (int): The copper layer
+            width (float): The trace width
+            direction (tuple[float, float]): The incoming direction as a (dx, dy) tuple
+            angle (float): The turning angle in degrees
+            radius (float): The bend radius
+            dang (float, optional): The angular step in degrees used to discretize the bend. Defaults to 10.0.
+        """
         x, y, _ = argparse_xyz(x, y)
         self.layer = layer
         self.xold: float = x
@@ -496,6 +550,7 @@ class StripCurve(StripTurn):
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         points: list[tuple[float, float]] = []
         Npts = int(np.ceil(abs(self.angle / self.dang)))
         R = self.radius - np.sign(self.angle) * self.width / 2
@@ -510,6 +565,7 @@ class StripCurve(StripTurn):
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         points: list[tuple[float, float]] = []
 
         Npts = int(np.ceil(abs(self.angle / self.dang)))
@@ -535,6 +591,15 @@ class PCBPoly:
         material: Material = PEC,
         name: str | None = None,
     ):
+        """A polygon on a PCB copper layer.
+
+        Args:
+            xs (list[float]): The x-coordinates of the polygon corners
+            ys (list[float]): The y-coordinates of the polygon corners
+            layer (int): The copper layer
+            material (Material, optional): The polygon material. Defaults to PEC.
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         self.xs: list[float] = xs
         self.ys: list[float] = ys
         self.layer: int = layer
@@ -543,9 +608,18 @@ class PCBPoly:
 
     @property
     def xys(self) -> list[tuple[float, float]]:
+        """The (x, y) corner coordinates of the polygon."""
         return list([(x, y) for x, y in zip(self.xs, self.ys)])
 
     def segment(self, index: int) -> StripLine:
+        """The polygon edge starting at a corner as a StripLine.
+
+        Args:
+            index (int): The index of the starting corner (wraps around)
+
+        Returns:
+            StripLine: A StripLine at the edge midpoint whose width spans the edge
+        """
         N = len(self.xs)
         x1 = self.xs[index % N]
         x2 = self.xs[(index + 1) % N]
@@ -561,6 +635,18 @@ class PCBPoly:
     def circle(
         x: float, y: float, radius: float, layer: int, NSegments: int = 12
     ) -> PCBPoly:
+        """Create a regular polygon approximating a circle.
+
+        Args:
+            x (float): The center x-coordinate
+            y (float): The center y-coordinate
+            radius (float): The radius
+            layer (int): The copper layer
+            NSegments (int, optional): The number of polygon segments. Defaults to 12.
+
+        Returns:
+            PCBPoly: The polygon
+        """
         angles = np.linspace(0, 2 * np.pi, NSegments, endpoint=False)
         xs = list(x + radius * np.cos(angles))
         ys = list(y + radius * np.sin(angles))
@@ -576,6 +662,12 @@ class StripPath:
     _DEFNAME: str = "Path"
 
     def __init__(self, pcb: PCB, name: str | None = None):
+        """Create an empty StripPath. Use PCB.new() instead of creating it directly.
+
+        Args:
+            pcb (PCB): The PCB this path belongs to
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         self.pcb: PCB = pcb
         self.path: list[RouteElement] = []
         self.layer: int = 0
@@ -591,11 +683,17 @@ class StripPath:
 
     @property
     def z(self) -> float:
+        """The z-coordinate of the layer of this path."""
         return self.pcb.z(self.layer)
     
     def iter_right(
         self,
     ) -> Generator[tuple[RouteElement, RouteElement, RouteElement], None, None]:
+        """Iterate over the route elements together with their neighbours.
+
+        Yields:
+            tuple[RouteElement, RouteElement, RouteElement]: The previous, current and next element
+        """
         N = len(self.path)
         for i in range(N):
             yield self.path[(i - 1) % N], self.path[i], self.path[(i + 1) % N]
@@ -603,6 +701,11 @@ class StripPath:
     def iter_left(
         self,
     ) -> Generator[tuple[RouteElement, RouteElement, RouteElement], None, None]:
+        """Iterate over the route elements together with their neighbours.
+
+        Yields:
+            tuple[RouteElement, RouteElement, RouteElement]: The previous, current and next element
+        """
         N = len(self.path)
         for i in range(N):
             yield self.path[(i - 1) % N], self.path[i], self.path[(i + 1) % N]
@@ -614,10 +717,12 @@ class StripPath:
 
     @property
     def xs(self) -> list[float]:
+        """The x-coordinates of all route elements."""
         return [elem.x for elem in self.path]
 
     @property
     def ys(self) -> list[float]:
+        """The y-coordinates of all route elements."""
         return [elem.y for elem in self.path]
 
     @property
@@ -642,7 +747,7 @@ class StripPath:
         """Remove half the stripline distance from the next element
 
         Returns:
-            StripPath: _description_
+            StripPath: This StripPath object
         """
         w = self.end.width / 2
         self._consume = w
@@ -668,7 +773,18 @@ class StripPath:
         direction: tuple[float, float],
         trace_layer: int = -1,
     ) -> StripPath:
-        """Initializes the StripPath object for routing."""
+        """Initializes the StripPath object for routing.
+
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            width (float): The trace width
+            direction (tuple[float, float]): The start direction as a (dx, dy) tuple
+            trace_layer (int, optional): The copper layer. Defaults to -1.
+
+        Returns:
+            StripPath: This StripPath object
+        """
         x, y, z = argparse_xyz(x, y)
         self.path.append(StripLine(x, y, trace_layer, width, direction))
         self.layer = trace_layer
@@ -769,7 +885,7 @@ class StripPath:
         Args:
             angle (float): The turning angle
             width (float, optional): The stripline width. Defaults to None.
-            corner_type (str, optional): The corner type. Defaults to 'champher'.
+            corner_type (Literal["champher", "square","miter"] | None, optional): The corner type. Defaults to 'champher'.
             dsratio: (float, optional): The chamfer distance expressed as the proportional of the corner diagonal.
 
         Returns:
@@ -818,9 +934,9 @@ class StripPath:
 
         Args:
             angle (float): The turning angle
-            width (float, optional): The stripline width. Defaults to None.
-            corner_type (str, optional): The corner type. Defaults to 'champher'.
-            dsratio: (float, optional): The chamfer distance expressed as the proportional of the corner diagonal.
+            corner_type (Literal["champher", "square", "miter"] | None, optional): The corner type. Defaults to 'champher'.
+            dsratio (float | None, optional): The chamfer distance expressed as the proportional of the corner diagonal.
+                Defaults to None.
 
         Returns:
             StripPath: The current StripPath object
@@ -843,7 +959,9 @@ class StripPath:
 
         Args:
             angle (float): The turning angle
+            radius (float): The bend radius
             width (float, optional): The stripline width. Defaults to None.
+            dang (float, optional): The angular step in degrees used to discretize the bend. Defaults to 10.
 
         Returns:
             StripPath: The current StripPath object
@@ -886,14 +1004,16 @@ class StripPath:
         angle: float | None = None,
         width: float | None = None,
     ) -> StripPath:
-        """Split the current path in N new paths given by a new departure direction
+        """Branches off a new path from the current end point. Call it repeatedly to split into several paths.
 
         Args:
-            directions (list[tuple[float, float]]): a list of directions example: [(1,0),(-1,0)]
-            widths (list[float], optional): The width for each new path. Defaults to None.
+            direction (tuple[float, float] | None, optional): The departure direction of the new path. Defaults to
+                the current direction.
+            angle (float | None, optional): Rotation of the departure direction in degrees. Defaults to None.
+            width (float | None, optional): The width of the new path. Defaults to the current width.
 
         Returns:
-            list[StripPath]: A list of new StripPath objects
+            StripPath: The new StripPath object
         """
         if width is None:
             width = self.end.width
@@ -933,7 +1053,7 @@ class StripPath:
 
         Args:
             impedance_function (Callable): A function that computes the component impedance as a function of frequency.
-            size (SizeNames | tuple): The dimensions of the lumped element on PCB.
+            size (SIZE_NAMES | tuple[float, float]): The dimensions of the lumped element on PCB.
 
         Returns:
             StripPath: The same strip path object
@@ -982,11 +1102,11 @@ class StripPath:
             x + dx * length, y + dy * length, self.end.width, self.end.direction, trace_layer=self.layer
         )
 
-    def lumped_element_from_sp(self, filename: str, size: SIZE_NAMES | tuple[float, float], ground_layer: int = 0) -> GeoVolume:
-        """Adds a lumped element to the PCB.
+    def lumped_element_from_sp(self, filename: str, size: SIZE_NAMES | tuple[float, float], ground_layer: int = 0) -> StripPath:
+        """Adds a lumped element to the PCB whose impedance is read from a Touchstone (.sNp) file.
 
-        The first argument should be the impedance function as function of frequency. For a capacitor this would be:
-        Z(f) = 1/(j2πfC).
+        A 1-port file, or a 2-port file of a series element, is added as a series element. Any other 2-port file
+        is added as a pi-network with two shunt elements to the ground layer.
         The second argument specifies the size of the element (length x width) as a tuple or it can be a string for a
         package. For example "0402". The size of the lumped component does not inlcude the footprint.
 
@@ -1004,11 +1124,12 @@ class StripPath:
         The impedance function and geometry is automatically passed on with the lumped element added.
 
         Args:
-            impedance_function (Callable): A function that computes the component impedance as a function of frequency.
-            size (SizeNames | tuple): The dimensions of the lumped element on PCB.
+            filename (str): The Touchstone file with the S-parameters of the component.
+            size (SIZE_NAMES | tuple[float, float]): The dimensions of the lumped element on PCB.
+            ground_layer (int, optional): The layer the shunt elements of a pi-network connect to. Defaults to 0.
 
         Returns:
-            StripPath: The same strip path object
+            StripPath: The new StripPath object that continues after the element
         """
         from ...auxilliary.touchstone import TouchstoneData
 
@@ -1082,21 +1203,17 @@ class StripPath:
             )
     
     def cut(self) -> StripPath:
-        """Split the current path in N new paths given by a new departure direction
-
-        Args:
-            directions (list[tuple[float, float]]): a list of directions example: [(1,0),(-1,0)]
-            widths (list[float], optional): The width for each new path. Defaults to None.
+        """Starts a new path at the current end point with the same width and direction.
 
         Returns:
-            list[StripPath]: A list of new StripPath objects
+            StripPath: The new StripPath object
         """
         width = self.end.width
         direction = self.end.direction
         x = self.end.x
         y = self.end.y
-        paths = self.pcb.new(x, y, width, direction, trace_layer=self.layer)
-        return paths
+        path = self.pcb.new(x, y, width, direction, trace_layer=self.layer)
+        return path
 
     def stub(
         self,
@@ -1105,7 +1222,17 @@ class StripPath:
         length: float,
         mirror: bool = False,
     ) -> StripPath:
-        """Add a single rectangular strip line section at the current coordinate"""
+        """Add a single rectangular strip line section at the current coordinate
+
+        Args:
+            direction (tuple[float, float]): The stub direction as a (dx, dy) tuple
+            width (float): The stub width
+            length (float): The stub length
+            mirror (bool, optional): Also add the same stub in the opposite direction. Defaults to False.
+
+        Returns:
+            StripPath: This StripPath object
+        """
         self.pcb.new(self.end.x, self.end.y, width, direction, trace_layer=self.layer).straight(length)
         if mirror:
             self.pcb.new(
@@ -1114,7 +1241,11 @@ class StripPath:
         return self
 
     def merge(self) -> StripPath:
-        """Continue at the last point where .split() is called"""
+        """Continue at the last point where .split() is called
+
+        Returns:
+            StripPath: The StripPath on which .split() was called
+        """
         if len(self.pcb._checkpoint) == 0:
             raise RouteException(
                 "No checkpoint known. Make sure to call .check() first"
@@ -1143,13 +1274,15 @@ class StripPath:
         the new segment to include the via. If not specifies it defaults to width/2.
 
         Args:
-            znew (float): The new Z-height for the stripline
-            radius (float): The via radius
+            new_layer (int): The PCB layer the stripline continues on
+            radius (float | None, optional): The via radius. Defaults to None.
             proceed (bool, optional): Wether to continue with a new trace. Defaults to True.
             direction (tuple[float, float], optional): The new direction. Defaults to None.
             width (float, optional): The new width. Defaults to None.
             extra (float, optional): How much extra stripline to add around the via. Defaults to None.
             segments (int, optional): The number of via polygon sections. Defaults to 6.
+            annular_ring_radius (float | None, optional): The radius of the annular ring cut out of the ground planes
+                and polygons around the via. Defaults to None (no ring).
             hole_radius (float | None, optional): The via hole radius for the Ground layers and polies. Defaults to None.
             hole_skip_layers (list[int] | None, optional): A list of layer numbers where the via hole should not be created. Defaults to None.
             reverse (float, optional): A distance to place the via back in the direction the stripline is coming from. Defaults to 0.0.
@@ -1229,7 +1362,7 @@ class StripPath:
             width (float | None, optional): The new width. Defaults to None.
 
         Returns:
-            StripPath: _description_
+            StripPath: This StripPath object
         """
         if width is None:
             width = self.end.width
@@ -1333,10 +1466,11 @@ class StripPath:
             arrival_dir (tuple[float, float] | None, optional): The arrival direction as dx/dy tuple. Defaults to None.
             arrival_margin (float | None, optional): The minimal travel distance in the arrival direction. Defaults to None.
             angle_step (float, optional): The angle step size to solve for. Defaults to 90.
-            corner_type (["miter","square","champher"], optional): The corner type. Defaults to 'square'.
+            corner_type (Literal['champher','square','miter'] | None, optional): The corner type. Defaults to 'square'.
             dsratio (float, optional): The cut ratio for champher/miter corners. Defaults to 0.7.
+
         Returns:
-            StripPath: _description_
+            StripPath: This StripPath object
         """
         
         # Default overwrite
@@ -1523,6 +1657,13 @@ class PCBLayer:
     _DEFNAME: str = "PCBLayer"
 
     def __init__(self, thickness: float, material: Material, name: str | None = None):
+        """A dielectric layer of a PCB stack.
+
+        Args:
+            thickness (float): The layer thickness
+            material (Material): The dielectric material
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         self.th: float = thickness
         self.mat: Material = material
         self.name: str = _GlobalHandler.active().pcbmanager(name, self._DEFNAME)
@@ -1565,8 +1706,9 @@ class PCB:
             layers (int, optional): The number of copper layers. Defaults to 2.
             stack (list[PCBLayer], optional): Optional list of PCBLayer classes for multilayer PCB with different dielectrics. Defaults to None.
             name (str | None, optional): The PCB object name. Defaults to None.
-            trace_thickness (float | None, optional): The conductor trace thickness if important. Defaults to None.
-            thick_traces: (bool, optional): If traces should be given a thickness and modeled in 3D. Defaults to False
+            trace_thickness (float, optional): The conductor trace thickness if important. Defaults to 35e-6.
+            zs (np.ndarray | None, optional): The z-coordinates of all copper layers; overrides thickness, layers and stack. Defaults to None.
+            thick_traces (bool, optional): If traces should be given a thickness and modeled in 3D. Defaults to False.
         """
 
         self.thickness: float = thickness
@@ -1657,7 +1799,7 @@ class PCB:
 
     @property
     def trace(self) -> GeoPolygon:
-        ""
+        """All traces of the PCB as a single GeoPolygon."""
         tags = []
         for trace in self.traces:
             tags.extend(trace.tags)
@@ -1893,7 +2035,7 @@ class PCB:
         >>> pcb.add_vias((x1,y1), (x1,y2), radius=1)
 
         Args:
-            *coordinates (tuple(float, float)): A series of coordinates
+            *coordinates (tuple[float, float] | Anchor): A series of coordinates
             radius (float): The radius
             layer1 (int, optional): The bottom layer index. Defaults to 0.
             layer2 (int, optional): The top layer index. Defaults to -1 (top layer).
@@ -1910,6 +2052,8 @@ class PCB:
         Args:
             name (str): The name of the x,y coordinate
 
+        Returns:
+            RouteElement: The stored stripline (or polygon) with the given label
         """
         _GlobalHandler.active().pcbmanager.unit = self.unit
         _GlobalHandler.active().pcbmanager.cs = self.cs
@@ -2025,11 +2169,12 @@ class PCB:
             layer (int): The Layer at which to place the plane object
             width (float, optional): The width of the plate. Defaults to None.
             height (float, optional): The height of the plate. Defaults to None.
-            origin (tuple[float, float], optional): The origin of the plate. Defaults to None.
-            alignment (['corner','center'], optional): The alignment of the plate. Defaults to 'corner'.
+            origin (tuple[float, float] | Anchor | None, optional): The origin of the plate. Defaults to None.
+            alignment (Alignment, optional): The alignment of the plate. Defaults to 'corner'.
             material (Material, optional): The optional plane material. Defaults to the trace material specified.
+            name (str | None, optional): The name of the object. Defaults to "Plane".
         Returns:
-            GeoSurface: The resultant GeoSurface of the plane
+            GeoSurface | GeoVolume: The resultant GeoSurface of the plane
         """
         if width is None or height is None or origin is None:
             self._require_bounds("create a plane without an explicit width, height and origin")
@@ -2079,7 +2224,7 @@ class PCB:
         """Generates a radial stub polygon
 
         Args:
-            pos (tuple[float, float] | Point): The position of the stub origin
+            pos (tuple[float, float] | Anchor): The position of the stub origin
             length (float): The length of the stub
             angle (float): The angle of the stub in degrees
             direction (tuple[float, float]): The direction vector
@@ -2171,13 +2316,13 @@ class PCB:
                      height_air_top: float | None = None, 
                      height_air_bottom: float | None = None) -> tuple[GeoVolume, list[GeoVolume], list[GeoVolume]]:
         """Generate all PCB components to finalize the model.
-        
+
         Air is always returned as a list of Air elements. Either empty if no heights are provided, a sinle one or both (top first, then bottom)
 
         Args:
-            merge (bool, optional): _description_. Defaults to False.
-            height_air_top (float | None, optional): _description_. Defaults to None.
-            height_air_bottom (float | None, optional): _description_. Defaults to None.
+            merge (bool, optional): Merge the PCB dielectric volumes into a single object. Defaults to False.
+            height_air_top (float | None, optional): The height of the air box above the PCB. Defaults to None (no air box).
+            height_air_bottom (float | None, optional): The height of the air box below the PCB. Defaults to None (no air box).
 
         Returns:
             tuple[GeoVolume, list[GeoVolume], list[GeoVolume]]: PCB, Air, Vias
@@ -2205,6 +2350,11 @@ class PCB:
 
         This requires that the width, depth and origin are deterimed. This
         can either be done manually or via the .determine_bounds() method.
+
+        Args:
+            height (float): The height of the air box
+            name (str, optional): The name of the object. Defaults to "PCBAirbox".
+            bottom (bool, optional): Place the air box below the PCB instead of on top. Defaults to False.
 
         Returns:
             GeoVolume: The PCB Block
@@ -2279,11 +2429,12 @@ class PCB:
         The direction must be provided as an (dx,dy) vector provided as tuple.
 
         Args:
-            x (float): The starting X-coordinate (local)
+            x (float | Anchor): The starting X-coordinate (local)
             y (float): The starting Y-coordinate (local)
             width (float): The (micro)-stripline width
             direction (tuple[float, float]): The direction.
             trace_layer (int, optional): The trace layer. Defaults to -1
+            name (str | None, optional): The name of the object. Defaults to None.
         Returns:
             StripPath: A StripPath object that can be extended with method chaining.
 
@@ -2320,7 +2471,9 @@ class PCB:
 
         Args:
             stripline (StripLine | str): The stripline object or a reference to the stripline object
-            z_ground (float | None, optional): The ground height to extrude the port to. Defaults to None.
+            port_number (int): The port number assigned to the lumped port
+            ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
+            impedance (float, optional): The port impedance in Ohm. Defaults to 50.0.
             name (str | None, optional): The name for the resultant object. Defaults to 'LumpedPort'.
 
         Returns:
@@ -2370,7 +2523,7 @@ class PCB:
             [
                 planetag,
             ],
-            name="name",
+            name=name,
         )
         poly.properties += LumpedPortAttribute(port_number=port_number, width=abs(stripline.width * self.unit), height=abs(height), direction=self.cs.zax, impedance=impedance)
         return poly
@@ -2387,12 +2540,15 @@ class PCB:
     ) -> GeoPolygon:
         """Generate a lumped-port object to be created.
 
-        The lumped port will be drawn and extruded form the line specified by two points.
+        The lumped port will be drawn and extruded from the line specified by two points.
+
         Args:
-            p1: (tuple[float, float]) - Point one of the line to be extruded
-            p2: (tuple[float, float]) - POint two of the line to be extruded
-            z: (float) - The starting z-height for the extrusion.
-            z_ground (float | None, optional): The ground height to extrude the port to. Defaults to None.
+            p1 (tuple[float, float]): Point one of the line to be extruded
+            p2 (tuple[float, float]): Point two of the line to be extruded
+            layer (int): The PCB layer the port starts at
+            port_number (int): The port number assigned to the lumped port
+            ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
+            impedance (float, optional): The port impedance in Ohm. Defaults to 50.0.
             name (str | None, optional): The name for the resultant object. Defaults to 'LumpedPort'.
 
         Returns:
@@ -2437,7 +2593,7 @@ class PCB:
             [
                 planetag,
             ],
-            name="name",
+            name=name,
         )
         poly.properties += LumpedPortAttribute(port_number=port_number, direction = self.cs.zax, width=abs(width), height=abs(height), impedance=impedance)
 
@@ -2460,9 +2616,14 @@ class PCB:
         extended to the air height from the bottom of the PCB unless a different height is specified.
 
         Args:
-            point (StripLine): The location of the port.
+            point (StripLine | str): The location of the port.
+            port_number (int): The port number
+            height (float | tuple[float, float]): The height of the port above the PCB. A (dz, height) tuple
+                additionally extends the port by dz below the PCB.
             width_multiplier (float, optional): The width of the port in stripline widths. Defaults to 5.0.
-            height (float, optional): The height of the port. Defaults to None.
+            width (float | None, optional): The absolute port width, overrides width_multiplier. Defaults to None.
+            mode_type (Literal['TEM','TE','TM','any'], optional): The mode type of the port. Defaults to 'any'.
+            name (str | None, optional): The name of the object. Defaults to "ModalPort".
 
         Returns:
             GeoSurface: The GeoSurface object that can be used for the waveguide.
@@ -2508,7 +2669,7 @@ class PCB:
             merge (bool, optional): Whether to merge the result into a final object. Defaults to False.
             material (Material, optional): The optional material for the vias.
         Returns:
-            list[Cylinder] | Cylinder: Either al ist of cylllinders or a single one (merge=True)
+            list[Cylinder] | GeoVolume: Either al ist of cylllinders or a single one (merge=True)
         """
         vias = []
         if material is None:
@@ -2548,6 +2709,7 @@ class PCB:
             ys (list[float]): A list of y-coordinates
             layer (int, optional): The layer index. Defaults to 0.
             material (Material, optional): The material. Defaults to COPPER.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         if material is None:
             material = self.trace_material
@@ -2568,6 +2730,7 @@ class PCB:
             xs (list[float]): A list of x-coordinates
             ys (list[float]): A list of y-coordinates
             layer (int, optional): The layer index. Defaults to 0.
+            name (str | None, optional): The name of the object. Defaults to None.
             
         """
         material = self.trace_material
@@ -2597,7 +2760,7 @@ class PCB:
             merge (bool, optional): Whether to merge the Polygons into a single. Defaults to False.
             fragment (bool, optional): Adds line segment points to improve mesh quality in combination with set_trace_refinement().
         Returns:
-            list[Polygon] | GeoSurface: The output stripline polygons possibly merged if merge = True.
+            list[GeoPolygon] | GeoSurface | GeoVolume: The output stripline polygons possibly merged if merge = True.
         """
         polys: list[GeoSurface] = []
         allx = []

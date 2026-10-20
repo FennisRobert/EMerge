@@ -55,3 +55,10 @@ check_directory_cleanup.py
 uv.lock
 # EMerge global cache
 __emergecache__/
+
+# Rust build output
+emr/target/
+
+# Compiled EMR extension placed in-tree by editable installs
+src/emr/*.so
+src/emr/*.pyd

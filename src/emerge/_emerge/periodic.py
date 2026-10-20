@@ -69,6 +69,12 @@ class PeriodicCell:
                  origins: list[tuple[float, float, float] | list[float] | np.ndarray | Axis],
                  vectors: list[tuple[float, float, float] | list[float] | np.ndarray | Axis]):
 
+        """A periodic unit cell defined by pairs of periodic faces.
+
+        Args:
+            origins (list[tuple[float, float, float] | list[float] | np.ndarray | Axis]): A point on the first face of each periodic face pair
+            vectors (list[tuple[float, float, float] | list[float] | np.ndarray | Axis]): The lattice vector of each face pair
+        """
         self.origins: list[tuple[float, float, float]] = [_parse_vector(origin) for origin in origins] # type: ignore
         self.vectors: list[Axis] = [_parse_axis(vec) for vec in vectors]
         self.included_faces: Selection | None = None
@@ -96,12 +102,15 @@ class PeriodicCell:
         """An iterator that yields the two faces of the hex cell plus a cell periodicity vector
 
         Yields:
-            Generator[np.ndarray, np.ndarray, np.ndarray]: The face and periodicity data
+            Generator[tuple[Selection, Selection, np.ndarray], None, None]: The face and periodicity data
         """
         raise NotImplementedError('This method is not implemented for this subclass.')
 
     def generate_bcs(self) -> list[Periodic]:
         """Generate the priodic boundary conditions
+
+        Returns:
+            list[Periodic]: The periodic boundary conditions of the cell
         """
         bcs = []
         for f1, f2, a in self.cell_data():
@@ -124,7 +133,7 @@ class PeriodicCell:
             exclude_faces (list[FaceSelection], optional): A possible list of faces to exclude from the bcs. Defaults to None.
 
         Returns:
-            list[Periodic]: The list of Periodic boundary conditions
+            list[BoundaryCondition]: The list of Periodic boundary conditions
         """
         if not self._bcs:
             raise ValueError('Periodic Boundary conditions not generated')
@@ -339,7 +348,7 @@ class HexCell(PeriodicCell):
             z2 (float): The ending z-height
 
         Returns:
-            GeoPrism: _description_
+            GeoPrism: The hexagonal cell volume from z1 to z2
         """
         z1, z2 = min(z1, z2), max(z1, z2)
         xs, ys, zs = zip(self.p1, self.p2, self.p3)
@@ -356,6 +365,12 @@ class CustomCell1D(PeriodicCell):
     def __init__(self, 
                  u: tuple[float,float,float],
                  ou: tuple[float,float,float]):
+        """A periodic cell with a single periodic direction.
+
+        Args:
+            u (tuple[float,float,float]): The lattice vector
+            ou (tuple[float,float,float]): A point on the first periodic face
+        """
         self.u: np.ndarray = np.array(u)
         self.ou: np.ndarray = np.array(ou)
         super().__init__([self.ou, ],[self.u])
@@ -375,6 +390,14 @@ class CustomCell2D(PeriodicCell):
                  ou: tuple[float,float,float],
                  v: tuple[float,float,float],
                  ov: tuple[float,float,float]):
+        """A periodic cell with two periodic directions.
+
+        Args:
+            u (tuple[float,float,float]): The first lattice vector
+            ou (tuple[float,float,float]): A point on the first face of the u face pair
+            v (tuple[float,float,float]): The second lattice vector
+            ov (tuple[float,float,float]): A point on the first face of the v face pair
+        """
         self.u: np.ndarray = np.array(u)
         self.ou: np.ndarray = np.array(ou)
         self.v: np.ndarray = np.array(v)

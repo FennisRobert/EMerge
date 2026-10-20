@@ -218,29 +218,37 @@ def fEcurl_SPH(
 r2d = 180 / np.pi
 DEFINITIONS = Literal["EA","SPH"]
 
-"""The background field class abstracts out the methematics of a background EM field.
-
-The two functions that are used by the assembler of the Scattered Field formulation are:
-    - BackgroundField.Uinc
-    - BackgroundField.Uinc_curl
-
-For the computation of the relative E and H field in post processing, the following methods are used:
-    - BackgroundField.E
-    - BackgroundField.H
-
-For any user defined BackgroundField object, these functions must be defined.
-
-Two coordinate/angle conventions for the incident-wave definition are supported:
-    - "EA": Comsol's elevation-azimuth convention.
-    - "SPH": the standard (physics/IEEE) spherical convention, with theta as the
-      polar angle from +z and phi as the azimuthal angle from +x.
-
-Custom BackgroundField classes may support these at will.
-"""
-
 
 @dataclass
 class BackgroundField(Saveable):
+    """The background field class abstracts out the methematics of a background EM field.
+
+    The two functions that are used by the assembler of the Scattered Field formulation are:
+        - BackgroundField.Uinc
+        - BackgroundField.Uinc_curl
+
+    For the computation of the relative E and H field in post processing, the following methods are used:
+        - BackgroundField.E
+        - BackgroundField.H
+
+    For any user defined BackgroundField object, these functions must be defined.
+
+    Two coordinate/angle conventions for the incident-wave definition are supported:
+        - "EA": Comsol's elevation-azimuth convention.
+        - "SPH": the standard (physics/IEEE) spherical convention, with theta as the
+          polar angle from +z and phi as the azimuthal angle from +x.
+
+    Custom BackgroundField classes may support these at will.
+
+    Args:
+        k0 (float): The free space propagation constant
+        theta (float): The theta (elevation for "EA") angle of incidence in radians
+        phi (float): The phi (azimuth) angle of incidence in radians
+        psi (float): The polarization angle in radians
+        origin (tuple[float, float, float]): The phase reference point
+        E0 (complex, optional): The field amplitude. Defaults to 1.0 + 0.0j.
+        definition (DEFINITIONS, optional): The angle convention, "EA" or "SPH". Defaults to "EA".
+    """
     k0: float
     theta: float
     phi: float
@@ -252,7 +260,7 @@ class BackgroundField(Saveable):
     def __post_init__(self):
         allowed = get_args(DEFINITIONS)
         if self.definition not in allowed:
-            return ValueError(
+            raise ValueError(
                 f"Cannot define a background field of definition {self.definition}. Please choose from: {allowed}"
             )
         self.origin = tuple(self.origin)
@@ -297,6 +305,16 @@ class BackgroundField(Saveable):
         return self.curlE(x, y, z)
 
     def k(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> np.ndarray:
+        """Computes the background field wave vector
+
+        Args:
+            x (np.ndarray): The X-coordinates
+            y (np.ndarray): The Y-coordinates
+            z (np.ndarray): The Z-coordinates
+
+        Returns:
+            np.ndarray: The (3, N) wave vector
+        """
         if self.definition == "EA":
             return fK_EA(x, y, z, self.theta, self.phi, self.psi, self.k0, self.origin)
         elif self.definition == "SPH":
@@ -424,6 +442,16 @@ class BackgroundField(Saveable):
         )
 
     def is_about(self, theta: float, phi: float, psi: float) -> bool:
+        """Whether this field has the given incidence and polarization angles (within 1e-6).
+
+        Args:
+            theta (float): The theta angle
+            phi (float): The phi angle
+            psi (float): The polarization angle
+
+        Returns:
+            bool: True if all three angles match
+        """
         return abs(self.theta-theta)< 1e-6 and abs(self.phi-phi)< 1e-6 and abs(self.psi-psi)< 1e-6
     
     def EHK(self, x: float, y: float, z: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

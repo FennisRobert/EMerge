@@ -34,6 +34,7 @@ class HCData(Saveable):
     field: BaseDataset[HCField, None]
 
     def __init__(self):
+        """Container for all heat conduction simulation results (scalar data, field data and solver reports)."""
         self.scalar = BaseDataset[HCScalar, HCScalarNdim](HCScalar, HCScalarNdim, True)
         self.field = BaseDataset[HCField, None](HCField, None, None)
         self.sim: DataContainer = DataContainer()
@@ -42,7 +43,7 @@ class HCData(Saveable):
         """Merges this dataset with other datasets
 
         Returns:
-            MWData: the merged dataset
+            HCData: the merged dataset
         """
         self.sim.merge_with(*[other.sim for other in others])
         self.scalar.merge_with(*[other.scalar for other in others])
@@ -50,6 +51,12 @@ class HCData(Saveable):
         return self
 
     def setreport(self, report, **vars):
+        """Store the solver report for a set of simulation parameters.
+
+        Args:
+            report (SolveReport): The solver report
+            **vars: The simulation parameter values the report belongs to
+        """
         self.sim.new(**vars)["report"] = report
 
 
@@ -58,6 +65,7 @@ class HCScalar(Saveable):
     _copy: list[str] = []
 
     def __init__(self):
+        """The scalar results of a single heat conduction solution."""
         pass
 
 
@@ -66,11 +74,26 @@ class HCScalarNdim(Saveable):
     _copy: list[str] = []
 
     def __init__(self):
+        """The scalar heat conduction results of a sweep as N-dimensional arrays."""
         pass
 
 
 @dataclass
 class TField:
+    """The temperature field and heat flux at a set of points.
+
+    Args:
+        T (np.ndarray): The temperature in Kelvin
+        qx (np.ndarray): The x-component of the heat flux density
+        qy (np.ndarray): The y-component of the heat flux density
+        qz (np.ndarray): The z-component of the heat flux density
+        x (np.ndarray): The x-coordinates
+        y (np.ndarray): The y-coordinates
+        z (np.ndarray): The z-coordinates
+        conductivity (np.ndarray): The thermal conductivity
+        structure (DataStructure, optional): The point structure (grid, surface, ...). Defaults to DataStructure.NONE.
+        aux (dict[str, np.ndarray], optional): Auxiliary data. Defaults to an empty dict.
+    """
     T: np.ndarray
     qx: np.ndarray
     qy: np.ndarray
@@ -84,22 +107,34 @@ class TField:
 
     @property
     def TdegC(self) -> np.ndarray:
+        """The temperature in degrees Celsius."""
         return self.T - 273.15
 
     @property
     def F(self) -> np.ndarray:
+        """The plotted scalar field (the temperature in Kelvin)."""
         return self.T
 
     @property
     def q(self) -> np.ndarray:
+        """The (3, N) heat flux density vector."""
         return np.array([self.qx, self.qy, self.qz])
 
     @property
     def normq(self) -> np.ndarray:
+        """The magnitude of the heat flux density."""
         return (self.qx**2 + self.qy**2 + self.qz**2) ** (0.5)
 
     def vector(self, field: Literal["q"]) -> FieldPlotData:
 
+        """The data for a vector plot of the heat flux.
+
+        Args:
+            field (Literal["q"]): The vector field to plot
+
+        Returns:
+            FieldPlotData: The plot data
+        """
         Fx, Fy, Fz = self.qx, self.qy, self.qz
 
         return FieldPlotData(
@@ -121,8 +156,8 @@ class TField:
         For animations, make sure to select the complex metric.
 
         Args:
-            field (str): The field to plot
-            metric (str, optional): The metric to impose on the plot. Defaults to 'real'.
+            field (Literal["T", "TdegC"]): The field to plot
+            metric (Literal["abs", "real"], optional): The metric to impose on the plot. Defaults to 'real'.
 
         Returns:
             FieldPlotData: The plot data object
@@ -162,6 +197,7 @@ class TField:
 
 class HCField(Saveable):
     def __init__(self):
+        """The temperature solution of a single (time or parameter) point."""
         self._ddensity: np.ndarray = None
         self._dcond_thermal: np.ndarray = []
         self._dspecific_heat: np.ndarray = []
@@ -171,12 +207,23 @@ class HCField(Saveable):
 
     @property
     def mesh(self) -> Mesh3D:
+        """The mesh of this solution."""
         return self.basis.mesh
 
     def interpolate(
         self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, usenan: bool = True
     ) -> TField:
-        """Interpolate the dataset in the provided coordinates"""
+        """Interpolate the dataset in the provided coordinates
+
+        Args:
+            xs (np.ndarray): The X-coordinates
+            ys (np.ndarray): The Y-coordinates
+            zs (np.ndarray): The Z-coordinates
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+
+        Returns:
+            TField: The temperature field at the provided coordinates
+        """
 
         if isinstance(xs, (float, int, complex)):
             xs = np.array([xs])
@@ -216,9 +263,13 @@ class HCField(Saveable):
         Args:
             ds (float, optional): the sampling grid size. Defaults to None (uses N)
             N (int, optional): The approximate total number of sample points. Defaults to 10,000
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+            x_range (tuple[float, float] | None, optional): The x-range of the grid. Defaults to None (the mesh bounds).
+            y_range (tuple[float, float] | None, optional): The y-range of the grid. Defaults to None (the mesh bounds).
+            z_range (tuple[float, float] | None, optional): The z-range of the grid. Defaults to None (the mesh bounds).
 
         Returns:
-            EHField: Storage container for data
+            TField: Storage container for data
         """
         xb, yb, zb = self.basis.bounds
         if x_range is not None:
@@ -258,9 +309,10 @@ class HCField(Saveable):
             x (float | None, optional): The X-coordinate in case of a YZ-plane. Defaults to None.
             y (float | None, optional): The Y-coordinate in case of an XZ-plane. Defaults to None.
             z (float | None, optional): The Z-coordinate in case of an XY-plane. Defaults to None.
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
 
         Returns:
-            EHField: The resultant EHField object
+            TField: The resultant TField object
         """
         xb, yb, zb = self.basis.bounds
         xs = np.linspace(xb[0], xb[1], int((xb[1] - xb[0]) / ds))
@@ -289,6 +341,10 @@ class HCField(Saveable):
             point: (x0,y0,z0), a point on the plane
             normal: (nx,ny,nz), plane normal vector
             npoints: number of grid points per axis
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+
+        Returns:
+            TField: The temperature field on the cut plane
         """
 
         n = np.array(normal, dtype=float)
@@ -331,7 +387,14 @@ class HCField(Saveable):
         return field
 
     def boundary(self, selection: FaceSelection) -> TField:
-        """Interpolate the field on the node coordinates of the surface."""
+        """Interpolate the field on the node coordinates of the surface.
+
+        Args:
+            selection (FaceSelection): The surface
+
+        Returns:
+            TField: The temperature field on the surface nodes
+        """
         tris = self.mesh.tris[:, self.mesh.get_triangles(selection.tags)]
 
         # Get unique node indices and remap triangles to dense 0..N-1

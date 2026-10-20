@@ -397,7 +397,7 @@ class Assembler:
         Robin BC structure stay the same. With use_cache, E and B are stored
         on the pattern and reused as well.
         """
-        from .curlcurl import tet_mass_stiffness_matrices
+        from .emr_microwave import tet_mass_stiffness_matrices
 
         key = SystemPattern.compute_key(field, conductor_tets, robin_bcs)
         system = self._system if (self._system is not None and self._system.key == key) else None
@@ -505,7 +505,7 @@ class Assembler:
         wpbc_bvec: np.ndarray | None = None,
     ) -> None:
         """Adds the driven-port excitation of bc into port_vectors (in place)."""
-        from .robinbc import assemble_robin_bc_bvec
+        from .emr_microwave import assemble_robin_bc_bvec
 
         if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
             return
@@ -530,7 +530,7 @@ class Assembler:
         background_fields (in place). Assembled regardless of the PML flag,
         since the PML only suppresses the absorbing matrix term.
         """
-        from .robinbc import assemble_robin_bc_bvec_scat
+        from .emr_microwave import assemble_robin_bc_bvec_scat
 
         if not isinstance(bc, ScatteredField):
             return
@@ -554,7 +554,7 @@ class Assembler:
         which keeps the reduced pattern identical at every frequency.
         """
         from ....mth.pairing import pair_coordinates
-        from .periodicbc import gen_periodic_matrix
+        from .emr_microwave import gen_periodic_matrix
 
         if len(periodic_bcs) == 0:
             return None, None, False
@@ -653,7 +653,7 @@ class Assembler:
         Returns:
             tuple[np.ndarray, np.ndarray, np.ndarray, NedelecLegrange2]: The E, B, solve ids and Mixed order field object.
         """
-        from .generalized_eigen_hb import generelized_eigenvalue_matrix
+        from .emr_microwave import generelized_eigenvalue_matrix
 
         logger.debug("Assembling Boundary Mode Matrices")
 

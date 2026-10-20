@@ -29,6 +29,15 @@ from ..cs import CoordinateSystem, GCS
 from .polybased import XYPolygon
 
 def get_flat_index(indices, shape):
+    """Convert N-dimensional indices to a flat (row-major) index.
+
+    Args:
+        indices (Iterable[int]): The index along each dimension
+        shape (Iterable[int]): The shape of the array
+
+    Returns:
+        int: The flat index
+    """
     flat_index = 0
     for i, idx in enumerate(indices):
         stride = reduce(mul, shape[i+1:], 1)
@@ -39,6 +48,11 @@ def get_flat_index(indices, shape):
 class Series:
 
     def __init__(self, values: Iterable[Number]):
+        """A series of parameter values; each value creates one variant of an object.
+
+        Args:
+            values (Iterable[Number]): The values
+        """
         self.values: list[Number] = list(values)
         self.N: int = len(self.values)
 
@@ -49,6 +63,14 @@ class Series:
         return self.values[index]
 
 def get_count(args) -> int:
+    """The number of variants defined by the (nested) Series in the arguments.
+
+    Args:
+        args (Iterable): The arguments
+
+    Returns:
+        int: The number of variants (1 if there is no Series)
+    """
     N = 1
     for arg in args:
         if isinstance(arg,Series):
@@ -59,6 +81,15 @@ def get_count(args) -> int:
     return 1
 
 def get_item(value: Number | Series | list, n: int) -> Number | Series | Iterable | None:
+    """The value of an argument for one variant.
+
+    Args:
+        value (Number | Series | list): The argument
+        n (int): The variant index
+
+    Returns:
+        Number | Series | Iterable | None: The value for variant n
+    """
     if isinstance(value, Number):
         return value
     elif isinstance(value, Series):
@@ -68,6 +99,14 @@ def get_item(value: Number | Series | list, n: int) -> Number | Series | Iterabl
     return None
 
 def unpack(*args):
+    """Expand the arguments into one tuple of values per variant.
+
+    Args:
+        *args: The arguments, possibly containing Series
+
+    Returns:
+        tuple: The values of every argument, one tuple per argument with an entry per variant
+    """
     N = get_count(args)
     return tuple(zip(*[[get_item(a,n) for a in args] for n in range(N)]))
 
@@ -80,6 +119,14 @@ class PartialFunction:
                  identity: bool = False,
                  permute: bool = False,
                  **kwargs):
+        """A transformation step of the modeler pipeline with (possibly Series) keyword arguments.
+
+        Args:
+            function (Callable): The transformation f(obj, **kwargs)
+            identity (bool, optional): Also include the untransformed object as a variant. Defaults to False.
+            permute (bool, optional): Stored, currently unused. Defaults to False.
+            **kwargs: The keyword arguments of the transformation
+        """
         self.f: Callable = function
         self.kwargs: dict[str, float | Series] = kwargs
         self.identity: bool = identity
@@ -129,6 +176,7 @@ class PartialFunction:
 class NDimContainer:
 
     def __init__(self):
+        """Bookkeeping of the variant dimensions of the modeler pipeline."""
         self.items: list= []
         self.dimensions: list[tuple[int,int]] = []
         self.expanded_dims: list[tuple[int,int,int]] = []
@@ -163,7 +211,7 @@ class NDimContainer:
         """A dimension tuple containing the dimensions of the NDimContainer
 
         Returns:
-            tuple[int]: A tuple of dimension sizes to be used in np.zeros(shape)
+            tuple[int, ...]: A tuple of dimension sizes to be used in np.zeros(shape)
         """
         dimtup =  tuple([dim[1] for dim in self.dimensions])
         if self.Ncopies:
@@ -213,6 +261,15 @@ class NDimContainer:
     def get(self, 
             dim_ex_dim: int,
             number: int) -> list:
+        """The flat object indices of one variant along an expanded dimension.
+
+        Args:
+            dim_ex_dim (int): The expanded dimension
+            number (int): The variant number along that dimension
+
+        Returns:
+            list: The flat object indices
+        """
         dimindex, niter, Nvariations = self.expanded_dims[dim_ex_dim]
         slclist = [slice(None) for _ in self.dimensions]
         slclist[dimindex] = number # type: ignore
@@ -222,6 +279,7 @@ class Modeler:
     
     def __init__(self):
         ## Function importing
+        """Create a modeler with an empty transformation pipeline."""
         self.rotate = rotate
         self.add = add
         self.translate = translate
@@ -271,6 +329,11 @@ class Modeler:
         return Series(values)
     
     def nvars(self) -> int:
+        """The number of variants created by the transformation pipeline.
+
+        Returns:
+            int: The number of variants
+        """
         return self.ndimcont.Nop
     
     def _merge_object(self, objs: list[GeoObject]) -> GeoObject:
@@ -389,6 +452,19 @@ class Modeler:
                   merge: bool = False,
                   NPoly: int = False) -> GeoVolume | list[GeoVolume]:
         
+        """Create a cylinder object which will be transformed by the transformation pipeline.
+
+        Args:
+            radius (float | Series): The cylinder radius
+            height (float | Series): The cylinder height
+            position (tuple[float | Series, float | Series, float | Series]): The position of the bottom center of the cylinder.
+            cs (CoordinateSystem, optional): The coordinate system. Defaults to GCS.
+            merge (bool, optional): Whether to merge the final result into a single GeoVolume object. Defaults to False.
+            NPoly (int, optional): If given, use a regular polygon with this number of sides instead of a true cylinder. Defaults to False.
+
+        Returns:
+            GeoVolume | list[GeoVolume]: A list of GeoVolume objects for each cylinder.
+        """
         N_objects = self.nvars()
         Rs, Hs, Ps = unpack(radius, height, position)
         N = len(Rs)
@@ -420,15 +496,15 @@ class Modeler:
         """Create a box object which will be transformed by the transformation pipeline.
 
         Args:
-            width (float): The box's width (X direction)
-            depth (float): The box's depth (Y direction)
-            height (float): The box's height (Z direction)
-            position (tuple[float, float, float]): The position of the box object.
+            width (float | Series): The box's width (X direction)
+            depth (float | Series): The box's depth (Y direction)
+            height (float | Series): The box's height (Z direction)
+            position (tuple[float | Series, float | Series, float | Series]): The position of the box object.
             alignment (Alignment, optional): Where to alight the box. Defaults to Alignment.CORNER.
             merge (bool): Whether to merge the final result into a single GeoVolume object.
 
         Returns:
-            list[GeoVolume]: A list of GeoVolume objects for each box.
+            list[GeoVolume] | GeoVolume: A list of GeoVolume objects for each box.
         """
         N_objects = self.nvars()
         Ws, Ds, Hs, Ps = unpack(width, depth, height, position)

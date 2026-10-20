@@ -139,20 +139,57 @@ class RobinBC(BoundaryCondition, Saveable):
         self._assemble_matrix = False
 
     def get_basis(self) -> np.ndarray:
+        """The basis of the local boundary coordinate system.
+
+        Returns:
+            np.ndarray: The (3, 3) basis matrix
+        """
         raise NotImplementedError("This method is not implemented")
 
     def get_inv_basis(self) -> np.ndarray | None:
+        """The inverse basis of the local boundary coordinate system.
+
+        Returns:
+            np.ndarray | None: The (3, 3) inverse basis matrix, None if the boundary has no local coordinate system
+        """
         raise NotImplementedError("This method is not implemented")
 
     def get_beta(self, k0: float) -> float:
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         raise NotImplementedError("get_beta not implemented for Port class")
 
     def get_gamma(self, k0: float) -> complex:
+        """Computes the γ-constant for matrix assembly. This constant is required for the Robin boundary condition.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            complex: The γ-constant
+        """
         raise NotImplementedError("get_gamma not implemented for Port class")
 
     def get_Uinc(
         self, x_local: np.ndarray, y_local: np.ndarray, k0: float, mode_nr: int = 1
     ) -> np.ndarray:
+        """The incident field excitation term of the boundary.
+
+        Args:
+            x_local (np.ndarray): The X-coordinates
+            y_local (np.ndarray): The Y-coordinates
+            k0 (float): The free space propagation constant
+            mode_nr (int, optional): The mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) excitation field
+        """
         raise NotImplementedError("get_Uinc not implemented for Port class")
 
     def _get_o2(self) -> float:
@@ -172,6 +209,12 @@ class RobinBC(BoundaryCondition, Saveable):
         The correction added to the system matrix is c_curl * ∫curl_t(F)curl_t(E)dS
         + c_div * ∫div_t(F)div_t(E)dS, which absorbs the TE and TM parts of the field
         with independent coefficients.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            tuple[complex, complex]: The (c_curl, c_div) coefficients
         """
         f = k0 * C0 / (2 * np.pi)
         kn = self.material.neff(f) * k0
@@ -197,14 +240,15 @@ class AbsorbingBoundary(RobinBC, Saveable):
     ):
         """Creates an AbsorbingBoundary condition.
 
-        Currently only a first order boundary condition is possible. Second order will be supported later.
         The absorbing boundary is effectively a port boundary condition (Robin) with an assumption on
         the out-of-plane phase constant. For now it always assumes the free-space propagation (normal).
 
         Args:
             face (FaceSelection | GeoSurface): The absorbing boundary face(s)
-            order (int, optional): The order (only 1 is supported). Defaults to 1.
+            order (int, optional): The order of the boundary condition (1 or 2). Defaults to 2.
             origin (tuple, optional): The radiation origin. Defaults to None.
+            abctype (Literal["A", "B", "C", "D", "E"], optional): The second order ABC coefficient set. A is the
+                classic second order Taylor expansion, B to E trade normal incidence accuracy for a wider angular range. Defaults to "B".
         """
         super().__init__(face)
         if origin is None:
@@ -225,23 +269,24 @@ class AbsorbingBoundary(RobinBC, Saveable):
         return None
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         return k0
 
     def optimize_for_maximum_angle(self, angle_deg: float) -> None:
-        """Computes the optimal second-order ABC coefficients (c1, c2) that minimize
+        """Sets the second-order ABC coefficients (c1, c2) that minimize the worst-case reflection
+        coefficient across the incidence angles [0, angle_deg].
 
         the worst-case reflection coefficient across the range [0, theta_max_deg].
 
-        Parameters
-        ----------
-        theta_max_deg : float
-            Maximum scan angle in degrees (e.g. 60.0).
-
-        Returns
-        -------
-        c1, c2 : tuple[float, float]
-            The two second-order ABC Robin coefficients.
+        Args:
+            angle_deg (float): Maximum incidence angle in degrees (e.g. 60.0).
         """
         from scipy.optimize import minimize
         u_m = np.cos(np.radians(angle_deg))
@@ -292,8 +337,8 @@ class AbsorbingBoundary(RobinBC, Saveable):
         """Define two angles for which the absorbing boundary condition has a zero reflection
 
         Args:
-            ang1_deg (float): _description_
-            ang2_deg (float): _description_
+            ang1_deg (float): The first zero reflection incidence angle in degrees
+            ang2_deg (float): The second zero reflection incidence angle in degrees
         """
         t1_rad = ang1_deg*np.pi/180
         t2_rad = ang2_deg*np.pi/180
@@ -368,9 +413,7 @@ class ScatteredField(RobinBC, Saveable):
         material_correction: bool = False,
         cs: CoordinateSystem | None = None,
     ):
-        """Creates a user defined port field
-
-        The UserDefinedPort is defined based on user defined field callables. All undefined callables will default to 0 field or k0.
+        """Creates a scattered field boundary condition excited by incident plane waves.
 
         Define a set of excitation plane waves using: .set_excitation:
         The coordinate system used is different from spherical coordinates and is defined with three numbers:
@@ -384,13 +427,13 @@ class ScatteredField(RobinBC, Saveable):
          - (0,0,90):    k= +X, E= +Y
 
         Args:
-            face (FaceSelection, GeoSurface): The port boundary face selection
-            port_number (int): The port number
-            Ex (Callable): The Ex(k0,x,y,z) field
-            Ey (Callable): The Ey(k0,x,y,z) field
-            Ez (Callable): The Ez(k0,x,y,z) field
-            kz (Callable): The out of plane propagation constant kz(k0)
-            power (float): The port output power
+            face (FaceSelection | GeoSurface): The boundary face selection
+            power_density (float, optional): The power density of the incident plane waves in W/m². Defaults to 1/(2 Z0).
+            definition (Literal['EA','SPH'], optional): The angle convention of .set_excitation: 'EA' (elevation-azimuth)
+                or 'SPH' (standard spherical). Defaults to 'SPH'.
+            material_correction (bool, optional): Scale the absorbing boundary constant with the permittivity of the
+                adjacent material. Defaults to False.
+            cs (CoordinateSystem | None, optional): The coordinate system of the excitation angles. Defaults to None.
         """
         super().__init__(face)
         if cs is None:
@@ -421,13 +464,36 @@ class ScatteredField(RobinBC, Saveable):
         return self.cs._basis_inv
 
     def modetype(self, k0: float):
+        """The mode type of the background field.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            str: The mode type
+        """
         return self.type
 
     def get_amplitude(self, k0: float) -> float:
+        """The amplitude of the background field.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The field amplitude E0
+        """
         return self.E0
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         return k0
 
     def _iter_fields(self, k0: float) -> Generator[bf.BackgroundField, None, None]:
@@ -441,12 +507,6 @@ class ScatteredField(RobinBC, Saveable):
 
         Args:
             bftype (type[bf.BackgroundField]): A class or subclass of BackgroundField
-
-        Returns:
-            _type_: _description_
-
-        Yields:
-            _type_: _description_
         """
         if isinstance(bftype, type) and issubclass(bftype, bf.BackgroundField):
             self.bf = bftype
@@ -457,6 +517,7 @@ class ScatteredField(RobinBC, Saveable):
 
     @property
     def curvature(self) -> float:
+        """The curvature 1/(2R) of the boundary, 0 for a flat boundary."""
         if self.radius is None:
             return 0
         return 1 / (2 * self.radius)
@@ -536,7 +597,7 @@ class LumpedElement(RobinBC, Saveable):
         width: float | None = None,
         height: float | None = None,
     ):
-        """Generates a lumped power boundary condition.
+        """Generates a lumped element boundary condition.
 
         The lumped port boundary condition assumes a uniform E-field along the "direction" axis.
         The port with and height must be provided manually in meters. The height is the size
@@ -545,14 +606,11 @@ class LumpedElement(RobinBC, Saveable):
         its the circumpherance.
 
         Args:
-            face (FaceSelection, GeoSurface): The port surface
-            port_number (int): The port number
-            width (float): The port width (meters).
-            height (float): The port height (meters).
-            direction (Axis): The port direction as an Axis object (em.Axis(..) or em.ZAX)
-            active (bool, optional): Whether the port is active. Defaults to False.
-            power (float, optional): The port output power. Defaults to 1.
-            Z0 (float, optional): The port impedance. Defaults to 50.
+            face (FaceSelection | GeoSurface): The element surface
+            impedance_function (Callable | None, optional): The element impedance Z(f) as a function of frequency in Hz.
+                Taken from the face's LumpedElementAttribute if None. Defaults to None.
+            width (float | None, optional): The element width (meters). Defaults to None.
+            height (float | None, optional): The element height (meters) along which the potential is imposed. Defaults to None.
         """
         super().__init__(face)
 
@@ -582,6 +640,9 @@ class LumpedElement(RobinBC, Saveable):
     def surfZ(self, k0: float) -> float:
         """The surface sheet impedance for the lumped Element
 
+        Args:
+            k0 (float): The free space propagation constant
+
         Returns:
             float: The surface sheet impedance
         """
@@ -595,7 +656,14 @@ class LumpedElement(RobinBC, Saveable):
         return None
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
 
         return k0
 
@@ -652,8 +720,9 @@ class SurfaceImpedance(RobinBC, Saveable):
             surface_conductivity (float | None, optional): The specific bulk conductivity to use. Defaults to None.
             surface_roughness (float, optional): The surface roughness. Defaults to 0.
             thickness (float | None, optional): The layer thickness. Defaults to None
-            sr_model (Literal["Hammerstad-Jensen", optional): The surface roughness model. Defaults to 'Hammerstad-Jensen'.
+            sr_model (Literal["Hammerstad-Jensen"], optional): The surface roughness model. Defaults to 'Hammerstad-Jensen'.
             impedance_function (Callable, optional): A user defined surface impedance function as function of frequency.
+            surface_conductance (float | None, optional): Deprecated alias of surface_conductivity. Defaults to None.
         """
         super().__init__(face)
         
@@ -675,8 +744,8 @@ class SurfaceImpedance(RobinBC, Saveable):
             self._mur = material.ur
             self._epsr = material.er
 
-        if surface_conductance is not None:
-            self.sigma = surface_conductance
+        if surface_conductivity is not None:
+            self.sigma = surface_conductivity
 
         self._sr: float = surface_roughness
         self._sr_model: str = sr_model
@@ -689,7 +758,14 @@ class SurfaceImpedance(RobinBC, Saveable):
         return None
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
 
         return k0
 
@@ -769,7 +845,7 @@ class ThinConductor(RobinBC, Saveable):
             surface_conductance (float | None, optional): The specific bulk conductivity to use. Defaults to None.
             surface_roughness (float, optional): The surface roughness. Defaults to 0.
             thickness (float | None, optional): The layer thickness. Defaults to None
-            sr_model (Literal["Hammerstad-Jensen", optional): The surface roughness model. Defaults to 'Hammerstad-Jensen'.
+            sr_model (Literal["Hammerstad-Jensen"], optional): The surface roughness model. Defaults to 'Hammerstad-Jensen'.
             impedance_function (Callable, optional): A user defined surface impedance function as function of frequency.
         """
         super().__init__(face)
@@ -806,7 +882,14 @@ class ThinConductor(RobinBC, Saveable):
         return None
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
 
         return k0
 

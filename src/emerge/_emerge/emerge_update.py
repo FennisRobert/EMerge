@@ -36,20 +36,14 @@ except ImportError:
 # Last Cleanup: 2026-01-04
 
 def update_emerge(branch: str = "main", confirm: bool = True, _dryrun: bool = False) -> str | None:
-    """
-    Update the EMerge library directly from GitHub.
+    """Update the EMerge library directly from GitHub.
 
-    Parameters
-    ----------
-    branch : str, optional
-        The git branch or tag to install from. Default is "main".
-    confirm : bool, optional
-        If True, asks the user for confirmation before updating.
+    Args:
+        branch (str, optional): The git branch or tag to install from. Defaults to "main".
+        confirm (bool, optional): If True, asks the user for confirmation before updating. Defaults to True.
 
-    Returns
-    -------
-    str | None
-        The updated version string if successful, otherwise None.
+    Returns:
+        str | None: The updated version string if successful, otherwise None.
     """
     logger.warning(
         "You are about to update EMerge from GitHub. "

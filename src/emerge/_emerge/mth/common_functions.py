@@ -214,3 +214,17 @@ def lumped_element_material(material_name: str,
     
     erf = FreqDependent(matrix=_fer)
     return Material(er=erf, color=color, opacity=opacity, name=material_name)
+
+def uniaxial_tensor(axis: np.ndarray | tuple | Axis, ax_value: complex, plane_value: complex) -> np.ndarray:
+    """Generate a uniaxial tensor for a given axis and an along-axis value and in plane value (normal to the axis)
+
+    Args:
+        axis (np.ndarray | tuple | Axis): The the uniaxial axis
+        ax_value (complex): The value along the axis
+        plane_value (complex): The value normal to the axis
+
+    Returns:
+        np.ndarray: The resultant 3x3 tensor
+    """
+    axis = _parse_axis(axis)
+    return axis.tensor(ax_value, plane_value)

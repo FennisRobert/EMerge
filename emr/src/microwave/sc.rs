@@ -1,4 +1,4 @@
-//! Stratton-Chu near to far field transformation of surface E and H fields.
+//! Stratton-Chu transformations of surface E and H fields to the far field and to points in space.
 use crate::constants::{PI, Z0};
 use ndarray::{Array2, ArrayView2};
 use num_complex::Complex64 as c64;
@@ -98,8 +98,114 @@ fn py_stratton_chu_ff<'py>(
     (r.0.into_pyarray_bound(py), r.1.into_pyarray_bound(py))
 }
 
+/// A surface sample with the cross and dot products of the near field integral precomputed.
+struct NfSource {
+    x: f64,
+    y: f64,
+    z: f64,
+    nxe: [c64; 3],
+    nxh: [c64; 3],
+    edn: c64,
+    hdn: c64,
+}
+
+/// Near field E and H (3, N) at the points xyz (3, N) from surface fields Ein/Hin at points vis with weighted normals wns.
+///
+/// Evaluates the Stratton-Chu integrals with the free space Green's function G = exp(-jkR)/(4 pi R), R = r - r':
+///   E(r) = sum G [ -j k0 Z0 (n x H) + (1 + j k0 R)/R^2 ((n x E) x R + (n . E) R) ]
+///   H(r) = sum G [  j k0/Z0 (n x E) + (1 + j k0 R)/R^2 ((n x H) x R + (n . H) R) ]
+/// Points inside the closed surface give (ideally) zero field. A point on a sample point is singular.
+pub fn stratton_chu_nf(
+    ein: &ArrayView2<c64>,
+    hin: &ArrayView2<c64>,
+    vis: &ArrayView2<f64>,
+    wns: &ArrayView2<f64>,
+    xyz: &ArrayView2<f64>,
+    k0: f64,
+) -> (Array2<c64>, Array2<c64>) {
+    let ns = ein.shape()[1];
+    let emag: Vec<f64> = (0..ns)
+        .map(|i| (ein[[0, i]].norm().powi(2) + ein[[1, i]].norm().powi(2) + ein[[2, i]].norm().powi(2)).sqrt())
+        .collect();
+    let elevel = emag.iter().cloned().fold(f64::NEG_INFINITY, f64::max) * LR;
+
+    let src: Vec<NfSource> = (0..ns)
+        .filter(|&j| emag[j] > elevel)
+        .map(|j| {
+            let (ex, ey, ez) = (ein[[0, j]], ein[[1, j]], ein[[2, j]]);
+            let (hx, hy, hz) = (hin[[0, j]], hin[[1, j]], hin[[2, j]]);
+            let (nx, ny, nz) = (wns[[0, j]], wns[[1, j]], wns[[2, j]]);
+            NfSource {
+                x: vis[[0, j]],
+                y: vis[[1, j]],
+                z: vis[[2, j]],
+                nxe: [ez * ny - ey * nz, ex * nz - ez * nx, ey * nx - ex * ny],
+                nxh: [hz * ny - hy * nz, hx * nz - hz * nx, hy * nx - hx * ny],
+                edn: ex * nx + ey * ny + ez * nz,
+                hdn: hx * nx + hy * ny + hz * nz,
+            }
+        })
+        .collect();
+
+    let n = xyz.shape()[1];
+    let q = 1.0 / (4.0 * PI);
+    let ie = c64::new(0.0, -k0 * Z0);
+    let ih = c64::new(0.0, k0 / Z0);
+
+    let fields: Vec<[c64; 6]> = (0..n)
+        .into_par_iter()
+        .map(|p| {
+            let (xo, yo, zo) = (xyz[[0, p]], xyz[[1, p]], xyz[[2, p]]);
+            let mut f = [c64::new(0.0, 0.0); 6];
+            for s in &src {
+                let (rx, ry, rz) = (xo - s.x, yo - s.y, zo - s.z);
+                let r = (rx * rx + ry * ry + rz * rz).sqrt();
+                let ri = 1.0 / r;
+                let g = c64::from_polar(q * ri, -k0 * r);
+                let dg = c64::new(ri * ri, k0 * ri);
+                let [ax, ay, az] = s.nxe;
+                let [bx, by, bz] = s.nxh;
+                f[0] += g * (ie * bx + dg * (ay * rz - az * ry + s.edn * rx));
+                f[1] += g * (ie * by + dg * (az * rx - ax * rz + s.edn * ry));
+                f[2] += g * (ie * bz + dg * (ax * ry - ay * rx + s.edn * rz));
+                f[3] += g * (ih * ax + dg * (by * rz - bz * ry + s.hdn * rx));
+                f[4] += g * (ih * ay + dg * (bz * rx - bx * rz + s.hdn * ry));
+                f[5] += g * (ih * az + dg * (bx * ry - by * rx + s.hdn * rz));
+            }
+            f
+        })
+        .collect();
+
+    let mut eout = Array2::<c64>::zeros((3, n));
+    let mut hout = Array2::<c64>::zeros((3, n));
+    for (p, f) in fields.iter().enumerate() {
+        for c in 0..3 {
+            eout[[c, p]] = f[c];
+            hout[[c, p]] = f[c + 3];
+        }
+    }
+    (eout, hout)
+}
+
+#[pyfunction]
+#[pyo3(name = "stratton_chu_nf")]
+fn py_stratton_chu_nf<'py>(
+    py: Python<'py>,
+    ein: PyReadonlyArray2<c64>,
+    hin: PyReadonlyArray2<c64>,
+    vis: PyReadonlyArray2<f64>,
+    wns: PyReadonlyArray2<f64>,
+    xyz: PyReadonlyArray2<f64>,
+    k0: f64,
+) -> (Bound<'py, PyArray2<c64>>, Bound<'py, PyArray2<c64>>) {
+    let (e, h, v, w, x) = (ein.as_array(), hin.as_array(), vis.as_array(), wns.as_array(), xyz.as_array());
+    let r = py.allow_threads(|| stratton_chu_nf(&e, &h, &v, &w, &x, k0));
+    (r.0.into_pyarray_bound(py), r.1.into_pyarray_bound(py))
+}
+
 /// Registers the functions of this file on the given Python module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_stratton_chu_ff, m)?)?;
+    m.add_function(wrap_pyfunction!(py_stratton_chu_nf, m)?)?;
     Ok(())
 }

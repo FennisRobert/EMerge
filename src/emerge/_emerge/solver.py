@@ -34,6 +34,7 @@ from enum import Enum
 from .file import Saveable
 import os
 from .mldata import MLPreconData
+from packaging.version import Version
 
 _is_main_process = _mp.current_process().name == "MainProcess"
 
@@ -129,6 +130,9 @@ except ModuleNotFoundError as e:
 try:
     import sparta  # type: ignore
     _SPARTA_AVAILABLE = True
+    if Version(sparta.__version__) < Version("0.2.0"):
+        logger.error('Sparta version is outdated, install the latest (at least 0.2.0) from github: pip install git+https://github.com/FennisRobert/SPARTA')
+        _SPARTA_AVAILABLE = False
 except ModuleNotFoundError as e:
     logger.trace("SPARTA Interface not found. (not harmful)")
 
@@ -1286,7 +1290,7 @@ class SolverSparta(Solver):
         self.factor = None
         self.sym = None
         self.initalized = False
-        self.cpu: bool = False
+        self.mode: Literal['CPU','GPU','HYBRID'] = 'GPU'
         self.settings: dict = dict(
             ordering=sparta.Ordering.SCALPEL, 
             refinement_steps=0,
@@ -1308,6 +1312,14 @@ class SolverSparta(Solver):
             self.sym = None
         self.fact_symb = False
 
+    def set_options(self, mode: Literal['GPU','CPU','HYBRID']) -> None:
+        """Set the factorization mode for the factorization. Options are:
+         - 'GPU': Use the GPU only
+         - 'CPU': Use the CPU only
+         - 'HYBRID': Use a Hybrid GPU + CPU solver (if available)
+        """
+        self.mode = mode
+
     def set_symmetry(self, complex_symmetric: bool) -> None:
         self._csym = complex_symmetric
 
@@ -1317,10 +1329,14 @@ class SolverSparta(Solver):
 
     def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
 
-        device = 'GPU'
-        if self.cpu:
-            device = 'CPU'
-        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver ({device}, {sparta.__version__}).")
+        modemap = {
+            'GPU': (False, False),
+            'CPU': (True, False),
+            'HYBRID': (False, True),
+        }
+        cpu, hybrid = modemap.get(self.mode, (False, False))
+        
+        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver ({self.mode}, {sparta.__version__}).")
         logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
         
         mtype = sparta.MatrixType.COMPLEX_STRUCTURALLY_SYMMETRIC
@@ -1329,9 +1345,9 @@ class SolverSparta(Solver):
             mtype = sparta.MatrixType.COMPLEX_SYMMETRIC
             
         if self.sym is None:
-            self.sym = sparta.analyze(A, force_cpu=self.cpu, mtype=mtype, **self.settings)
+            self.sym = sparta.analyze(A, force_cpu=cpu, hybrid=hybrid, mtype=mtype, **self.settings)
         
-        self.factor = self.sym.factorize(A, force_cpu=self.cpu, mtype=mtype, **self.settings)
+        self.factor = self.sym.factorize(A, force_cpu=cpu, hybrid=hybrid, mtype=mtype, **self.settings)
         if not self.factor.quality.usable:
             logger.warning('Matrix is so singular that it is broken on single precision. Use a double-precision CPU solver instead.')
 

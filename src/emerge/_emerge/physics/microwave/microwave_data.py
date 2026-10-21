@@ -28,7 +28,7 @@ from .adaptive_sweep import RationalModel
 from ...cs import Axis, _parse_axis
 from ...selection import FaceSelection, DomainSelection
 from ...geometry import GeoSurface
-from ...mesh3d import Mesh3D
+from ...mesh3d import Mesh3D, SurfaceMesh
 from ...const import MU0
 from ...coord import Line
 from emsutil.emdata import EHField, EHFieldFF, DataStructure
@@ -495,6 +495,35 @@ class _EHSign(Saveable):
             Hy * self.Hy,
             Hz * self.Hz,
         )
+
+
+def _symmetry_factor(syms: list[str]) -> float:
+    """The field scale factor of a model mirrored in len(syms) symmetry planes (normalizes the total input power)."""
+    return (0.5 ** len(syms)) ** 0.5
+
+
+def _mirrored_sources(surface: SurfaceMesh, ehfield: EHField, syms: list[str]):
+    """Yield the (surface, E, H) of every mirror image of the integration surface for the given symmetry planes."""
+    if len(syms) == 1:
+        flip_sets = ((syms[0],),)
+    elif len(syms) == 2:
+        s1, s2 = syms
+        flip_sets = ((s1,), (s2,), (s1, s2))
+    elif len(syms) == 3:
+        s1, s2, s3 = syms
+        flip_sets = ((s1,), (s2,), (s3,), (s1, s2), (s1, s3), (s2, s3), (s1, s2, s3))
+    else:
+        flip_sets = ()
+
+    for flips in flip_sets:
+        surf = surface.copy()
+        ehf = _EHSign()
+        Ef, Hf = ehfield.E.copy(), ehfield.H.copy()
+        for flip in flips:
+            ehf.apply(flip)
+            surf.flip(flip[1])
+        Ef, Hf = ehf.flip_field(Ef, Hf)
+        yield surf, np.array(Ef), np.array(Hf)
 
 
 class MWField(Saveable):
@@ -1591,17 +1620,7 @@ class MWField(Saveable):
 
         from .sc import stratton_chu
 
-        if self._cache_mapping:
-            if self._cache_surface is None:
-                self._cache_surface = self.basis.mesh.boundary_surface(
-                    faces.tags, inward_normal=False, origin=origin
-                )
-            surface = self._cache_surface
-        else:
-            surface = self.basis.mesh.boundary_surface(
-                faces.tags, inward_normal=False, origin=origin
-            )
-
+        surface = self._integration_surface(faces, origin)
         ehfield = self.interpolate(*surface.exyz)
 
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
@@ -1613,45 +1632,125 @@ class MWField(Saveable):
         if len(syms) == 0:
             return Eff, Hff, Ptot
 
-        # fmt: off
-        factor = 1.0
-        if len(syms) == 1:
-            factor = (0.5) ** 0.5
-            flip_sets = ((syms[0], ),)
-
-        elif len(syms) == 2:
-            factor = (0.25) ** 0.5
-            s1, s2 = syms
-            flip_sets = ((s1,), (s2,), (s1, s2, ))
-
-        elif len(syms) == 3:
-            factor = (0.125) ** 0.5
-            s1, s2, s3 = syms
-            flip_sets = (
-                (s1, ),
-                (s2, ),
-                (s3, ),
-                (s1, s2,),
-                (s1, s3,),
-                (s2, s3,),
-                (s1, s2, s3),
-            )
-
-        for flips in flip_sets:
-            surf = surface.copy()
-            ehf = _EHSign()
-            Ef, Hf = ehfield.E.copy(), ehfield.H.copy()
-            for flip in flips:
-                ehf.apply(flip)
-                surf.flip(flip[1])
-            Ef, Hf = ehf.flip_field(Ef, Hf)
-
+        factor = _symmetry_factor(syms)
+        for surf, Ef, Hf in _mirrored_sources(surface, ehfield, syms):
             E2, H2, wns = stratton_chu(Ef, Hf, surf, theta, phi, self.k0)
             Eff = Eff + E2
             Hff = Hff + H2
 
-        # fmt: on
         return Eff * factor, Hff * factor, Ptot * (factor**2)
+
+    def _integration_surface(
+        self, faces: FaceSelection | GeoSurface, origin: tuple[float, float, float] | None
+    ) -> SurfaceMesh:
+        """The boundary surface mesh with outward normals used by the Stratton-Chu integrals (cached if enabled)."""
+        if self._cache_mapping:
+            if self._cache_surface is None:
+                self._cache_surface = self.basis.mesh.boundary_surface(
+                    faces.tags, inward_normal=False, origin=origin
+                )
+            return self._cache_surface
+        return self.basis.mesh.boundary_surface(
+            faces.tags, inward_normal=False, origin=origin
+        )
+
+    def nearfield(
+        self,
+        x: np.ndarray | float,
+        y: np.ndarray | float,
+        z: np.ndarray | float,
+        faces: FaceSelection | GeoSurface,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+        structure: Literal["none", "grid1d", "grid2d", "grid3d", "trisurf", "unstructured"] | DataStructure = "none",
+    ) -> EHField:
+        """Compute the E and H-field at arbitrary points in space from the fields on a closed surface (Stratton-Chu).
+
+        This is the near-field counterpart of farfield(): the fields on the faces are radiated to the provided
+        coordinates through the free space Green's function, so the points do not have to be inside the mesh.
+        The result is only valid for points outside the closed integration surface (in free space); points
+        inside it ideally give zero field. A point exactly on a surface sample point is singular.
+
+        The coordinates may have any (broadcastable) shape. They are flattened for the computation and the
+        fields are reshaped back to (3,) + shape, just like interpolate().
+
+        Args:
+            x (np.ndarray | float): The X-coordinates
+            y (np.ndarray | float): The Y-coordinates
+            z (np.ndarray | float): The Z-coordinates
+            faces (FaceSelection | GeoSurface): The integration faces
+            origin (tuple[float, float, float] | None, optional): The boundary normal alignment origin. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+            structure (str | DataStructure, optional): The data structure of the coordinates, stored in the EHField for plotting
+                ("grid1d", "grid2d", "grid3d", "trisurf" or "unstructured"). Defaults to "none".
+
+        Returns:
+            EHField: The E and H fields with shape (3,) + x.shape
+        """
+        xs, ys, zs = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64),
+            np.asarray(y, dtype=np.float64),
+            np.asarray(z, dtype=np.float64),
+        )
+        shp = xs.shape
+        xyz = np.array([xs.flatten(), ys.flatten(), zs.flatten()])
+
+        E, H = self._nearfield(xyz, faces, origin=origin, syms=syms)
+
+        if isinstance(structure, str):
+            structure = DataStructure[structure.upper()]
+
+        return EHField(
+            _E=E.reshape((3,) + shp),
+            _H=H.reshape((3,) + shp),
+            x=xs.copy(),
+            y=ys.copy(),
+            z=zs.copy(),
+            freq=self.freq,
+            structure=structure,
+            er=np.ones(shp, dtype=np.complex128),
+            ur=np.ones(shp, dtype=np.complex128),
+            sig=np.zeros(shp, dtype=np.float64),
+        )
+
+    def _nearfield(
+        self,
+        xyz: np.ndarray,
+        faces: FaceSelection | GeoSurface,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the near field at the provided (3, N) coordinates.
+
+        Args:
+            xyz (np.ndarray): The (3, N) target coordinates
+            faces (FaceSelection | GeoSurface): the faces to use as integration boundary
+            origin (tuple[float, float, float], optional): A normal alignment origin. Optional use in cases where the "inside" is not clear.
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: The E and H field as (3,N) arrays
+        """
+        if syms is None:
+            syms = []
+
+        from .sc import stratton_chu_near
+
+        surface = self._integration_surface(faces, origin)
+        ehfield = self.interpolate(*surface.exyz)
+
+        Enf, Hnf = stratton_chu_near(ehfield.E, ehfield.H, surface, xyz, self.k0)
+
+        if len(syms) == 0:
+            return Enf, Hnf
+
+        factor = _symmetry_factor(syms)
+        for surf, Ef, Hf in _mirrored_sources(surface, ehfield, syms):
+            E2, H2 = stratton_chu_near(Ef, Hf, surf, xyz, self.k0)
+            Enf = Enf + E2
+            Hnf = Hnf + H2
+
+        return Enf * factor, Hnf * factor
 
     def optycal_surface(self, faces: FaceSelection | GeoSurface | None = None) -> tuple:
         """Export this models exterior to an Optical acceptable dataset

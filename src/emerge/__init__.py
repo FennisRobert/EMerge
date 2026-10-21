@@ -34,7 +34,7 @@ warnings.filterwarnings(
 
 import os
 
-__version__ = "3.0.0a25"
+__version__ = "3.0.0b1"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -69,7 +69,7 @@ from ._emerge.coord import Line
 from ._emerge import geo
 from ._emerge.selection import Selection, FaceSelection, DomainSelection, EdgeSelection
 from ._emerge.geometry import select, _GeometryManager, _KeyGenerator
-from ._emerge.mth.common_functions import norm, coax_rout, coax_rin, dot, cross, lumped_element_material
+from ._emerge.mth.common_functions import norm, coax_rout, coax_rin, dot, cross, lumped_element_material, uniaxial_tensor
 from ._emerge.periodic import RectCell, HexCell, CustomCell2D, CustomCell1D
 from ._emerge.mesher import Algorithm2D, Algorithm3D
 from ._emerge.howto import _HowtoClass

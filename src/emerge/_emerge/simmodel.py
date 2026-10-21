@@ -349,7 +349,7 @@ class Simulation:
         logger.trace("Committing temporary geometry.")
         self.state.store_geometry_data()
         logger.trace(f"Parsed geometries = {self.state.current_geo_state}")
-        self.mesher.submit_objects(self.state.current_geo_state)
+        self._submit_objects(self.state.current_geo_state)
         self._add_facetags_to_display()
 
     def _add_facetags_to_display(self) -> None:
@@ -409,7 +409,67 @@ class Simulation:
                 base_obj._become(new_obj)
         for void in voids:
             void.remove()
+
+    def _submit_objects(
+            self, objects: GeoObject | list[GeoObject] | list[list[GeoObject]]
+        ) -> None:
+            """Takes al ist of GeoObjects and computes the fragment.
+    
+            Args:
+                objects (GeoObject | list[GeoObject] | list[list[GeoObject]]): The set of GeoObjects
+            """
+            def unpack_lists(_list: Any, collector: list | None = None) -> list[Any]:
+                """Unpack a recursive list of lists"""
+                if collector is None:
+                    collector = []
+                for item in _list:
+                    if isinstance(item, list):
+                        unpack_lists(item, collector)
+                    else:
+                        collector.append(item)
+
+                return collector
             
+            if not isinstance(objects, list):
+                objects = [
+                    objects,
+                ]
+    
+            objects = unpack_lists(objects)
+            embeddings: list = []
+            gmsh.model.occ.synchronize()
+    
+            final_dimtags = unpack_lists([domain.dimtags for domain in objects])  # type: ignore
+    
+            dom_mapping = dict()
+    
+            for dom in objects:  # type: ignore
+                embeddings.extend(dom._embeddings)  # type: ignore
+                for dt in dom.dimtags:  # type: ignore
+                    dom_mapping[dt] = dom
+    
+            embedding_dimtags = unpack_lists([emb.dimtags for emb in embeddings])
+    
+            tag_mapping: dict[int, dict] = {0: dict(), 1: dict(), 2: dict(), 3: dict()}
+    
+            if len(objects) > 0:  # type: ignore
+                dimtags, output_mapping = gmsh.model.occ.fragment(
+                    final_dimtags, embedding_dimtags
+                )
+                gmsh.model.occ.remove_all_duplicates()
+                for domain, mapping in zip(
+                    final_dimtags + embedding_dimtags, output_mapping
+                ):
+                    tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
+                for dom in objects:  # type: ignore
+                    dom.update_tags(tag_mapping)  # type: ignore
+            else:
+                dimtags = final_dimtags
+    
+            self.mesher.objects = objects  # type: ignore
+    
+            gmsh.model.occ.synchronize()
+
     ############################################################
     #                       PUBLIC FUNCTIONS                  #
     ############################################################
@@ -918,7 +978,7 @@ class Simulation:
 
         logger.trace(f"Parsed geometries = {self.state.current_geo_state}")
         self.state.manager.self_destruct()
-        self.mesher.submit_objects(self.state.current_geo_state)
+        self._submit_objects(self.state.current_geo_state)
 
         # Cache GMSH properties
         for geo in self.all_geos():
@@ -1251,7 +1311,7 @@ class Simulation:
         logger.trace(f"Writing geometry to {filename}")
         gmsh.write(filename)
 
-    def set_solver(self, solver: EMSolver | Solver):
+    def set_solver(self, solver: EMSolver | Solver) -> Solver:
         """Set a given Solver class instance as the main solver.
         Solvers will be checked on validity for the given problem.
 
@@ -1260,7 +1320,19 @@ class Simulation:
         """
         logger.trace(f"Setting solver to {solver}")
         self.mw.solveroutine.set_solver(solver)
+        return self.get_solver(solver)
 
+    def get_solver(self, solver: EMSolver | Solver) -> Solver | None:
+        """Return the solver of a specific type
+
+        Args:
+            solver (EMSolver | Solver): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        return self.mw.solveroutine.solvers[solver]
+    
     @staticmethod
     def from_simulations(name: str, *sims: Simulation, **kwargs) -> Simulation:
         """Create a new simulation that combines the states (and data) of other simulations.

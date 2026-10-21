@@ -65,19 +65,6 @@ _DOM_TO_STR = {
 T = TypeVar("T")
 
 
-def unpack_lists(_list: Any, collector: list | None = None) -> list[Any]:
-    """Unpack a recursive list of lists"""
-    if collector is None:
-        collector = []
-    for item in _list:
-        if isinstance(item, list):
-            unpack_lists(item, collector)
-        else:
-            collector.append(item)
-
-    return collector
-
-
 
 class Mesher:
     def __init__(self):
@@ -146,55 +133,6 @@ class Mesher:
                 "Either maximum or minimum mesh size is undefined. Make sure \
                             to set the simulation frequency range before calling mesh instructions."
             )
-
-    def submit_objects(
-        self, objects: GeoObject | list[GeoObject] | list[list[GeoObject]]
-    ) -> None:
-        """Takes al ist of GeoObjects and computes the fragment.
-
-        Args:
-            objects (GeoObject | list[GeoObject] | list[list[GeoObject]]): The set of GeoObjects
-        """
-
-        if not isinstance(objects, list):
-            objects = [
-                objects,
-            ]
-
-        objects = unpack_lists(objects)
-        embeddings: list = []
-        gmsh.model.occ.synchronize()
-
-        final_dimtags = unpack_lists([domain.dimtags for domain in objects])  # type: ignore
-
-        dom_mapping = dict()
-
-        for dom in objects:  # type: ignore
-            embeddings.extend(dom._embeddings)  # type: ignore
-            for dt in dom.dimtags:  # type: ignore
-                dom_mapping[dt] = dom
-
-        embedding_dimtags = unpack_lists([emb.dimtags for emb in embeddings])
-
-        tag_mapping: dict[int, dict] = {0: dict(), 1: dict(), 2: dict(), 3: dict()}
-
-        if len(objects) > 0:  # type: ignore
-            dimtags, output_mapping = gmsh.model.occ.fragment(
-                final_dimtags, embedding_dimtags
-            )
-            gmsh.model.occ.remove_all_duplicates()
-            for domain, mapping in zip(
-                final_dimtags + embedding_dimtags, output_mapping
-            ):
-                tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
-            for dom in objects:  # type: ignore
-                dom.update_tags(tag_mapping)  # type: ignore
-        else:
-            dimtags = final_dimtags
-
-        self.objects = objects  # type: ignore
-
-        gmsh.model.occ.synchronize()
 
     def _set_mesh_periodicity(
         self, face1: Selection, face2: Selection, lattice: np.ndarray

@@ -108,6 +108,21 @@ def test():
         (1, 0, 0), (0, 1, 0), radiation_boundary, (-90, 90), syms=["Ez", "Hy"]
     )
 
+    # --- Near field far away tends to the far field --------------------------
+    phis = np.linspace(-np.pi / 3, np.pi / 3, 9)
+    thetas = np.full_like(phis, np.pi / 2)
+    R = 1e4
+    nf = data.field[0].nearfield(
+        R * np.sin(thetas) * np.cos(phis), R * np.sin(thetas) * np.sin(phis), R * np.cos(thetas),
+        radiation_boundary, syms=["Ez", "Hy"], structure="grid1d",
+    )
+    ff = data.field[0].farfield(thetas, phis, radiation_boundary, syms=["Ez", "Hy"])
+    assert nf.E.shape == (3, 9)
+    scale = R * np.exp(1j * data.field[0].k0 * R)
+    assert np.allclose(nf.E * scale, ff._E, rtol=0, atol=1e-3 * np.abs(ff._E).max())
+    # the far field uses H = r x E / Z0, the near field integrates H itself (differs by the FEM surface field error)
+    assert np.allclose(nf.H * scale, ff._H, rtol=0, atol=1e-2 * np.abs(ff._H).max())
+
     # Normalize to free-space impedance and convert to dB
 
     m.display.add_object(horn_in, opacity=0.1)

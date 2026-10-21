@@ -17,7 +17,7 @@
 
 # Last Cleanup: 2025-01-01
 from __future__ import annotations
-
+from .._global import _GlobalHandler, _BaseManager
 from ..cs import CoordinateSystem, GCS, Anchor, argparse_xyz, _parse_vector
 from ..geometry import GeoPolygon, GeoVolume, GeoSurface
 from emsutil import Material, AIR, PEC
@@ -26,13 +26,12 @@ from .polybased import XYPolygon
 from .operations import change_coordinate_system, unite, remove
 from .pcb_tools.macro import parse_macro
 from .pcb_tools.calculator import PCBCalculator
-from ..logsettings import DEBUG_COLLECTOR
 import numpy as np
 from loguru import logger
 from typing import Literal, Callable, overload, Generator
 from dataclasses import dataclass
 from emsutil import Saveable
-
+from ..attributes import FiniteThickness, WavePortAttribute, LumpedPortAttribute, LumpedElementAttribute
 import math
 import gmsh
 
@@ -42,6 +41,11 @@ import gmsh
 
 
 class RouteException(Exception):
+    pass
+
+
+class PCBBoundsError(ValueError):
+    """Raised when an operation needs the PCB board outline/bounds before they are defined."""
     pass
 
 
@@ -75,16 +79,23 @@ _SMD_SIZE_DICT = {
 }
 
 
-class PCB_MANAGER:
+class _PCBManager(_BaseManager):
     """This manager class ensures that unique names are provided to instances of PCB objects."""
 
     def __init__(self):
         self.names: set[str] = set()
         self.unit: float = 1.0
         self.cs: CoordinateSystem = GCS
+        self.pcb: "PCB | None" = None
 
     def clear(self) -> None:
         self.names = set()
+
+    def reset(self) -> None:
+        self.names: set[str] = set()
+        self.unit: float = 1.0
+        self.cs: CoordinateSystem = GCS
+        self.pcb: "PCB | None" = None
 
     def __call__(self, name: str | None, classname: str | None = None) -> str:
         if name is None:
@@ -99,8 +110,6 @@ class PCB_MANAGER:
                 self.names.add(newname)
                 return newname
 
-
-_PCB_MANAGER = PCB_MANAGER()
 
 ############################################################
 #                         FUNCTIONS                        #
@@ -124,10 +133,10 @@ def normalize(vector: np.ndarray) -> np.ndarray:
     """Convenience function for normalizing vectors by L2 norm
 
     Args:
-        vector (np.ndarray): _description_
+        vector (np.ndarray): The vector to normalize
 
     Returns:
-        np.ndarray: _description_
+        np.ndarray: The normalized vector (unchanged if its norm is zero)
     """
     norm = np.linalg.norm(vector)
     if norm == 0:
@@ -154,20 +163,31 @@ def _rot_mat(angle: float) -> np.ndarray:
 
 @dataclass
 class Via:
+    """A via between two copper layers.
+
+    Args:
+        x (float): The x-coordinate
+        y (float): The y-coordinate
+        layer1 (int): The start layer
+        layer2 (int): The end layer
+        radius (float): The via radius
+        segments (int): The number of polygon segments of the via cross section (0 for a true cylinder)
+    """
     x: float
     y: float
-    z1: float
-    z2: float
+    layer1: int
+    layer2: int
     radius: float
     segments: int
 
     @property
     def pnt(self) -> Anchor:
-        unit = _PCB_MANAGER.unit
-        cs = _PCB_MANAGER.cs
-        x, y, z = _PCB_MANAGER.cs.in_global_cs(
-            self.x * unit, self.y * unit, self.z1 * unit
-        )
+        """An Anchor at the via center on its starting layer, in global coordinates."""
+        unit = _GlobalHandler.active().pcbmanager.unit
+        cs = _GlobalHandler.active().pcbmanager.cs
+        pcb = _GlobalHandler.active().pcbmanager.pcb
+        z_val = pcb.z(self.layer1)
+        x, y, z = cs.in_global_cs(self.x * unit, self.y * unit, z_val)
         return Anchor((x, y, z), cs.gx, cs.gy, cs.gz)
 
 
@@ -176,10 +196,11 @@ class RouteElement:
     _UNIT: float = 1.0
 
     def __init__(self):
+        """Base class of the trace route elements of a StripPath."""
         self.width: float = None
         self.x: float = None
         self.y: float = None
-        self.z: float = None
+        self.layer: int = None
         self.direction: np.ndarray = None
         self.dirright: np.ndarray = None
         self.rcutnext: bool = False
@@ -193,27 +214,41 @@ class RouteElement:
         self.y = self.y - self.direction[1] * dist
 
     @property
+    def z(self) -> float:
+        """The resolved Z-height (in meters) of this element, computed on demand from its layer index."""
+        pcb = _GlobalHandler.active().pcbmanager.pcb
+        if pcb is None:
+            raise RouteException(
+                "No active PCB is known to resolve this element's Z-height from its layer. "
+                "Make sure a PCB object has been created/used before accessing .pnt/.z."
+            )
+        return pcb.z(self.layer)
+
+    @property
     def pnt(self) -> Anchor:
-        unit = _PCB_MANAGER.unit
-        cs = _PCB_MANAGER.cs
+        """An Anchor at the end of this element, oriented along its direction, in global coordinates."""
+        unit = _GlobalHandler.active().pcbmanager.unit
+        cs = _GlobalHandler.active().pcbmanager.cs
         ux = np.array(
-            _PCB_MANAGER.cs.in_local_basis(self.direction[0], self.direction[1], 0.0)
+            _GlobalHandler.active().pcbmanager.cs.in_local_basis(self.direction[0], self.direction[1], 0.0)
         )
         uy = np.array(
-            _PCB_MANAGER.cs.in_local_basis(-self.dirright[0], -self.dirright[1], 0.0)
+            _GlobalHandler.active().pcbmanager.cs.in_local_basis(-self.dirright[0], -self.dirright[1], 0.0)
         )
-        uz = np.array(_PCB_MANAGER.cs.in_local_basis(0.0, 0.0, 1.0))
+        uz = np.array(_GlobalHandler.active().pcbmanager.cs.in_local_basis(0.0, 0.0, 1.0))
         gx, gy, gz = cs.in_global_cs(
-            self.x * _PCB_MANAGER.unit, self.y * _PCB_MANAGER.unit, self.z
+            self.x * _GlobalHandler.active().pcbmanager.unit, self.y * _GlobalHandler.active().pcbmanager.unit, self.z
         )
         return Anchor((gx, gy, gz), ux, uy, uz)
 
     @property
     def xy(self) -> tuple[float, float]:
+        """The (x, y) coordinate of this element."""
         return self.x, self.y
 
     @property
     def nr(self) -> tuple[float, float]:
+        """The right edge point of this element at its (x, y) coordinate."""
         return (
             self.x + self.dirright[0] * self.width / 2,
             self.y + self.dirright[1] * self.width / 2,
@@ -221,6 +256,7 @@ class RouteElement:
 
     @property
     def nl(self) -> tuple[float, float]:
+        """The left edge point of this element at its (x, y) coordinate."""
         return (
             self.x - self.dirright[0] * self.width / 2,
             self.y - self.dirright[1] * self.width / 2,
@@ -228,10 +264,12 @@ class RouteElement:
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         raise NotImplementedError()
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         raise NotImplementedError()
 
     def __eq__(self, other: RouteElement) -> bool:
@@ -249,14 +287,23 @@ class StripLine(RouteElement):
         self,
         x: float | Anchor,
         y: float,
-        z: float,
+        layer: int,
         width: float,
         direction: tuple[float, float],
     ):
-        x, y, z = argparse_xyz(x, y, z)
+        """A straight trace section.
+
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            layer (int): The copper layer
+            width (float): The trace width
+            direction (tuple[float, float]): The incoming direction as a (dx, dy) tuple
+        """
+        x, y, _ = argparse_xyz(x, y)
         self.x = x
         self.y = y
-        self.z = z
+        self.layer = layer
         self.width = width
         self.direction = normalize(np.array(direction))
         self.dirright = np.array([self.direction[1], -self.direction[0]])
@@ -270,6 +317,7 @@ class StripLine(RouteElement):
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         return [
             (
                 self.x + self.width / 2 * self.dirright[0],
@@ -279,6 +327,7 @@ class StripLine(RouteElement):
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         return [
             (
                 self.x - self.width / 2 * self.dirright[0],
@@ -294,7 +343,7 @@ class StripTurn(RouteElement):
         self,
         x: float | Anchor,
         y: float,
-        z: float,
+        layer: int,
         width: float,
         direction: tuple[float, float],
         angle: float,
@@ -302,7 +351,20 @@ class StripTurn(RouteElement):
         champher_distance: float | None = None,
         dsratio: float = 1.0,
     ):
-        x, y, z = argparse_xyz(x, y, z)
+        """A sharp trace corner.
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            layer (int): The copper layer
+            width (float): The trace width
+            direction (tuple[float, float]): The incoming direction as a (dx, dy) tuple
+            angle (float): The turning angle in degrees
+            corner_type (str, optional): The corner type ("square", "champher" or "miter"). Defaults to "square".
+            champher_distance (float | None, optional): The champher cut distance. Defaults to None.
+            dsratio (float, optional): The cut ratio for champher/miter corners. Defaults to 1.0.
+        """
+        x, y, _ = argparse_xyz(x, y)
+        self.layer: int = layer
         self.xold: float = x
         self.yold: float = y
         self.width: float = width
@@ -345,6 +407,7 @@ class StripTurn(RouteElement):
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         if self.angle > 0:
             return []
 
@@ -387,6 +450,7 @@ class StripTurn(RouteElement):
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         if self.angle < 0:
             return []
 
@@ -433,14 +497,26 @@ class StripCurve(StripTurn):
         self,
         x: float | Anchor,
         y: float,
-        z: float,
+        layer: int,
         width: float,
         direction: tuple[float, float],
         angle: float,
         radius: float,
         dang: float = 10.0,
     ):
-        x, y, z = argparse_xyz(x, y, z)
+        """A curved trace bend.
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            layer (int): The copper layer
+            width (float): The trace width
+            direction (tuple[float, float]): The incoming direction as a (dx, dy) tuple
+            angle (float): The turning angle in degrees
+            radius (float): The bend radius
+            dang (float, optional): The angular step in degrees used to discretize the bend. Defaults to 10.0.
+        """
+        x, y, _ = argparse_xyz(x, y)
+        self.layer = layer
         self.xold: float = x
         self.yold: float = y
         self.width: float = width
@@ -474,6 +550,7 @@ class StripCurve(StripTurn):
 
     @property
     def right(self) -> list[tuple[float, float]]:
+        """The outline points of the right edge of this route element."""
         points: list[tuple[float, float]] = []
         Npts = int(np.ceil(abs(self.angle / self.dang)))
         R = self.radius - np.sign(self.angle) * self.width / 2
@@ -488,6 +565,7 @@ class StripCurve(StripTurn):
 
     @property
     def left(self) -> list[tuple[float, float]]:
+        """The outline points of the left edge of this route element."""
         points: list[tuple[float, float]] = []
 
         Npts = int(np.ceil(abs(self.angle / self.dang)))
@@ -509,21 +587,39 @@ class PCBPoly:
         self,
         xs: list[float],
         ys: list[float],
-        z: float = 0,
+        layer: int,
         material: Material = PEC,
         name: str | None = None,
     ):
+        """A polygon on a PCB copper layer.
+
+        Args:
+            xs (list[float]): The x-coordinates of the polygon corners
+            ys (list[float]): The y-coordinates of the polygon corners
+            layer (int): The copper layer
+            material (Material, optional): The polygon material. Defaults to PEC.
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         self.xs: list[float] = xs
         self.ys: list[float] = ys
-        self.z: float = z
+        self.layer: int = layer
         self.material: Material = material
-        self.name: str = _PCB_MANAGER(name, self._DEFNAME)
+        self.name: str = _GlobalHandler.active().pcbmanager(name, self._DEFNAME)
 
     @property
     def xys(self) -> list[tuple[float, float]]:
+        """The (x, y) corner coordinates of the polygon."""
         return list([(x, y) for x, y in zip(self.xs, self.ys)])
 
     def segment(self, index: int) -> StripLine:
+        """The polygon edge starting at a corner as a StripLine.
+
+        Args:
+            index (int): The index of the starting corner (wraps around)
+
+        Returns:
+            StripLine: A StripLine at the edge midpoint whose width spans the edge
+        """
         N = len(self.xs)
         x1 = self.xs[index % N]
         x2 = self.xs[(index + 1) % N]
@@ -533,16 +629,28 @@ class PCBPoly:
         W = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** (0.5)
         wdir = ((y2 - y1) / W, -(x2 - x1) / W)
 
-        return StripLine((x2 + x1) / 2, (y1 + y2) / 2, self.z, W, wdir)
+        return StripLine((x2 + x1) / 2, (y1 + y2) / 2, self.layer, W, wdir)
 
     @staticmethod
     def circle(
-        x: float, y: float, radius: float, z: float, NSegments: int = 12
+        x: float, y: float, radius: float, layer: int, NSegments: int = 12
     ) -> PCBPoly:
+        """Create a regular polygon approximating a circle.
+
+        Args:
+            x (float): The center x-coordinate
+            y (float): The center y-coordinate
+            radius (float): The radius
+            layer (int): The copper layer
+            NSegments (int, optional): The number of polygon segments. Defaults to 12.
+
+        Returns:
+            PCBPoly: The polygon
+        """
         angles = np.linspace(0, 2 * np.pi, NSegments, endpoint=False)
         xs = list(x + radius * np.cos(angles))
         ys = list(y + radius * np.sin(angles))
-        return PCBPoly(xs, ys, z)
+        return PCBPoly(xs, ys, layer)
 
 
 ############################################################
@@ -554,15 +662,38 @@ class StripPath:
     _DEFNAME: str = "Path"
 
     def __init__(self, pcb: PCB, name: str | None = None):
+        """Create an empty StripPath. Use PCB.new() instead of creating it directly.
+
+        Args:
+            pcb (PCB): The PCB this path belongs to
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         self.pcb: PCB = pcb
         self.path: list[RouteElement] = []
-        self.z: float = 0
-        self.name: str = _PCB_MANAGER(name, self._DEFNAME)
+        self.layer: int = 0
+        self.name: str = _GlobalHandler.active().pcbmanager(name, self._DEFNAME)
         self._consume: float = 0
+        self._via_defaults: dict[str, float | str] = dict(
+            radius=None,
+        )
+        self._turn_defaults: dict[str, float | str] = dict(
+            corner_type='square',
+            dsratio=0.7,
+        )
 
+    @property
+    def z(self) -> float:
+        """The z-coordinate of the layer of this path."""
+        return self.pcb.z(self.layer)
+    
     def iter_right(
         self,
     ) -> Generator[tuple[RouteElement, RouteElement, RouteElement], None, None]:
+        """Iterate over the route elements together with their neighbours.
+
+        Yields:
+            tuple[RouteElement, RouteElement, RouteElement]: The previous, current and next element
+        """
         N = len(self.path)
         for i in range(N):
             yield self.path[(i - 1) % N], self.path[i], self.path[(i + 1) % N]
@@ -570,6 +701,11 @@ class StripPath:
     def iter_left(
         self,
     ) -> Generator[tuple[RouteElement, RouteElement, RouteElement], None, None]:
+        """Iterate over the route elements together with their neighbours.
+
+        Yields:
+            tuple[RouteElement, RouteElement, RouteElement]: The previous, current and next element
+        """
         N = len(self.path)
         for i in range(N):
             yield self.path[(i - 1) % N], self.path[i], self.path[(i + 1) % N]
@@ -581,10 +717,12 @@ class StripPath:
 
     @property
     def xs(self) -> list[float]:
+        """The x-coordinates of all route elements."""
         return [elem.x for elem in self.path]
 
     @property
     def ys(self) -> list[float]:
+        """The y-coordinates of all route elements."""
         return [elem.y for elem in self.path]
 
     @property
@@ -609,7 +747,7 @@ class StripPath:
         """Remove half the stripline distance from the next element
 
         Returns:
-            StripPath: _description_
+            StripPath: This StripPath object
         """
         w = self.end.width / 2
         self._consume = w
@@ -633,12 +771,23 @@ class StripPath:
         y: float,
         width: float,
         direction: tuple[float, float],
-        z: float = 0,
+        trace_layer: int = -1,
     ) -> StripPath:
-        """Initializes the StripPath object for routing."""
-        x, y, z = argparse_xyz(x, y, z)
-        self.path.append(StripLine(x, y, z, width, direction))
-        self.z = z
+        """Initializes the StripPath object for routing.
+
+        Args:
+            x (float | Anchor): The start x-coordinate (or an Anchor)
+            y (float): The start y-coordinate
+            width (float): The trace width
+            direction (tuple[float, float]): The start direction as a (dx, dy) tuple
+            trace_layer (int, optional): The copper layer. Defaults to -1.
+
+        Returns:
+            StripPath: This StripPath object
+        """
+        x, y, z = argparse_xyz(x, y)
+        self.path.append(StripLine(x, y, trace_layer, width, direction))
+        self.layer = trace_layer
         return self
 
     def _add_element(self, element: RouteElement) -> StripPath:
@@ -681,12 +830,12 @@ class StripPath:
 
         if width is not None:
             if width != self.end.width:
-                self._add_element(StripLine(x, y, self.z, width, (dx_2, dy_2)))
+                self._add_element(StripLine(x, y, self.layer, width, (dx_2, dy_2)))
 
-        self._add_element(StripLine(x1, y1, self.z, self.end.width, (dx_2, dy_2)))
+        self._add_element(StripLine(x1, y1, self.layer, self.end.width, (dx_2, dy_2)))
         return self
 
-    def taper(self, distance: float, width: float) -> StripPath:
+    def taper(self, distance: float, width: float, dx: float = 0.0, dy: float = 0.0, offset_r: float = 0.0) -> StripPath:
         """Add A taper section to the stripline.
 
         Adds a taper section with a length determined by "distance". Optionally, a
@@ -699,6 +848,7 @@ class StripPath:
             width (float, optional): The width of the stripline. Defaults to None.
             dx (float, optional): An x-direction offset. Defaults to 0.
             dy (float, optional): A y-direction offset. Defaults to 0.
+            offset_r (float, optional): An offset in the direction right relative to foward.
 
         Returns:
             StripPath: The current StripPath object.
@@ -709,10 +859,13 @@ class StripPath:
 
         distance = self._cons(distance)
         dx_2, dy_2 = self.end.direction
-        x1 = x + distance * dx_2
-        y1 = y + distance * dy_2
 
-        self._add_element(StripLine(x1, y1, self.z, width, (dx_2, dy_2)))
+        dx_right, dy_right = self.end.dirright
+
+        x1 = x + distance * dx_2 + dx_right * offset_r + dx
+        y1 = y + distance * dy_2 + dy_right * offset_r + dy
+
+        self._add_element(StripLine(x1, y1, self.layer, width, (dx_2, dy_2)))
 
         return self
 
@@ -720,8 +873,8 @@ class StripPath:
         self,
         angle: float,
         width: float | None = None,
-        corner_type: Literal["champher", "square","miter"] = "square",
-        dsratio: float = 0.7,
+        corner_type: Literal["champher", "square","miter"] | None = None,
+        dsratio: float | None = None,
     ) -> StripPath:
         """Adds a turn to the strip path.
 
@@ -732,12 +885,22 @@ class StripPath:
         Args:
             angle (float): The turning angle
             width (float, optional): The stripline width. Defaults to None.
-            corner_type (str, optional): The corner type. Defaults to 'champher'.
+            corner_type (Literal["champher", "square","miter"] | None, optional): The corner type. Defaults to 'champher'.
             dsratio: (float, optional): The chamfer distance expressed as the proportional of the corner diagonal.
 
         Returns:
             StripPath: The current StripPath object
         """
+        if corner_type is None:
+            corner_type = self._turn_defaults['corner_type']
+        else:
+            self._turn_defaults['corner_type'] = corner_type
+        
+        if dsratio is None:
+            dsratio = self._turn_defaults['dsratio']
+        else:
+            self._turn_defaults['dsratio'] = dsratio
+
         x, y = self.end.x, self.end.y
         dx, dy = self.end.direction
         if abs(angle) <= 20:
@@ -747,12 +910,12 @@ class StripPath:
             )
         if width is not None:
             if width != self.end.width:
-                self._add_element(StripLine(x, y, self.z, width, (dx, dy)))
+                self._add_element(StripLine(x, y, self.layer, width, (dx, dy)))
         else:
             width = self.end.width
         self._add_element(
             StripTurn(
-                x, y, self.z, width, (dx, dy), angle, corner_type, dsratio=dsratio
+                x, y, self.layer, width, (dx, dy), angle, corner_type, dsratio=dsratio
             )
         )
         return self
@@ -760,8 +923,8 @@ class StripPath:
     def pturn(
         self,
         angle: float,
-        corner_type: Literal["champher", "square"] = "square",
-        dsratio: float = 0.7,
+        corner_type: Literal["champher", "square", "miter"] | None = None,
+        dsratio: float | None = None,
     ) -> StripPath:
         """Adds a turn to the strip path.
 
@@ -771,9 +934,9 @@ class StripPath:
 
         Args:
             angle (float): The turning angle
-            width (float, optional): The stripline width. Defaults to None.
-            corner_type (str, optional): The corner type. Defaults to 'champher'.
-            dsratio: (float, optional): The chamfer distance expressed as the proportional of the corner diagonal.
+            corner_type (Literal["champher", "square", "miter"] | None, optional): The corner type. Defaults to 'champher'.
+            dsratio (float | None, optional): The chamfer distance expressed as the proportional of the corner diagonal.
+                Defaults to None.
 
         Returns:
             StripPath: The current StripPath object
@@ -796,7 +959,9 @@ class StripPath:
 
         Args:
             angle (float): The turning angle
+            radius (float): The bend radius
             width (float, optional): The stripline width. Defaults to None.
+            dang (float, optional): The angular step in degrees used to discretize the bend. Defaults to 10.
 
         Returns:
             StripPath: The current StripPath object
@@ -808,11 +973,11 @@ class StripPath:
         dx, dy = self.end.direction
         if width is not None:
             if width != self.end.width:
-                self._add_element(StripLine(x, y, self.z, width, (dx, dy)))
+                self._add_element(StripLine(x, y, self.layer, width, (dx, dy)))
         else:
             width = self.end.width
         self._add_element(
-            StripCurve(x, y, self.z, width, (dx, dy), angle, radius, dang=dang)
+            StripCurve(x, y, self.layer, width, (dx, dy), angle, radius, dang=dang)
         )
         return self
 
@@ -839,14 +1004,16 @@ class StripPath:
         angle: float | None = None,
         width: float | None = None,
     ) -> StripPath:
-        """Split the current path in N new paths given by a new departure direction
+        """Branches off a new path from the current end point. Call it repeatedly to split into several paths.
 
         Args:
-            directions (list[tuple[float, float]]): a list of directions example: [(1,0),(-1,0)]
-            widths (list[float], optional): The width for each new path. Defaults to None.
+            direction (tuple[float, float] | None, optional): The departure direction of the new path. Defaults to
+                the current direction.
+            angle (float | None, optional): Rotation of the departure direction in degrees. Defaults to None.
+            width (float | None, optional): The width of the new path. Defaults to the current width.
 
         Returns:
-            list[StripPath]: A list of new StripPath objects
+            StripPath: The new StripPath object
         """
         if width is None:
             width = self.end.width
@@ -855,10 +1022,9 @@ class StripPath:
 
         x = self.end.x
         y = self.end.y
-        z = self.z
         if angle is not None:
             direction = _rot_mat(angle) @ np.array(direction)
-        paths = self.pcb.new(x, y, width, direction, z)
+        paths = self.pcb.new(x, y, width, direction, trace_layer=self.layer)
         self.pcb._checkpoint.append(self)
         return paths
 
@@ -887,7 +1053,7 @@ class StripPath:
 
         Args:
             impedance_function (Callable): A function that computes the component impedance as a function of frequency.
-            size (SizeNames | tuple): The dimensions of the lumped element on PCB.
+            size (SIZE_NAMES | tuple[float, float]): The dimensions of the lumped element on PCB.
 
         Returns:
             StripPath: The same strip path object
@@ -933,14 +1099,14 @@ class StripPath:
 
         self.pcb._lumped_element(poly, impedance_function, width, length)
         return self.pcb.new(
-            x + dx * length, y + dy * length, self.end.width, self.end.direction, self.z
+            x + dx * length, y + dy * length, self.end.width, self.end.direction, trace_layer=self.layer
         )
 
-    def lumped_element_from_sp(self, filename: str, size: SIZE_NAMES | tuple[float, float], z_gnd: float | None = None) -> GeoVolume:
-        """Adds a lumped element to the PCB.
+    def lumped_element_from_sp(self, filename: str, size: SIZE_NAMES | tuple[float, float], ground_layer: int = 0) -> StripPath:
+        """Adds a lumped element to the PCB whose impedance is read from a Touchstone (.sNp) file.
 
-        The first argument should be the impedance function as function of frequency. For a capacitor this would be:
-        Z(f) = 1/(j2πfC).
+        A 1-port file, or a 2-port file of a series element, is added as a series element. Any other 2-port file
+        is added as a pi-network with two shunt elements to the ground layer.
         The second argument specifies the size of the element (length x width) as a tuple or it can be a string for a
         package. For example "0402". The size of the lumped component does not inlcude the footprint.
 
@@ -958,11 +1124,12 @@ class StripPath:
         The impedance function and geometry is automatically passed on with the lumped element added.
 
         Args:
-            impedance_function (Callable): A function that computes the component impedance as a function of frequency.
-            size (SizeNames | tuple): The dimensions of the lumped element on PCB.
+            filename (str): The Touchstone file with the S-parameters of the component.
+            size (SIZE_NAMES | tuple[float, float]): The dimensions of the lumped element on PCB.
+            ground_layer (int, optional): The layer the shunt elements of a pi-network connect to. Defaults to 0.
 
         Returns:
-            StripPath: The same strip path object
+            StripPath: The new StripPath object that continues after the element
         """
         from ...auxilliary.touchstone import TouchstoneData
 
@@ -976,9 +1143,6 @@ class StripPath:
             width = width * 0.001 / self.pcb.unit * 2.54
         else:
             length, width = size
-        
-        if z_gnd is None:
-            z_gnd = self.pcb.z(0)
 
         td = TouchstoneData(filename, )
         dx, dy = self.end.direction
@@ -1008,17 +1172,17 @@ class StripPath:
             * self.pcb.unit
         )
         poly = XYPolygon(xs, ys)
-
+        z_gnd = self.pcb.z(ground_layer)
         if td.n_ports == 1:
             
             self.pcb._lumped_element(poly, td.z_series(), width, length)
             return self.pcb.new(
-                x + dx * length, y + dy * length, self.end.width, self.end.direction, self.z
+                x + dx * length, y + dy * length, self.end.width, self.end.direction, trace_layer=self.layer
             )
         elif td.n_ports == 2 and td.is_singular():
             self.pcb._lumped_element(poly, td.z_series(), width, length)
             return self.pcb.new(
-                x + dx * length, y + dy * length, self.end.width, self.end.direction, self.z
+                x + dx * length, y + dy * length, self.end.width, self.end.direction, trace_layer=self.layer
             )
         else:
             Rx = rx*wh*self.pcb.unit
@@ -1027,34 +1191,29 @@ class StripPath:
             y0l = y*self.pcb.unit - Ry
             dlx = length*dx*self.pcb.unit
             dly = length*dy*self.pcb.unit
-            dz = np.abs(self.z-z_gnd)*self.pcb.unit
-            poly_shunt1 = Plate((x0l, y0l, self.z), (Rx*2,Ry*2,0),(0,0,-(self.z-z_gnd)*self.pcb.unit))
-            poly_shunt2 = Plate((x0l+dlx, y0l+dly, self.z), (Rx*2,Ry*2,0),(0,0,-(self.z-z_gnd)*self.pcb.unit))
+            dz = np.abs(self.z-z_gnd)
+            poly_shunt1 = Plate((x0l, y0l, self.z), (Rx*2,Ry*2,0),(0,0,-(self.z-z_gnd)))
+            poly_shunt2 = Plate((x0l+dlx, y0l+dly, self.z), (Rx*2,Ry*2,0),(0,0,-(self.z-z_gnd)))
 
             self.pcb._lumped_element(poly, td.z_series_pi(), width, length)
             self.pcb._lumped_element(poly_shunt1, td.z_shunt_pi_1(), width, dz)
             self.pcb._lumped_element(poly_shunt2, td.z_shunt_pi_2(), width, dz)
             return self.pcb.new(
-                x + dx * length, y + dy * length, self.end.width, self.end.direction, self.z
+                x + dx * length, y + dy * length, self.end.width, self.end.direction, trace_layer=self.layer
             )
     
     def cut(self) -> StripPath:
-        """Split the current path in N new paths given by a new departure direction
-
-        Args:
-            directions (list[tuple[float, float]]): a list of directions example: [(1,0),(-1,0)]
-            widths (list[float], optional): The width for each new path. Defaults to None.
+        """Starts a new path at the current end point with the same width and direction.
 
         Returns:
-            list[StripPath]: A list of new StripPath objects
+            StripPath: The new StripPath object
         """
         width = self.end.width
         direction = self.end.direction
         x = self.end.x
         y = self.end.y
-        z = self.z
-        paths = self.pcb.new(x, y, width, direction, z)
-        return paths
+        path = self.pcb.new(x, y, width, direction, trace_layer=self.layer)
+        return path
 
     def stub(
         self,
@@ -1063,16 +1222,30 @@ class StripPath:
         length: float,
         mirror: bool = False,
     ) -> StripPath:
-        """Add a single rectangular strip line section at the current coordinate"""
-        self.pcb.new(self.end.x, self.end.y, width, direction, self.z).straight(length)
+        """Add a single rectangular strip line section at the current coordinate
+
+        Args:
+            direction (tuple[float, float]): The stub direction as a (dx, dy) tuple
+            width (float): The stub width
+            length (float): The stub length
+            mirror (bool, optional): Also add the same stub in the opposite direction. Defaults to False.
+
+        Returns:
+            StripPath: This StripPath object
+        """
+        self.pcb.new(self.end.x, self.end.y, width, direction, trace_layer=self.layer).straight(length)
         if mirror:
             self.pcb.new(
-                self.end.x, self.end.y, width, (-direction[0], -direction[1]), self.z
+                self.end.x, self.end.y, width, (-direction[0], -direction[1]), trace_layer=self.layer
             ).straight(length)
         return self
 
     def merge(self) -> StripPath:
-        """Continue at the last point where .split() is called"""
+        """Continue at the last point where .split() is called
+
+        Returns:
+            StripPath: The StripPath on which .split() was called
+        """
         if len(self.pcb._checkpoint) == 0:
             raise RouteException(
                 "No checkpoint known. Make sure to call .check() first"
@@ -1081,13 +1254,14 @@ class StripPath:
 
     def via(
         self,
-        znew: float,
-        radius: float,
+        new_layer: int,
+        radius: float | None = None,
         proceed: bool = True,
         direction: tuple[float, float] | None = None,
         width: float | None = None,
         extra: float | None = None,
         segments: int = 6,
+        annular_ring_radius: float | None = None,
         hole_radius: float | None = None,
         hole_skip_layers: list[int] | None = None,
         reverse: float = 0.0,
@@ -1100,13 +1274,15 @@ class StripPath:
         the new segment to include the via. If not specifies it defaults to width/2.
 
         Args:
-            znew (float): The new Z-height for the stripline
-            radius (float): The via radius
+            new_layer (int): The PCB layer the stripline continues on
+            radius (float | None, optional): The via radius. Defaults to None.
             proceed (bool, optional): Wether to continue with a new trace. Defaults to True.
             direction (tuple[float, float], optional): The new direction. Defaults to None.
             width (float, optional): The new width. Defaults to None.
             extra (float, optional): How much extra stripline to add around the via. Defaults to None.
             segments (int, optional): The number of via polygon sections. Defaults to 6.
+            annular_ring_radius (float | None, optional): The radius of the annular ring cut out of the ground planes
+                and polygons around the via. Defaults to None (no ring).
             hole_radius (float | None, optional): The via hole radius for the Ground layers and polies. Defaults to None.
             hole_skip_layers (list[int] | None, optional): A list of layer numbers where the via hole should not be created. Defaults to None.
             reverse (float, optional): A distance to place the via back in the direction the stripline is coming from. Defaults to 0.0.
@@ -1114,7 +1290,11 @@ class StripPath:
         Returns:
             StripPath: The new StripPath object
         """
-
+        if radius is None:
+            radius = self._via_defaults['radius']
+        else:
+            self._via_defaults['radius'] = radius
+        
         if extra is None:
             extra = self.end.width / 2
 
@@ -1123,16 +1303,18 @@ class StripPath:
         x, y = self.end.x, self.end.y
         x = x - dx * reverse
         y = y - dy * reverse
-        z1 = self.z
-        z2 = znew
+        layer1 = self.layer
         if extra > 0:
             self.straight(extra)
 
-        self.pcb.vias.append(Via(x, y, z1, z2, radius, segments))
+        self.pcb.vias.append(Via(x, y, layer1, new_layer, radius, segments))
 
         # Create via hole objects
         if hole_radius is not None:
-            self.pcb._via_hole(x, y, hole_radius, z1, z2, hole_skip_layers)
+            self.pcb._via_hole(x, y, hole_radius, layer1, new_layer, hole_skip_layers)
+
+        if annular_ring_radius is not None:
+            self.pcb._annular_ring(x, y, annular_ring_radius, layer1, new_layer)
 
         if proceed:
             if width is None:
@@ -1141,7 +1323,7 @@ class StripPath:
                 direction = self.end.direction
             dx = direction[0] * extra
             dy = direction[1] * extra
-            return self.pcb.new(x - dx, y - dy, width, direction, z2)
+            return self.pcb.new(x - dx, y - dy, width, direction, trace_layer=new_layer)
         return self
 
     def short(
@@ -1159,9 +1341,49 @@ class StripPath:
         """
         if radius is None:
             radius = self.end.width / 3
-        self.via(self.pcb.z(ground_layer), radius, False, reverse=reverse)
+        self.via(ground_layer, radius, False, reverse=reverse)
         return self
 
+    def move(self,
+             dx: float | None = None,
+             dy: float | None = None,
+             x: float | None = None,
+             y: float | None = None,
+             direction: tuple[float, float] | None = None,
+             width: float | None = None) -> StripPath:
+        """Move the routing cursur to any new desired location
+
+        Args:
+            dx (float | None, optional): A horizontal displacement. Defaults to None.
+            dy (float | None, optional): A vertical displacement. Defaults to None.
+            x (float | None, optional): The new x-coordinate. Defaults to None.
+            y (float | None, optional): The new y-coordinate. Defaults to None.
+            direction (tuple[float, float] | None, optional): The new direction. Defaults to None.
+            width (float | None, optional): The new width. Defaults to None.
+
+        Returns:
+            StripPath: This StripPath object
+        """
+        if width is None:
+            width = self.end.width
+
+        if direction is None:
+            direction = self.end.direction
+        else:
+            direction = np.array(direction)
+
+        if x is not None and y is not None:
+            xnew = x
+            ynew = x
+        elif dx is not None and dy is not None:
+            xnew = self.end.x + dx
+            ynew = self.end.y + dy
+        else:
+            raise RouteException("Provide either an (x,y) pair or (dx,dy) pair for the move rout instruction")
+
+        self._add_element(StripLine(xnew, ynew, self.end.layer, width, direction))
+        return self
+    
     def jump(
         self,
         dx: float | None = None,
@@ -1224,56 +1446,16 @@ class StripPath:
         else:
             x = ending.x + dx
             y = ending.y + dy
-        return self.pcb.new(x, y, width, direction, z=self.z)
+        return self.pcb.new(x, y, width, direction, trace_layer=self.layer)
 
-    def move(self,
-                 dx: float | None = None,
-                 dy: float | None = None,
-                 x: float | None = None,
-                 y: float | None = None,
-                 direction: tuple[float, float] | None = None,
-                 width: float | None = None) -> StripPath:
-            """Move the routing cursur to any new desired location
-    
-            Args:
-                dx (float | None, optional): A horizontal displacement. Defaults to None.
-                dy (float | None, optional): A vertical displacement. Defaults to None.
-                x (float | None, optional): The new x-coordinate. Defaults to None.
-                y (float | None, optional): The new y-coordinate. Defaults to None.
-                direction (tuple[float, float] | None, optional): The new direction. Defaults to None.
-                width (float | None, optional): The new width. Defaults to None.
-    
-            Returns:
-                StripPath: _description_
-            """
-            if width is None:
-                width = self.end.width
-    
-            if direction is None:
-                direction = self.end.direction
-            else:
-                direction = np.array(direction)
-    
-            if x is not None and y is not None:
-                xnew = x
-                ynew = x
-            elif dx is not None and dy is not None:
-                xnew = self.end.x + dx
-                ynew = self.end.y + dy
-            else:
-                raise RouteException("Provide either an (x,y) pair or (dx,dy) pair for the move rout instruction")
-    
-            self._add_element(StripLine(xnew, ynew, self.end.z, width, direction))
-            return self
-    
     def to(
         self,
         dest: tuple[float, float] | Anchor,
         arrival_dir: tuple[float, float] | None = None,
         arrival_margin: float | None = None,
         angle_step: float = 90,
-        corner_type: Literal['champher','square','miter'] = 'square',
-        dsratio: float = 0.7,
+        corner_type: Literal['champher','square','miter'] | None = None,
+        dsratio: float | None = None,
     ) -> StripPath:
         """Extend the path from current end point to dest (x, y).
         Optionally ensure arrival in arrival_dir after a straight segment of arrival_margin.
@@ -1284,11 +1466,24 @@ class StripPath:
             arrival_dir (tuple[float, float] | None, optional): The arrival direction as dx/dy tuple. Defaults to None.
             arrival_margin (float | None, optional): The minimal travel distance in the arrival direction. Defaults to None.
             angle_step (float, optional): The angle step size to solve for. Defaults to 90.
-            corner_type (["miter","square","champher"], optional): The corner type. Defaults to 'square'.
+            corner_type (Literal['champher','square','miter'] | None, optional): The corner type. Defaults to 'square'.
             dsratio (float, optional): The cut ratio for champher/miter corners. Defaults to 0.7.
+
         Returns:
-            StripPath: _description_
+            StripPath: This StripPath object
         """
+        
+        # Default overwrite
+        if corner_type is None:
+            corner_type = self._turn_defaults['corner_type']
+        else:
+            self._turn_defaults['corner_type'] = corner_type
+        
+        if dsratio is None:
+            dsratio = self._turn_defaults['dsratio']
+        else:
+            self._turn_defaults['dsratio'] = dsratio
+
         dest = _parse_vector(dest)[:2]
         # Validate angle_step
         if 360 % angle_step != 0 or angle_step > 90 or angle_step <= 0:
@@ -1462,9 +1657,16 @@ class PCBLayer:
     _DEFNAME: str = "PCBLayer"
 
     def __init__(self, thickness: float, material: Material, name: str | None = None):
+        """A dielectric layer of a PCB stack.
+
+        Args:
+            thickness (float): The layer thickness
+            material (Material): The dielectric material
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         self.th: float = thickness
         self.mat: Material = material
-        self.name: str = _PCB_MANAGER(name, self._DEFNAME)
+        self.name: str = _GlobalHandler.active().pcbmanager(name, self._DEFNAME)
 
 
 ############################################################
@@ -1472,7 +1674,7 @@ class PCBLayer:
 ############################################################
 
 
-class PCBNew:
+class PCB:
     _DEFNAME: str = "PCB"
     """ The PCB Class can be used to efficiently generate PCB
     models using method chaining functions to describe traces
@@ -1489,7 +1691,7 @@ class PCBNew:
         layers: int = 2,
         stack: list[PCBLayer] = None,
         name: str | None = None,
-        trace_thickness: float | None = None,
+        trace_thickness: float  = 35e-6,
         zs: np.ndarray | None = None,
         thick_traces: bool = False,
     ):
@@ -1504,8 +1706,9 @@ class PCBNew:
             layers (int, optional): The number of copper layers. Defaults to 2.
             stack (list[PCBLayer], optional): Optional list of PCBLayer classes for multilayer PCB with different dielectrics. Defaults to None.
             name (str | None, optional): The PCB object name. Defaults to None.
-            trace_thickness (float | None, optional): The conductor trace thickness if important. Defaults to None.
-            thick_traces: (bool, optional): If traces should be given a thickness and modeled in 3D. Defaults to False
+            trace_thickness (float, optional): The conductor trace thickness if important. Defaults to 35e-6.
+            zs (np.ndarray | None, optional): The z-coordinates of all copper layers; overrides thickness, layers and stack. Defaults to None.
+            thick_traces (bool, optional): If traces should be given a thickness and modeled in 3D. Defaults to False.
         """
 
         self.thickness: float = thickness
@@ -1547,10 +1750,11 @@ class PCBNew:
 
         self.hole_polies: list[PCBPoly] = []
         self.via_holes: list[PCBPoly] = []
-
+        self.annular_rings: list[PCBPoly] = []
+        
         self.lumped_ports: list[StripLine] = []
         self.lumped_elements: list[GeoPolygon] = []
-        self.trace_thickness: float | None = trace_thickness
+        self.trace_thickness: float = trace_thickness
 
         self.unit: float = unit
 
@@ -1576,11 +1780,18 @@ class PCBNew:
         self.stored_striplines: dict[str, RouteElement] = dict()
         self._checkpoint: list[StripPath] = []
 
+        self.board_outline_xs: list[float] | None = None
+        self.board_outline_ys: list[float] | None = None
+        
+        
         self.calc: PCBCalculator = PCBCalculator(
             self._zs, [layer.mat for layer in self._stack], self.unit
         )
 
-        self.name: str = _PCB_MANAGER(name, self._DEFNAME)
+        self.name: str = _GlobalHandler.active().pcbmanager(name, self._DEFNAME)
+        _GlobalHandler.active().pcbmanager.unit = self.unit
+        _GlobalHandler.active().pcbmanager.cs = self.cs
+        _GlobalHandler.active().pcbmanager.pcb = self
 
     ############################################################
     #                          PROPERTIES                     #
@@ -1588,7 +1799,7 @@ class PCBNew:
 
     @property
     def trace(self) -> GeoPolygon:
-        ""
+        """All traces of the PCB as a single GeoPolygon."""
         tags = []
         for trace in self.traces:
             tags.extend(trace.tags)
@@ -1628,9 +1839,23 @@ class PCBNew:
         area = width*length
         Npts = 50
         ds = (area/Npts)**0.5
-        geopoly._mdi.add('lumpedelement', func=function, width=width, height=length)
+        geopoly.properties += LumpedElementAttribute(impedance_function=function, width=width, height=length)
         geopoly.max_meshsize = ds
         self.lumped_elements.append(geopoly)
+
+    def _require_bounds(self, action: str, outline: bool = False) -> None:
+        """Raises a PCBBoundsError if the board bounds (or outline) are not defined yet."""
+        missing = self.board_outline_xs is None if outline else (self.width is None or self.length is None)
+        if not missing:
+            return
+        raise PCBBoundsError(
+            f"Cannot {action}: the board outline of {self.name} is not defined yet. "
+            "Define it first with one of:\n"
+            "  pcb.determine_bounds(left, top, right, bottom)  # traces/copper extents plus margins\n"
+            "  pcb.set_bounds(xmin, ymin, xmax, ymax)          # explicit rectangle\n"
+            "  pcb.set_board_outline(xs, ys)                   # arbitrary polygon\n"
+            f"All values are in PCB units (unit={self.unit} m)."
+        )
 
     def _get_z(self, element: RouteElement) -> float:
         """Return the z-height of a given Route Element
@@ -1671,29 +1896,30 @@ class PCBNew:
         return self.load(name)
 
     def _gen_poly(
-        self, xys: list[tuple[float, float]], z: float, name: str | None = None
+        self, xys: list[tuple[float, float]], layer: int, name: str | None = None
     ) -> GeoPolygon | GeoVolume:
         """Generates a GeoPoly out of a list of (x,y) coordinate tuples.
 
 
         Args:
             xys (list[tuple[float, float]]): A list of (x,y) coordinate tuples.
-            z (float, optional): The z-height of the polygon. Defaults to the top layer.
+            layer (int): The Layer to put the trace on
             name (str, optional): The name of the polygon.
         """
 
         self._poly_out.append(
-            PCBPoly([xy[0] for xy in xys], [xy[1] for xy in xys], z=z)
+            PCBPoly([xy[0] for xy in xys], [xy[1] for xy in xys], layer=layer)
         )
 
+        z_val = self.z(layer)
         ptags = []
         for x, y in xys:
             px, py, pz = self.cs.in_global_cs(
-                x * self.unit, y * self.unit, z * self.unit
+                x * self.unit, y * self.unit, z_val * self.unit
             )
             ptags.append(gmsh.model.occ.addPoint(px, py, pz))
-        
             self._embedded_points.append((px,py,pz))
+        
         ltags = []
         for t1, t2 in zip(ptags[:-1], ptags[1:]):
             ltags.append(gmsh.model.occ.addLine(t1, t2))
@@ -1711,9 +1937,10 @@ class PCBNew:
             dimtags = gmsh.model.occ.extrude([(2, planetag),],dx,dy,dz)
             voltags = [dt[1] for dt in dimtags if dt[0] == 3]
             poly = GeoVolume(voltags, name=name).prio_set(self.conductor_priority)
+            poly.properties += self.trace_material
         else:
-            poly = GeoPolygon([planetag,],name=name,).set_material(self.trace_material)
-            poly._store("thickness", self.trace_thickness)
+            poly = GeoPolygon([planetag,],name=name,)
+            poly.properties += FiniteThickness(self.trace_thickness) + self.trace_material
         return poly
 
     def _via_hole(
@@ -1721,8 +1948,8 @@ class PCBNew:
         x: float,
         y: float,
         radius: float,
-        z1: float,
-        z2: float,
+        layer1: int,
+        layer2: int,
         skip_layers: list[int] | None = None,
     ) -> None:
         """Generates via holes in the ground planes and polies.
@@ -1731,18 +1958,46 @@ class PCBNew:
             x (float): The x-coordinate of the via
             y (float): The y-coordinate of the via
             radius (float): The via hole radius
-            z1 (float): The bottom z-coordinate of the via
-            z2 (float): The top z-coordinate of the via
+            layer1 (int): One end layer index of the via
+            layer2 (int): The other end layer index of the via
             skip_layers (list[int] | None, optional): A list of layer numbers where the via hole should not be created. Defaults to None.
         """
         if skip_layers is None:
             skip_layers = []
-        for layer_nr, z in enumerate(self._zs):
+        n = len(self._zs)
+        l1 = layer1 + n if layer1 < 0 else layer1
+        l2 = layer2 + n if layer2 < 0 else layer2
+        lo, hi = sorted((l1, l2))
+        for layer_nr in range(lo + 1, hi):
             if layer_nr in skip_layers:
                 continue
-            if min(z1, z2) < z < max(z1, z2):
-                hole_poly = PCBPoly.circle(x, y, radius, z=z)
-                self.via_holes.append(hole_poly)
+            hole_poly = PCBPoly.circle(x, y, radius, layer_nr)
+            self.via_holes.append(hole_poly)
+
+    def _annular_ring(
+        self,
+        x: float,
+        y: float,
+        radius: float,
+        layer1: int,
+        layer2: int,
+    ) -> None:
+        """Generates annular ring in the ground planes and polies.
+
+        Args:
+            x (float): The x-coordinate of the via
+            y (float): The y-coordinate of the via
+            radius (float): The via hole radius
+            layer1 (int): One end layer index of the via
+            layer2 (int): The other end layer index of the via
+            skip_layers (list[int] | None, optional): A list of layer numbers where the via hole should not be created. Defaults to None.
+        """
+        n = len(self._zs)
+        l1 = layer1 + n if layer1 < 0 else layer1
+        l2 = layer2 + n if layer2 < 0 else layer2
+        for layer_nr in (l1,l2):
+            hole_poly = PCBPoly.circle(x, y, radius, layer_nr)
+            self.annular_rings.append(hole_poly)
 
     ############################################################
     #                        USER FUNCTIONS                   #
@@ -1767,8 +2022,8 @@ class PCBNew:
         self,
         *coordinates: tuple[float, float] | Anchor,
         radius: float,
-        z1: float | None = None,
-        z2: float | None = None,
+        layer1: int = 0,
+        layer2: int = -1,
         segments: int = 6,
     ) -> None:
         """Add a series of vias provided by a list of coordinates.
@@ -1780,20 +2035,16 @@ class PCBNew:
         >>> pcb.add_vias((x1,y1), (x1,y2), radius=1)
 
         Args:
-            *coordinates (tuple(float, float)): A series of coordinates
+            *coordinates (tuple[float, float] | Anchor): A series of coordinates
             radius (float): The radius
-            z1 (float | None, optional): The bottom z-coordinate. Defaults to None.
-            z2 (float | None, optional): The top z-coordinate. Defaults to None.
+            layer1 (int, optional): The bottom layer index. Defaults to 0.
+            layer2 (int, optional): The top layer index. Defaults to -1 (top layer).
             segments (int, optional): The number of segmets for the via. Defaults to 6.
         """
         coordinates = [_parse_vector(coord)[:2] for coord in coordinates]
-        if z1 is None:
-            z1 = self.z(0)
-        if z2 is None:
-            z2 = self.z(-1)
 
         for x, y in coordinates:
-            self.vias.append(Via(x, y, z1, z2, radius, segments))
+            self.vias.append(Via(x, y, layer1, layer2, radius, segments))
 
     def load(self, name: str) -> RouteElement:
         """Acquire the x,y, coordinate associated with the label name.
@@ -1801,9 +2052,12 @@ class PCBNew:
         Args:
             name (str): The name of the x,y coordinate
 
+        Returns:
+            RouteElement: The stored stripline (or polygon) with the given label
         """
-        _PCB_MANAGER.unit = self.unit
-        _PCB_MANAGER.cs = self.cs
+        _GlobalHandler.active().pcbmanager.unit = self.unit
+        _GlobalHandler.active().pcbmanager.cs = self.cs
+        _GlobalHandler.active().pcbmanager.pcb = self
 
         name = str(name)
         if name in self.stored_striplines:
@@ -1847,6 +2101,13 @@ class PCBNew:
         self.length = maxy - miny + mt + mb
         self.origin = np.array([-ml + minx, -mb + miny, 0])
 
+        # Record the equivalent rectangular outline as a polygon so that
+        # generate_pcb() has a single, uniform representation to extrude,
+        # whether the board is rectangular or a custom shape.
+        ox, oy = self.origin[0], self.origin[1]
+        self.board_outline_xs = [ox, ox + self.width, ox + self.width, ox]
+        self.board_outline_ys = [oy, oy, oy + self.length, oy + self.length]
+
     def set_bounds(self, xmin: float, ymin: float, xmax: float, ymax: float) -> None:
         """Define the bounds of the PCB
 
@@ -1860,80 +2121,93 @@ class PCBNew:
         self.width = xmax - xmin
         self.length = ymax - ymin
 
+        self.board_outline_xs = [xmin, xmax, xmax, xmin]
+        self.board_outline_ys = [ymin, ymin, ymax, ymax]
+
+    def set_board_outline(self, xs: list[float], ys: list[float]) -> None:
+        """Define a custom (non-rectangular) board outline polygon.
+
+        This overrides whatever rectangle determine_bounds() or set_bounds()
+        would otherwise produce. The bounding box (self.width, self.length,
+        self.origin) is still kept in sync, since plane() and generate_air()
+        rely on it for their default rectangular sizing.
+
+        Args:
+            xs (list[float]): The outline x-coordinates, in order, open (not repeating the first point).
+            ys (list[float]): The outline y-coordinates, in order, open (not repeating the first point).
+        """
+        if len(xs) != len(ys):
+            raise ValueError(
+                "xs and ys must be the same length to define a board outline polygon."
+            )
+        if len(xs) < 3:
+            raise ValueError("A board outline polygon requires at least 3 points.")
+
+        self.board_outline_xs = list(xs)
+        self.board_outline_ys = list(ys)
+
+        minx, maxx = min(xs), max(xs)
+        miny, maxy = min(ys), max(ys)
+        self.width = maxx - minx
+        self.length = maxy - miny
+        self.origin = np.array([minx, miny, 0.0])
+        
     def plane(
         self,
-        z: float,
+        layer: int,
         width: float | None = None,
         height: float | None = None,
         origin: tuple[float, float] | Anchor | None = None,
         alignment: Alignment = Alignment.CORNER,
         material: Material | None = None,
-        name: str | None = None,
+        name: str | None = "Plane",
     ) -> GeoSurface | GeoVolume:
         """Generates a generic rectangular plate in the XY grid.
         If no size is provided, it defaults to the entire PCB size assuming that the bounds are determined.
 
         Args:
-            z (float): The Z-height for the plate.
+            layer (int): The Layer at which to place the plane object
             width (float, optional): The width of the plate. Defaults to None.
             height (float, optional): The height of the plate. Defaults to None.
-            origin (tuple[float, float], optional): The origin of the plate. Defaults to None.
-            alignment (['corner','center], optional): The alignment of the plate. Defaults to 'corner'.
+            origin (tuple[float, float] | Anchor | None, optional): The origin of the plate. Defaults to None.
+            alignment (Alignment, optional): The alignment of the plate. Defaults to 'corner'.
             material (Material, optional): The optional plane material. Defaults to the trace material specified.
+            name (str | None, optional): The name of the object. Defaults to "Plane".
         Returns:
-            GeoSurface: The resultant GeoSurface of the plane
+            GeoSurface | GeoVolume: The resultant GeoSurface of the plane
         """
-        if width is not None and height is not None:
-            self.xs.append(origin[0] / self.unit)
-            self.xs.append(origin[0] / self.unit + width)
-            self.ys.append(origin[1] / self.unit)
-            self.ys.append(origin[1] / self.unit + height)
-
         if width is None or height is None or origin is None:
-            if self.width is None or self.length is None or self.origin is None:
-                raise RouteException(
-                    "Cannot define a plane with no possible definition of its size."
-                )
-            width = self.width
-            height = self.length
-            origin = (self.origin[0], self.origin[1])
+            self._require_bounds("create a plane without an explicit width, height and origin")
+            width = width if width is not None else self.width
+            height = height if height is not None else self.length
+            origin = origin if origin is not None else (self.origin[0], self.origin[1])
 
         if material is None:
             material = self.trace_material
 
-        origin = tuple(_parse_vector(origin))
-        origin: tuple[float, ...] = origin + (z,)  # type: ignore
-        origin = tuple([param*self.unit for param in origin])
+        origin_parsed = tuple(_parse_vector(origin))
+        ox, oy = origin_parsed[0], origin_parsed[1]
+
         if alignment is Alignment.CENTER:
-            origin = (
-                origin[0] - width * self.unit / 2,
-                origin[1] - height * self.unit / 2,
-                origin[2],
-            )
+            ox -= width / 2
+            oy -= height / 2
 
-        if self._thick_traces:
-            plane = Box(
-                width * self.unit,
-                height * self.unit,
-                self.trace_thickness,
-                position=origin,
-                name=name,
-            ).set_material(material)
-        else:
-            plane = Plate(
-                origin, (width * self.unit, 0, 0), (0, height * self.unit, 0), name=name
-            )  # type: ignore
-            plane._store("thickness", self.thickness)
-            plane = change_coordinate_system(plane, self.cs)  # type: ignore
-            plane.set_material(material)
-
+        # Track bounding coordinates in raw (user-facing) units
+        self.xs.extend([ox, ox + width])
+        self.ys.extend([oy, oy + height])
+        
+        xys = [(ox, oy),(ox, oy+height), (ox+width, oy+height), (ox+width, oy)]
+        
+        plane_obj = self._gen_poly(xys, layer, name)
+        plane_obj = change_coordinate_system(plane_obj, self.cs)
+        
         # subtract via holes:
         holes = []
         for via_hole in self.via_holes:
-            holes.append(self._gen_poly(via_hole.xys, via_hole.z, name=via_hole.name))
+            holes.append(self._gen_poly(via_hole.xys, via_hole.layer, name=via_hole.name))
         if len(holes) > 0:
-            plane = remove(plane, unite(*holes))
-        return plane  # type: ignore
+            plane_obj = remove(plane_obj, unite(*holes))
+        return plane_obj  # type: ignore
 
     def radial_stub(
         self,
@@ -1943,20 +2217,20 @@ class PCBNew:
         direction: tuple[float, float],
         Nsections: int = 8,
         w0: float = 0,
-        z: float = 0,
+        layer: int = -1,
         material: Material = None,
         name: str = None,
     ) -> None:
         """Generates a radial stub polygon
 
         Args:
-            pos (tuple[float, float] | Point): The position of the stub origin
+            pos (tuple[float, float] | Anchor): The position of the stub origin
             length (float): The length of the stub
             angle (float): The angle of the stub in degrees
             direction (tuple[float, float]): The direction vector
             Nsections (int, optional): Number of angle sections. Defaults to 8.
             w0 (float, optional): the start width. Defaults to 0.
-            z (float, optional): the Z-height. Defaults to 0.
+            layer (int, optional): the layer index. Defaults to 0.
             material (Material, optional): the stub material. Defaults to None.
             name (str, optional): The geometry name. Defaults to None.
         """
@@ -1980,8 +2254,33 @@ class PCBNew:
             points.append((p.real, p.imag))
 
         xs, ys = zip(*points)
-        self.add_poly(xs, ys, z, material, name)
+        self.add_poly(xs, ys, layer, material, name)
 
+    def _generate_pcb_outline_geo(self,
+                                  z1: float,
+                                  z2: float,
+                                  material: Material) -> GeoVolume:
+        """Helper function for generic PCB Layer generation
+
+        Args:
+            z1 (float): _description_
+            z2 (float): _description_
+            material (Material): _description_
+
+        Returns:
+            GeoVolume: _description_
+        """
+        self._require_bounds("generate the PCB dielectric", outline=True)
+        bxs = [x*self.unit for x in self.board_outline_xs]
+        bys = [y*self.unit for y in self.board_outline_ys]
+
+        h = z2 - z1
+        box = XYPolygon(bxs, bys).extrude(h * self.unit, GCS.displace(0,0,z1* self.unit))
+        box.properties += material
+        box.prio_set(self.dielectric_priority)
+        box = change_coordinate_system(box, self.cs)
+        return box
+    
     def generate_pcb(
         self, split_z: bool = True, merge: bool = True
     ) -> list[GeoVolume] | GeoVolume:
@@ -1994,8 +2293,6 @@ class PCBNew:
         Returns:
             GeoVolume | List[GeoVolume]: The PCB Block or blocks
         """
-        x0, y0, z0 = self.origin * self.unit
-
         n_materials = len(set([id(layer.mat) for layer in self._stack]))
 
         if split_z and self._zs.shape[0] > 2 or n_materials > 1:
@@ -2003,34 +2300,49 @@ class PCBNew:
             for i, (z1, z2, layer) in enumerate(
                 zip(self._zs[:-1], self._zs[1:], self._stack)
             ):
-                h = z2 - z1
-                box = Box(
-                    self.width * self.unit,
-                    self.length * self.unit,
-                    h * self.unit,
-                    position=(x0, y0, z0 + z1 * self.unit),
-                    name=layer.name,
-                )
-                box.material = layer.mat
-                box = change_coordinate_system(box, self.cs)
-                box.prio_set(self.dielectric_priority)
+                box = self._generate_pcb_outline_geo(z1, z2, layer.mat)
                 boxes.append(box)
+            
             if merge and n_materials == 1:
-                return GeoVolume.merged(boxes).prio_set(self.dielectric_priority)  # type: ignore
+                box = GeoVolume.merged(boxes).prio_set(self.dielectric_priority)
+                return box
             return boxes  # type: ignore
 
-        box = Box(
-            self.width * self.unit,
-            self.length * self.unit,
-            self.thickness * self.unit,
-            position=(x0, y0, z0 - self.thickness * self.unit),
-            name=f"{self.name}_diel",
-        )
-        box.material = self._stack[0].mat
-        box.prio_set(self.dielectric_priority)
-        box = change_coordinate_system(box, self.cs)
+        box = self._generate_pcb_outline_geo(-self.thickness, 0, self._stack[0].mat)
         return box  # type: ignore
 
+    def generate_all(self, 
+                     merge: bool = False, 
+                     height_air_top: float | None = None, 
+                     height_air_bottom: float | None = None) -> tuple[GeoVolume, list[GeoVolume], list[GeoVolume]]:
+        """Generate all PCB components to finalize the model.
+
+        Air is always returned as a list of Air elements. Either empty if no heights are provided, a sinle one or both (top first, then bottom)
+
+        Args:
+            merge (bool, optional): Merge the PCB dielectric volumes into a single object. Defaults to False.
+            height_air_top (float | None, optional): The height of the air box above the PCB. Defaults to None (no air box).
+            height_air_bottom (float | None, optional): The height of the air box below the PCB. Defaults to None (no air box).
+
+        Returns:
+            tuple[GeoVolume, list[GeoVolume], list[GeoVolume]]: PCB, Air, Vias
+        """
+        pcb = self.generate_pcb(merge=merge)
+
+        air = []
+        if height_air_top is not None:
+            air.append(self.generate_air(height_air_top))
+
+        if height_air_bottom is not None:
+            air.append(self.generate_air(height_air_bottom, bottom=True))
+
+        if len(self.vias) > 0:
+            vias = self.generate_vias(True)
+        else:
+            vias = tuple()
+
+        return pcb, air, vias
+    
     def generate_air(
         self, height: float, name: str = "PCBAirbox", bottom: bool = False
     ) -> GeoVolume:
@@ -2039,9 +2351,15 @@ class PCBNew:
         This requires that the width, depth and origin are deterimed. This
         can either be done manually or via the .determine_bounds() method.
 
+        Args:
+            height (float): The height of the air box
+            name (str, optional): The name of the object. Defaults to "PCBAirbox".
+            bottom (bool, optional): Place the air box below the PCB instead of on top. Defaults to False.
+
         Returns:
             GeoVolume: The PCB Block
         """
+        self._require_bounds("generate the air box")
         dz = 0
 
         x0, y0, z0 = self.origin * self.unit
@@ -2058,13 +2376,51 @@ class PCBNew:
         box = change_coordinate_system(box, self.cs)
         return box  # type: ignore
 
+    def generate_silkscreen(self,
+                            material: Material,
+                            thickenss_top: float = 0.0,
+                            thickness_bottom: float = 0.0,
+                            ) -> GeoVolume | tuple[GeoVolume, GeoVolume]:
+        """Generates a silkscreen over the entire PCB with the provided material and thickness.
+        If a thickness is empty, no geometry is generated for that side of the PCB.
+
+        Thickness should be provided in the PCB unit.
+        Args:
+            material (Material): The material of the Silkscreen
+            thickenss_top (float, optional): The thickness of the Top layer. Defaults to 0.0.
+            thickness_bottom (float, optional): The thickness of the bottom layer. Defaults to 0.0.
+
+        Returns:
+            GeoVolume | tuple[GeoVolume, GeoVolume]: Either a single layer or both layers (bottom, top)
+        """
+
+        if thickenss_top == 0.0 and thickness_bottom == 0.0:
+            raise ValueError("At least the top or bottom layer thickness must be provided.")
+
+        th_top = thickenss_top
+        th_bot = thickness_bottom
+
+        sk_top = None
+        sk_bot = None
+        if th_top > 0.0:
+            sk_top = self._generate_pcb_outline_geo(0, th_top, material)
+        if th_bot > 0.0:
+            sk_bot = self._generate_pcb_outline_geo(-self.thickness-th_bot, -self.thickness, material)
+
+        if sk_top is None:
+            return sk_bot
+        if sk_bot is None:
+            return sk_top
+        return sk_bot, sk_top
+        
+
     def new(
         self,
         x: float | Anchor,
         y: float,
         width: float,
         direction: tuple[float, float],
-        z: float = 0,
+        trace_layer: int = -1,
         name: str | None = None,
     ) -> StripPath:
         """Start a new trace
@@ -2073,11 +2429,12 @@ class PCBNew:
         The direction must be provided as an (dx,dy) vector provided as tuple.
 
         Args:
-            x (float): The starting X-coordinate (local)
+            x (float | Anchor): The starting X-coordinate (local)
             y (float): The starting Y-coordinate (local)
             width (float): The (micro)-stripline width
             direction (tuple[float, float]): The direction.
-
+            trace_layer (int, optional): The trace layer. Defaults to -1
+            name (str | None, optional): The name of the object. Defaults to None.
         Returns:
             StripPath: A StripPath object that can be extended with method chaining.
 
@@ -2086,14 +2443,16 @@ class PCBNew:
 
         """
         path = StripPath(self, name=name)
-        path.init(x, y, width, direction, z=z)
+        path.init(x, y, width, direction, trace_layer=trace_layer)
         self.paths.append(path)
         return path
 
     def lumped_port(
         self,
         stripline: StripLine | str,
-        z_ground: float | None = None,
+        port_number: int,
+        ground_layer: int = 0,
+        impedance: float = 50.0,
         name: str | None = "LumpedPort",
     ) -> GeoPolygon:
         """Generate a lumped-port object to be created.
@@ -2112,7 +2471,9 @@ class PCBNew:
 
         Args:
             stripline (StripLine | str): The stripline object or a reference to the stripline object
-            z_ground (float | None, optional): The ground height to extrude the port to. Defaults to None.
+            port_number (int): The port number assigned to the lumped port
+            ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
+            impedance (float, optional): The port impedance in Ohm. Defaults to 50.0.
             name (str | None, optional): The name for the resultant object. Defaults to 'LumpedPort'.
 
         Returns:
@@ -2124,21 +2485,20 @@ class PCBNew:
 
         xy1 = stripline.right[0]
         xy2 = stripline.left[0]
-        z = self._get_z(stripline)
-        if z_ground is None:
-            z_ground = -self.thickness
+        z = self._get_z(stripline) * self.unit
+        z_ground = self.z(ground_layer)* self.unit
         height = z - z_ground
         x1, y1, z1 = self.cs.in_global_cs(
-            xy1[0] * self.unit, xy1[1] * self.unit, z * self.unit - height * self.unit
+            xy1[0] * self.unit, xy1[1] * self.unit, z_ground
         )
         x2, y2, z2 = self.cs.in_global_cs(
-            xy1[0] * self.unit, xy1[1] * self.unit, z * self.unit
+            xy1[0] * self.unit, xy1[1] * self.unit, z
         )
         x3, y3, z3 = self.cs.in_global_cs(
-            xy2[0] * self.unit, xy2[1] * self.unit, z * self.unit
+            xy2[0] * self.unit, xy2[1] * self.unit, z
         )
         x4, y4, z4 = self.cs.in_global_cs(
-            xy2[0] * self.unit, xy2[1] * self.unit, z * self.unit - height * self.unit
+            xy2[0] * self.unit, xy2[1] * self.unit, z_ground
         )
 
         ptag1 = gmsh.model.occ.addPoint(x1, y1, z1)
@@ -2163,28 +2523,32 @@ class PCBNew:
             [
                 planetag,
             ],
-            name="name",
+            name=name,
         )
-        poly._mdi.add('lumpedport', width=abs(stripline.width * self.unit), height=abs(height * self.unit), vdir=self.cs.zax)
-
+        poly.properties += LumpedPortAttribute(port_number=port_number, width=abs(stripline.width * self.unit), height=abs(height), direction=self.cs.zax, impedance=impedance)
         return poly
 
     def lumped_port_pts(
         self,
         p1: tuple[float, float],
         p2: tuple[float, float],
-        z: float,
-        z_ground: float | None = None,
+        layer: int,
+        port_number: int,
+        ground_layer: int = 0,
+        impedance: float = 50.0,
         name: str | None = "LumpedPort",
     ) -> GeoPolygon:
         """Generate a lumped-port object to be created.
 
-        The lumped port will be drawn and extruded form the line specified by two points.
+        The lumped port will be drawn and extruded from the line specified by two points.
+
         Args:
-            p1: (tuple[float, float]) - Point one of the line to be extruded
-            p2: (tuple[float, float]) - POint two of the line to be extruded
-            z: (float) - The starting z-height for the extrusion.
-            z_ground (float | None, optional): The ground height to extrude the port to. Defaults to None.
+            p1 (tuple[float, float]): Point one of the line to be extruded
+            p2 (tuple[float, float]): Point two of the line to be extruded
+            layer (int): The PCB layer the port starts at
+            port_number (int): The port number assigned to the lumped port
+            ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
+            impedance (float, optional): The port impedance in Ohm. Defaults to 50.0.
             name (str | None, optional): The name for the resultant object. Defaults to 'LumpedPort'.
 
         Returns:
@@ -2193,19 +2557,18 @@ class PCBNew:
 
         xy1 = p1
         xy2 = p2
-        z = z / self.unit
-        if z_ground is None:
-            z_ground = -self.thickness
+        z = self.z(layer)
+        z_ground = self.z(ground_layer)
         height = z - z_ground
 
         width = abs(np.linalg.norm(np.array(xy1) - np.array(xy2)))
         x1, y1, z1 = self.cs.in_global_cs(
-            xy1[0], xy1[1], z * self.unit - height * self.unit
+            xy1[0], xy1[1], z_ground
         )
-        x2, y2, z2 = self.cs.in_global_cs(xy1[0], xy1[1], z * self.unit)
-        x3, y3, z3 = self.cs.in_global_cs(xy2[0], xy2[1], z * self.unit)
+        x2, y2, z2 = self.cs.in_global_cs(xy1[0], xy1[1], z)
+        x3, y3, z3 = self.cs.in_global_cs(xy2[0], xy2[1], z)
         x4, y4, z4 = self.cs.in_global_cs(
-            xy2[0], xy2[1], z * self.unit - height * self.unit
+            xy2[0], xy2[1], z_ground
         )
 
         ptag1 = gmsh.model.occ.addPoint(x1, y1, z1)
@@ -2230,18 +2593,20 @@ class PCBNew:
             [
                 planetag,
             ],
-            name="name",
+            name=name,
         )
-        poly._mdi.add('lumpedport', width=abs(width), height=abs(height * self.unit), vdir = self.cs.zax)
+        poly.properties += LumpedPortAttribute(port_number=port_number, direction = self.cs.zax, width=abs(width), height=abs(height), impedance=impedance)
 
         return poly
 
     def modal_port(
         self,
         point: StripLine | str,
+        port_number: int,
         height: float | tuple[float, float],
         width_multiplier: float = 5.0,
         width: float | None = None,
+        mode_type: Literal['TEM','TE','TM','any'] = 'any',
         name: str | None = "ModalPort",
     ) -> GeoSurface:
         """Generate a wave-port as a GeoSurface.
@@ -2251,9 +2616,14 @@ class PCBNew:
         extended to the air height from the bottom of the PCB unless a different height is specified.
 
         Args:
-            point (StripLine): The location of the port.
+            point (StripLine | str): The location of the port.
+            port_number (int): The port number
+            height (float | tuple[float, float]): The height of the port above the PCB. A (dz, height) tuple
+                additionally extends the port by dz below the PCB.
             width_multiplier (float, optional): The width of the port in stripline widths. Defaults to 5.0.
-            height (float, optional): The height of the port. Defaults to None.
+            width (float | None, optional): The absolute port width, overrides width_multiplier. Defaults to None.
+            mode_type (Literal['TEM','TE','TM','any'], optional): The mode type of the port. Defaults to 'any'.
+            name (str | None, optional): The name of the object. Defaults to "ModalPort".
 
         Returns:
             GeoSurface: The GeoSurface object that can be used for the waveguide.
@@ -2283,6 +2653,7 @@ class PCBNew:
 
         plate = Plate(np.array([x0, y0, z0]) * self.unit, ax1, ax2, name=name)
         plate = change_coordinate_system(plate, self.cs)
+        plate.properties += WavePortAttribute(port_number, mode_type)
         return plate  # type: ignore
 
     @overload
@@ -2298,23 +2669,25 @@ class PCBNew:
             merge (bool, optional): Whether to merge the result into a final object. Defaults to False.
             material (Material, optional): The optional material for the vias.
         Returns:
-            list[Cylinder] | Cylinder: Either al ist of cylllinders or a single one (merge=True)
+            list[Cylinder] | GeoVolume: Either al ist of cylllinders or a single one (merge=True)
         """
         vias = []
         if material is None:
             material = self.trace_material
         for via in self.vias:
+            z1 = self.z(via.layer1)
+            z2 = self.z(via.layer2)
             x0 = via.x * self.unit
             y0 = via.y * self.unit
-            z0 = via.z1 * self.unit
+            z0 = z1 * self.unit
             xg, yg, zg = self.cs.in_global_cs(x0, y0, z0)
             cs = CoordinateSystem(
                 self.cs.xax, self.cs.yax, self.cs.zax, np.array([xg, yg, zg])
             )
             cyl = Cylinder(
-                via.radius * self.unit, (via.z2 - via.z1) * self.unit, cs, via.segments
+                via.radius * self.unit, (z2 - z1) * self.unit, cs, via.segments
             )
-            cyl.material = material
+            cyl.properties += material
             cyl.prio_set(self.via_priority)
             vias.append(cyl)
         if merge:
@@ -2325,7 +2698,7 @@ class PCBNew:
         self,
         xs: list[float],
         ys: list[float],
-        z: float = 0,
+        layer: int = 0,
         material: Material = None,
         name: str | None = None,
     ) -> None:
@@ -2334,12 +2707,13 @@ class PCBNew:
         Args:
             xs (list[float]): A list of x-coordinates
             ys (list[float]): A list of y-coordinates
-            z (float, optional): The z-height. Defaults to 0.
+            layer (int, optional): The layer index. Defaults to 0.
             material (Material, optional): The material. Defaults to COPPER.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         if material is None:
             material = self.trace_material
-        poly = PCBPoly(xs, ys, z, material, name=name)
+        poly = PCBPoly(xs, ys, layer, material, name=name)
 
         self.polies.append(poly)
 
@@ -2347,7 +2721,7 @@ class PCBNew:
         self,
         xs: list[float],
         ys: list[float],
-        z: float = 0,
+        layer: int = 0,
         name: str | None = None,
     ) -> None:
         """Add a custom polygon hole to the PCB
@@ -2355,11 +2729,12 @@ class PCBNew:
         Args:
             xs (list[float]): A list of x-coordinates
             ys (list[float]): A list of y-coordinates
-            z (float, optional): The z-height. Defaults to 0.
+            layer (int, optional): The layer index. Defaults to 0.
+            name (str | None, optional): The name of the object. Defaults to None.
             
         """
         material = self.trace_material
-        poly = PCBPoly(xs, ys, z, material, name=name)
+        poly = PCBPoly(xs, ys, layer, material, name=name)
 
         self.hole_polies.append(poly)
 
@@ -2374,7 +2749,7 @@ class PCBNew:
     def compile_paths(
         self, 
         merge: bool = False, 
-        fragment: bool = True
+        fragment: bool = False
     ) -> list[GeoPolygon] | GeoSurface | GeoVolume:
         """Compiles the striplines and returns a list of polygons or asingle one.
 
@@ -2385,7 +2760,7 @@ class PCBNew:
             merge (bool, optional): Whether to merge the Polygons into a single. Defaults to False.
             fragment (bool, optional): Adds line segment points to improve mesh quality in combination with set_trace_refinement().
         Returns:
-            list[Polygon] | GeoSurface: The output stripline polygons possibly merged if merge = True.
+            list[GeoPolygon] | GeoSurface | GeoVolume: The output stripline polygons possibly merged if merge = True.
         """
         polys: list[GeoSurface] = []
         allx = []
@@ -2396,8 +2771,8 @@ class PCBNew:
         polyset = PolygonSet()
 
         for path in self.paths:
-            z = path.z
-            self.zs.append(z)
+            layer = path.layer
+            self.zs.append(self.z(layer))
             xysL = []
             xysR = []
 
@@ -2432,17 +2807,11 @@ class PCBNew:
                     allx.append(x)
                     ally.append(y)
 
-            polyset.add_poly(xys2, z, self.trace_material)
-            #poly = self._gen_poly(xys2, z)
-            #poly.material = self.trace_material
-            #polys.append(poly)
+            polyset.add_poly(xys2, layer, self.trace_material)
 
         for pcbpoly in self.polies:
-            self.zs.append(pcbpoly.z)
-            polyset.add_poly(pcbpoly.xys, pcbpoly.z, pcbpoly.material)
-            #poly = self._gen_poly(pcbpoly.xys, pcbpoly.z, name=pcbpoly.name)
-            #poly.material = pcbpoly.material
-            #polys.append(poly)
+            self.zs.append(self.z(pcbpoly.layer))
+            polyset.add_poly(pcbpoly.xys, pcbpoly.layer, pcbpoly.material)
             xs, ys = zip(*pcbpoly.xys)
             allx.extend(xs)
             ally.extend(ys)
@@ -2452,20 +2821,25 @@ class PCBNew:
         
         if fragment:
             polyset.fragment()
+
         for poly in polyset.polies:
             new_poly = self._gen_poly(poly.xys, poly.z)
-            new_poly.material = poly.material
+            new_poly.properties += poly.material
             polys.append(new_poly)
-        
+
+        for ring in self.annular_rings:
+            poly = self._gen_poly(ring.xys, ring.layer, name=ring.name)
+            poly.properties += poly.material
+            polys.append(poly)
+            
         holes = []
         for holepoly in self.hole_polies + self.via_holes:
-            self.zs.append(holepoly.z)
-            poly = self._gen_poly(holepoly.xys, holepoly.z, name=holepoly.name)
+            self.zs.append(self.z(holepoly.layer))
+            poly = self._gen_poly(holepoly.xys, holepoly.layer, name=holepoly.name)
             holes.append(poly)
 
-
-        self.xs = allx
-        self.ys = ally
+        self.xs.extend(allx)
+        self.ys.extend(ally)
 
         self.traces = polys
 
@@ -2489,33 +2863,4 @@ class PCBNew:
                 ]
         return polys
 
-
-class PCB(PCBNew):
-    """DEPRICATED CLASS. Use PCBNew()"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        logger.warning(
-            "PCB() is now depricated due to a change in the behavior of the .z() function.\n"
-            + "Layers will be counted from 0 instead of 1. Use PCBNew(). Later these will be merged."
-        )
-        DEBUG_COLLECTOR.add_report(
-            "PCB() is now depricated due to a change in the behavior of the .z() function.\n"
-            + "Layers will be counted from 0 instead of 1. Use PCBNew(). Later these will be merged."
-        )
-
-    def z(self, layer: int) -> float:
-        """
-        Args:
-            layer (int): The layer number (1 to N)
-
-        Returns:
-            float: the z-height
-        """
-        logger.warning(
-            "The PCB class will be depricated. Move to PCBNew and index layers counting from 0 instead of 1."
-        )
-        if layer <= 0:
-            return self._zs[layer]
-
-        return self._zs[layer - 1]
+PCBNew = PCB

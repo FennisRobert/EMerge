@@ -1,0 +1,123 @@
+# Builds the EMerge wheels (including the EMR Rust kernels) and publishes them to PyPI
+# whenever the version in pyproject.toml is not yet on PyPI.
+#
+# PyPI side: add a trusted publisher for this repository with workflow "release.yml"
+# and environment "pypi". GitHub side: create an environment named "pypi".
+name: Release
+
+on:
+  push:
+    branches: [main, v3.0-dev]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    name: Detect new version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: check
+        name: Compare pyproject version with PyPI
+        run: |
+          python -m pip install --quiet packaging
+          python - <<'EOF'
+          import json, os, tomllib, urllib.error, urllib.request
+          from packaging.version import Version
+
+          with open("pyproject.toml", "rb") as f:
+              project = tomllib.load(f)["project"]
+          name, version = project["name"], Version(project["version"])
+          try:
+              with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=30) as r:
+                  released = {Version(v) for v in json.load(r)["releases"]}
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+              released = set()
+          publish = version not in released
+          print(f"{name} {version}: {'new, will publish' if publish else 'already on PyPI, skipping'}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={version}\npublish={str(publish).lower()}\n")
+          EOF
+
+  wheels:
+    name: Wheel ${{ matrix.os }} ${{ matrix.target }}
+    needs: check-version
+    if: needs.check-version.outputs.publish == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64 }
+          - { os: ubuntu-latest, target: aarch64 }
+          - { os: macos-14, target: aarch64 }
+          - { os: macos-14, target: x86_64 }
+          - { os: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build abi3 wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+
+  sdist:
+    name: Source distribution
+    needs: check-version
+    if: needs.check-version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    name: Publish ${{ needs.check-version.outputs.version }} to PyPI
+    needs: [check-version, wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/emerge/${{ needs.check-version.outputs.version }}/
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+      - name: Tag the released commit
+        run: |
+          git tag "v${{ needs.check-version.outputs.version }}"
+          git push origin "v${{ needs.check-version.outputs.version }}"

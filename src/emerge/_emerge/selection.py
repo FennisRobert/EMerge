@@ -19,6 +19,7 @@
 from __future__ import annotations
 import gmsh  # type: ignore
 import numpy as np
+from ._global import _BaseManager, _GlobalHandler
 from .cs import Axis, CoordinateSystem, _parse_vector, Plane
 from typing import Callable, TypeVar, Iterable, Any
 from emsutil import Saveable
@@ -69,48 +70,31 @@ VAL_TO_CHAR = {i: ch for i, ch in enumerate(ALPHABET)}
 ############################################################
 
 
-class _CalculationInterface:
-    """This class is used to give the Selection class a way to
-    request geometric data about its selection without importing
-    any of the mesh or geometry modules.
+def _glob_getCenterOfMass(dim: int, tag: int) -> tuple[float, float, float]:
+    return _GlobalHandler.active().simstates.active.getCenterOfMass(dim, tag)
 
-    This is needed to prevent circular imports
+def _glob_getPoints(dimtags: list[tuple[int, int]]) -> list[np.ndarray]:
+    return _GlobalHandler.active().simstates.active.getPoints(dimtags)
 
-    """
+def _glob_getBoundingBox(
+    dim: int, tag: int
+) -> tuple[float, float, float, float, float, float]:
+    return _GlobalHandler.active().simstates.active.getBoundingBox(dim, tag)
 
-    def __init__(self):
-        self._ifobj = None
+def _glob_getNormal(facetag: int) -> np.ndarray:
 
-    def clear(self) -> None:
-        self._ifobj = None
+    return _GlobalHandler.active().simstates.active.getNormal(facetag)
 
-    def getCenterOfMass(self, dim: int, tag: int) -> tuple[float, float, float]:
-        return self._ifobj.getCenterOfMass(dim, tag)
+def _glob_getCharPoint(facetag: int) -> np.ndarray:
 
-    def getPoints(self, dimtags: list[tuple[int, int]]) -> list[np.ndarray]:
-        return self._ifobj.getPoints(dimtags)
+    return _GlobalHandler.active().simstates.active.getCharPoint(facetag)
 
-    def getBoundingBox(
-        self, dim: int, tag: int
-    ) -> tuple[float, float, float, float, float, float]:
-        return self._ifobj.getBoundingBox(dim, tag)
+def _glob_getArea(tag: int) -> float:
+    return _GlobalHandler.active().simstates.active.getArea(tag)
 
-    def getNormal(self, facetag: int) -> np.ndarray:
+def _glob_is_post_fragment() -> bool:
+    return _GlobalHandler.active().simstates.active._geometry_committed
 
-        return self._ifobj.getNormal(facetag)
-
-    def getCharPoint(self, facetag: int) -> np.ndarray:
-
-        return self._ifobj.getCharPoint(facetag)
-
-    def getArea(self, tag: int) -> float:
-        return self._ifobj.getArea(tag)
-
-    def is_post_fragment(self) -> bool:
-        return self._ifobj._geometry_committed
-
-
-_CALC_INTERFACE = _CalculationInterface()
 
 
 ############################################################
@@ -187,89 +171,17 @@ def align_rectangle_frame(pts3d: np.ndarray, normal: np.ndarray) -> dict[str, An
     }
 
 
-# --- Encoder functions
-
-"""These functions are not really actively used. Its an idea that is not really being used
-mutch. Basically it is a way to encode "selections" in short strings in order for the GUI 
-to generate FaceSelection object.
-
-"""
-
-
-def encode_data(values: tuple[float, ...]) -> str:
-    """
-    Convert a tuple of floats into a custom base64-like encoded string
-    using 16-bit float representation and a 64-character alphabet.
-    """
-    # Convert floats to 16-bit half-floats
-    arr = np.array(values, dtype=np.float16)
-    # Get raw bytes
-    byte_data = arr.tobytes()
-    # Convert bytes to a bitstring
-    bitstring = ""
-    for byte in byte_data:
-        bitstring += f"{byte:08b}"
-
-    # Pad the bitstring to a multiple of 6 bits
-    pad_len = (6 - len(bitstring) % 6) % 6
-    bitstring += "0" * pad_len
-
-    # Encode 6 bits at a time
-    encoded = ""
-    for i in range(0, len(bitstring), 6):
-        chunk = bitstring[i : i + 6]
-        val = int(chunk, 2)
-        encoded += VAL_TO_CHAR[val]
-
-    # Optionally store how many pad bits we added
-    # so we can remove them during decoding.
-    # We'll prepend it as one character encoding pad_len (0-5).
-    encoded = VAL_TO_CHAR[pad_len] + encoded
-    return encoded
-
-
-def decode_data(encoded: str) -> tuple[float, ...]:
-    """
-    Decode a string produced by floats_to_custom_string
-    back into a tuple of float64 values.
-    """
-    # The first character encodes how many zero bits were padded
-    pad_char = encoded[0]
-    pad_len = CHAR_TO_VAL[pad_char]
-    data = encoded[1:]
-
-    # Convert each char back to 6 bits
-    bitstring = ""
-    for ch in data:
-        val = CHAR_TO_VAL[ch]
-        bitstring += f"{val:06b}"
-
-    # Remove any padding bits at the end
-    if pad_len > 0:
-        bitstring = bitstring[:-pad_len]
-
-    # Split into bytes
-    byte_data = []
-    for i in range(0, len(bitstring), 8):
-        byte_chunk = bitstring[i : i + 8]
-        if len(byte_chunk) < 8:
-            break
-        byte_val = int(byte_chunk, 2)
-        byte_data.append(byte_val)
-
-    byte_array = bytes(byte_data)
-    # Recover as float16
-    arr = np.frombuffer(byte_array, dtype=np.float16)
-    # Convert back to float64 for higher precision
-    return tuple(np.array(arr, dtype=np.float64))
-
-
 class Selection(Saveable):
     """A generalized class representing a slection of tags in some Dimension."""
 
     dim: int = -1
 
     def __init__(self, tags: list[int] | set[int] | tuple[int] | None = None):
+        """Create a selection from a list of tags.
+
+        Args:
+            tags (list[int] | set[int] | tuple[int] | None, optional): The OpenCASCADE tags. Defaults to None.
+        """
         self.name: str = "Selection"
         self._tags: set[int] = set()
 
@@ -284,10 +196,19 @@ class Selection(Saveable):
         # or after a boolean fragment occured (commit_geometry()). This way, the simulation
         # will crash if users assign port boundary conditions based on selections that are no longer valid.
 
-        self._valid_after_fragment: bool = _CALC_INTERFACE.is_post_fragment()
+        self._valid_after_fragment: bool = _glob_is_post_fragment()
 
     @staticmethod
     def from_dim_tags(dim: int, tags: list[int] | set[int]) -> Selection:
+        """Create the Selection subclass matching a dimension.
+
+        Args:
+            dim (int): The dimension (0, 1, 2 or 3)
+            tags (list[int] | set[int]): The OpenCASCADE tags
+
+        Returns:
+            Selection: A PointSelection, EdgeSelection, FaceSelection or DomainSelection
+        """
         if dim == 0:
             return PointSelection(tags)
         elif dim == 1:
@@ -309,14 +230,17 @@ class Selection(Saveable):
 
     @property
     def tags(self) -> list[int]:
+        """The OpenCASCADE tags of this selection."""
         return list(self._tags)
 
     @property
     def color_str(self) -> str:
+        """The color name used by the graphics library ('EMERGE-SELECT' sentinel)."""
         return "EMERGE-SELECT"
 
     @property
     def color_rgb(self) -> tuple[float, float, float]:
+        """The RGB color used by the graphics library."""
         return (0.5, 0.5, 1.0)
 
     @property
@@ -326,8 +250,17 @@ class Selection(Saveable):
         Returns:
             list[tuple[float, float, float],]: A list of coordinate tuples (x,y,z),...
         """
-        return [_CALC_INTERFACE.getCenterOfMass(self.dim, tag) for tag in self.tags]
+        return [_glob_getCenterOfMass(self.dim, tag) for tag in self.tags]
 
+    @property
+    def getCAs(self) -> list[tuple[tuple[float,float,float], float]]:
+        """The center of mass and area of each tag in the selection object
+
+        Returns:
+            list[tuple[tuple[float,float,float], float]]: A (center, area) tuple per tag
+        """
+        return [(_glob_getCenterOfMass(self.dim, tag), _glob_getArea(tag)) for tag in self.tags]
+    
     @property
     def _metal(self) -> bool:
         """A property needed for the graphic library in order to generally ask if something
@@ -339,11 +272,11 @@ class Selection(Saveable):
         return False
 
     @property
-    def opacity(self) -> float:
+    def opacity(self) -> float | str:
         """The selection opacity for the graphicng library.
 
         Returns:
-            float: Always 0.6
+            float | str: The 'EMERGE-SELECT' sentinel, which makes the graphics library use the selection style
         """
         return "EMERGE-SELECT"
 
@@ -361,18 +294,19 @@ class Selection(Saveable):
         """Returns either the geometric center or list of geometric centers of this selection
 
         TODO: I Think this is not used and can be removed.
+
         Returns:
-            np.ndarray | list[np.ndarray]: _description_
+            np.ndarray | list[np.ndarray]: The center if the selection has one tag, otherwise a list of centers
         """
         if len(self.tags) == 1:
-            return _CALC_INTERFACE.getCenterOfMass(self.dim, self.tags[0])
+            return _glob_getCenterOfMass(self.dim, self.tags[0])
         else:
-            return [_CALC_INTERFACE.getCenterOfMass(self.dim, tag) for tag in self.tags]
+            return [_glob_getCenterOfMass(self.dim, tag) for tag in self.tags]
 
     @property
     def points(self) -> list[np.ndarray]:
         """A list of 3D coordinates of all nodes comprising the selection."""
-        return _CALC_INTERFACE.getPoints(self.dimtags)
+        return _glob_getPoints(self.dimtags)
 
     @property
     def bounding_box(
@@ -384,7 +318,7 @@ class Selection(Saveable):
             tuple[tuple[float, float, float],tuple[float, float, float]]: (xmin, ymin, zmin), (xmax, ymax, zmax)
         """
         if len(self.tags) == 1:
-            x1, y1, z1, x2, y2, z2 = _CALC_INTERFACE.getBoundingBox(
+            x1, y1, z1, x2, y2, z2 = _glob_getBoundingBox(
                 self.dim, self.tags[0]
             )
             return (x1, y1, z1), (x2, y2, z2)
@@ -392,7 +326,7 @@ class Selection(Saveable):
             minx = miny = minz = 1e10
             maxx = maxy = maxz = -1e10
             for tag in self.tags:
-                x0, y0, z0, x1, y1, z1 = _CALC_INTERFACE.getBoundingBox(self.dim, tag)
+                x0, y0, z0, x1, y1, z1 = _glob_getBoundingBox(self.dim, tag)
                 minx = min(minx, x0)
                 miny = min(miny, y0)
                 minz = min(minz, z0)
@@ -434,7 +368,6 @@ class Selection(Saveable):
     def exclude(
         self,
         xyz_excl_function: Callable = lambda x, y, z: True,
-        plane: Plane | None = None,
         axis: Axis | None = None,
     ) -> Selection:
         """Exclude points by evaluating a function(x,y,z)-> bool
@@ -444,21 +377,24 @@ class Selection(Saveable):
 
         Args:
             xyz_excl_function (Callable): A callable for (x,y,z) that returns True if the point should be excluded.
+            axis (Axis | None, optional): Also exclude faces whose normal is (anti)parallel to this axis. Defaults to None.
 
         Returns:
             Selection: This Selection modified without the excluded points.
         """
-        include = [~xyz_excl_function(*point) for point in self.centers]
+        tags = self.tags
+        # `not` instead of `~`: ~ on a Python bool gives -2/-1 (always truthy)
+        include = [not xyz_excl_function(*_glob_getCenterOfMass(self.dim, tag)) for tag in tags]
 
         if axis is not None:
             norm = axis.np
             include2 = [
-                abs(_CALC_INTERFACE.getNormal(tag) @ norm) < 0.9 for tag in self.tags
+                abs(_glob_getNormal(tag) @ norm) < 0.9 for tag in tags
             ]
-            include = [i1 for i1, i2 in zip(include, include2) if i1 and i2]
-        self._tags = set([t for incl, t in zip(include, self._tags) if incl])
+            include = [i1 and i2 for i1, i2 in zip(include, include2)]
+        self._tags = {t for incl, t in zip(include, tags) if incl}
         return self
-
+        
     def isolate(
         self,
         xyz_excl_function: Callable = lambda x, y, z: True,
@@ -467,27 +403,30 @@ class Selection(Saveable):
     ) -> Selection:
         """Include points by evaluating a function(x,y,z)-> bool
 
-        This modifies the selection such that the selection does not contain elements
-        of this selection of which the center of mass is excluded by the exclusion function.
+        This modifies the selection such that it only contains the elements
+        of this selection of which the center of mass is included by the inclusion function.
 
         Args:
-            xyz_excl_function (Callable): A callable for (x,y,z) that returns True if the point should be excluded.
+            xyz_excl_function (Callable): A callable for (x,y,z) that returns True if the point should be kept.
+            plane (Plane | None, optional): Currently unused. Defaults to None.
+            axis (Axis | None, optional): Only keep faces whose normal points along this axis. Defaults to None.
 
         Returns:
-            Selection: This Selection modified without the excluded points.
+            Selection: This Selection modified to only contain the included points.
         """
-        include1 = [
-            xyz_excl_function(*_CALC_INTERFACE.getCenterOfMass(*dt))
-            for dt in self.dimtags
+        tags = self.tags
+        include = [
+            bool(xyz_excl_function(*_glob_getCenterOfMass(self.dim, tag)))
+            for tag in tags
         ]
 
         if axis is not None:
             norm = axis.np
             include2 = [
-                (_CALC_INTERFACE.getNormal(tag) @ norm) > 0.99 for tag in self.tags
+                (_glob_getNormal(tag) @ norm) > 0.99 for tag in tags
             ]
-            include1 = [i1 for i1, i2 in zip(include1, include2) if i1 and i2]
-        self._tags = set([t for incl, t in zip(include1, self._tags) if incl])
+            include = [i1 and i2 for i1, i2 in zip(include, include2)]
+        self._tags = {t for incl, t in zip(include, tags) if incl}
         return self
 
     def __operable__(self, other: Selection) -> None:
@@ -553,13 +492,125 @@ class Selection(Saveable):
         self.__operable__(other)
         return Selection.from_dim_tags(self.dim, self._tags.difference(other.tags))
 
+    def constrain(self: TSelection, xyz_function: Callable = lambda x, y, z: True, complete: bool = True) -> TSelection:
+        """Constrain this selection using a function xyz_function(x,y,z) -> bool.
 
+        The function is evaluated at the minimum and maximum corners of the bounding box
+        of each item in the selection.
+
+        Args:
+            xyz_function (Callable): A callable for (x,y,z) that returns True if the point satisfies the constraint.
+            complete (bool, optional): If True, both corners must satisfy the constraint (entirely inside).
+                If False, one corner suffices (partially inside). Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified to only contain the items that satisfy the constraint.
+        """
+        check = all if complete else any
+        keep = set()
+        for tag in self._tags:
+            x0, y0, z0, x1, y1, z1 = _glob_getBoundingBox(self.dim, tag)
+            if check((xyz_function(x0, y0, z0), xyz_function(x1, y1, z1))):
+                keep.add(tag)
+        self._tags = keep
+        return self
+
+    def below(self: TSelection, z_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items below some Z-level (-Z side).
+
+        Args:
+            z_level (float): The Z-level
+            complete (bool, optional): If it should be entirely below. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: z < z_level, complete)
+
+    def above(self: TSelection, z_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items above some Z-level (+Z side).
+
+        Args:
+            z_level (float): The Z-level
+            complete (bool, optional): If it should be entirely above. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: z > z_level, complete)
+
+    def left_of(self: TSelection, x_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items left of some X-level (-X side).
+
+        Args:
+            x_level (float): The X-level
+            complete (bool, optional): If it should be entirely left of it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: x < x_level, complete)
+
+    def right_of(self: TSelection, x_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items right of some X-level (+X side).
+
+        Args:
+            x_level (float): The X-level
+            complete (bool, optional): If it should be entirely right of it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: x > x_level, complete)
+
+    def front_of(self: TSelection, y_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items in front of some Y-level (-Y side).
+
+        Args:
+            y_level (float): The Y-level
+            complete (bool, optional): If it should be entirely in front of it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: y < y_level, complete)
+
+    def behind(self: TSelection, y_level: float, complete: bool = True) -> TSelection:
+        """Constrain this selection to items behind some Y-level (+Y side).
+
+        Args:
+            y_level (float): The Y-level
+            complete (bool, optional): If it should be entirely behind it. Defaults to True.
+
+        Returns:
+            TSelection: This Selection modified.
+        """
+        return self.constrain(lambda x, y, z: y > y_level, complete)
+
+    def around(self: TSelection, distance: float, 
+               coordinate: tuple[float, float, float] = (0,0,0)) -> TSelection:
+        """Return all objects with bounding boxes within some distance of a point.
+
+        Args:
+            distance (float): The maximum distance
+            coordinate (tuple[float, float, float], optional): The coordinate. Defaults to (0,0,0).
+
+        Returns:
+            TSelection: This Selection constrained to the objects whose bounding box lies within the distance
+        """
+        return self.constrain(lambda x,y,z: (x-coordinate[0])**2 + (y-coordinate[1])**2 + (z-coordinate[2])**2 <= distance**2)
+    
 class PointSelection(Selection, Saveable):
     """A Class representing a selection of points."""
 
     dim: int = 0
 
     def __init__(self, tags: list[int] | set[int] | None = None):
+        """Create a PointSelection from a list of tags.
+
+        Args:
+            tags (list[int] | set[int] | None, optional): The OpenCASCADE tags. Defaults to None.
+        """
         super().__init__(tags)
 
 
@@ -569,6 +620,11 @@ class EdgeSelection(Selection, Saveable):
     dim: int = 1
 
     def __init__(self, tags: list[int] | set[int] | None = None):
+        """Create a EdgeSelection from a list of tags.
+
+        Args:
+            tags (list[int] | set[int] | None, optional): The OpenCASCADE tags. Defaults to None.
+        """
         super().__init__(tags)
 
 
@@ -578,25 +634,30 @@ class FaceSelection(Selection, Saveable):
     dim: int = 2
 
     def __init__(self, tags: list[int] | set[int] | None = None):
+        """Create a FaceSelection from a list of tags.
+
+        Args:
+            tags (list[int] | set[int] | None, optional): The OpenCASCADE tags. Defaults to None.
+        """
         super().__init__(tags)
 
     @property
     def normal(self) -> np.ndarray:
         """Returns a 3x3 coordinate matrix of the XY + out of plane basis matrix defining the face assuming it can be projected on a flat plane."""
-        ns = [_CALC_INTERFACE.getNormal(tag) for tag in self.tags]
+        ns = [_glob_getNormal(tag) for tag in self.tags]
 
         return ns[0]
 
     @property
     def area(self) -> float:
         """Returns the area of the selected surface"""
-        return sum([_CALC_INTERFACE.getArea(tag) for tag in self.tags])
+        return sum([_glob_getArea(tag) for tag in self.tags])
 
     def rect_basis(self) -> tuple[CoordinateSystem, tuple[float, float]]:
         """Returns a dictionary with keys: origin, axes, corners. The axes are the 3D basis vectors of the rectangle. The corners are the 4 corners of the rectangle.
 
         Returns:
-            cs: CoordinateSystem: The coordinate system of the rectangle.
+            tuple[CoordinateSystem, tuple[float, float]]: CoordinateSystem: The coordinate system of the rectangle.
             size: tuple[float, float]: The size of the rectangle (width [m], height[m])
         """
         if len(self.tags) != 1:
@@ -630,14 +691,13 @@ class FaceSelection(Selection, Saveable):
         """Sample the surface at the compiler defined parametric coordinate range.
         This function usually returns a square region that contains the surface.
 
+        Args:
+            Npts (int): The number of samples per parametric direction.
+
         Returns:
-        --------
-            X: np.ndarray
-                a NxN numpy array of X coordinates.
-            Y: np.ndarray
-                a NxN numpy array of Y coordinates.
-            Z: np.ndarray
-                a NxN numpy array of Z coordinates"""
+            tuple[np.ndarray, np.ndarray, np.ndarray] | list[tuple[np.ndarray, np.ndarray, np.ndarray]]: The X, Y and Z
+                coordinate arrays (Npts x Npts), or one such tuple per face for a multi-face selection.
+        """
         coordset: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
         for tag in self.tags:
             tags, coord, param = gmsh.model.mesh.getNodes(2, tag, includeBoundary=True)
@@ -689,6 +749,11 @@ class DomainSelection(Selection, Saveable):
     dim: int = 3
 
     def __init__(self, tags: list[int] | set[int] | None = None):
+        """Create a DomainSelection from a list of tags.
+
+        Args:
+            tags (list[int] | set[int] | None, optional): The OpenCASCADE tags. Defaults to None.
+        """
         super().__init__(tags)
 
 
@@ -702,7 +767,7 @@ SELECT_CLASS: dict[int, type[Selection]] = {
 ######## SELECTOR
 
 
-class Selector:
+class Selector(_BaseManager):
     """A class instance with convenient methods to generate selections using method chaining.
 
     Use the specific properties and functions in a "language" like way to make selections.
@@ -716,27 +781,36 @@ class Selector:
     def __init__(self):
         self._current_dim: int = -1
 
+    def reset(self):
+        """Reset the selected dimension."""
+        self._current_dim: int = -1
+        
     def clear(self) -> None:
+        """Reset the selected dimension."""
         self._current_dim = -1
 
     ## DIMENSION CHAIN
     @property
     def node(self) -> Selector:
+        """Select points (dimension 0) in the next selection call."""
         self._current_dim = 0
         return self
 
     @property
     def edge(self) -> Selector:
+        """Select edges (dimension 1) in the next selection call."""
         self._current_dim = 1
         return self
 
     @property
     def face(self) -> Selector:
+        """Select faces (dimension 2) in the next selection call."""
         self._current_dim = 2
         return self
 
     @property
     def domain(self) -> Selector:
+        """Select domains (dimension 3) in the next selection call."""
         self._current_dim = 3
         return self
 
@@ -783,10 +857,10 @@ class Selector:
             x (float): The X-coordinate from which to select
             y (float): The Y-coordinate from which to select
             z (float): The Z-coordinate from which to select
-            vector (np.ndarray, tuple, Axis): A vector with length in (meters) originating at the origin.
+            vector (tuple[float, float, float] | np.ndarray | Axis): A vector with length in (meters) originating at the origin.
 
         Returns:
-            Selection | PointSelection | EdgeSelection | FaceSelection | DomainSelection: The resultant selection.
+            Selection: The resultant selection.
 
         """
         vector = _parse_vector(vector)
@@ -821,8 +895,9 @@ class Selector:
             x (float): The plane origin X-coordinate
             y (float): The plane origin Y-coordinate
             z (float): The plane origin Z-coordinate
-            normal_axis (Axis, tuple): The plane normal vector
-            tolerance (float, optional): An in plane tolerance (displacement and normal dot product). Defaults to 1e-6.
+            normal_axis (Axis | tuple[float, float, float] | None): The plane normal vector
+            plane (Plane | None, optional): A plane whose normal is used instead of normal_axis. Defaults to None.
+            tolerance (float, optional): An in plane tolerance (displacement and normal dot product). Defaults to 1e-8.
 
         Returns:
             FaceSelection: All faces that lie in the specified plane
@@ -846,43 +921,3 @@ class Selector:
             if normdist < tolerance and dotnorm > 1 - tolerance:
                 tags.append(t)
         return FaceSelection(tags)
-
-    def code(self, code: str) -> FaceSelection:
-        """Creates a FaceSelection from a decoded face pointer code.
-        Can be used with the PyVista interface when pressing "F" but not really used.
-
-        Args:
-            code (str): _description_
-
-        Returns:
-            FaceSelection: _description_
-        """
-        nums1 = decode_data(code)
-
-        dimtags = gmsh.model.getEntities(2)
-
-        scoring = dict()
-        for dim, tag in dimtags:
-            x1, y1, z1 = gmsh.model.occ.getCenterOfMass(2, tag)
-            xmin2, ymin2, zmin2, xmax2, ymax2, zmax2 = gmsh.model.occ.getBoundingBox(
-                dim, tag
-            )
-            nums2 = [x1, y1, z1, xmin2, ymin2, zmin2, xmax2, ymax2, zmax2]
-            score = np.sqrt(sum([(a - b) ** 2 for a, b in zip(nums1, nums2)]))
-            scoring[tag] = score
-
-        min_val = min(scoring.values())
-
-        # Find all keys whose value == min_val
-        candidates = [k for k, v in scoring.items() if v == min_val]
-
-        # Pick the lowest key
-        lowest_key = min(candidates)
-        return FaceSelection(
-            [
-                lowest_key,
-            ]
-        )
-
-
-SELECTOR_OBJ = Selector()

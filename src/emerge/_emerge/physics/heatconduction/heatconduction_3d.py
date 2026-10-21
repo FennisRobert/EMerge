@@ -19,7 +19,7 @@
 from ...mesher import Mesher
 from ...mesh3d import Mesh3D
 from ...elements.leg2 import Legrange2
-from ...solver import DEFAULT_ROUTINE, SolveRoutine, MatrixType, SolveReport
+from ...solver import SolveRoutine, MatrixType, SolveReport, AutomaticRoutine
 from ...settings import Settings
 from ...simstate import SimState
 
@@ -36,7 +36,7 @@ import threading
 import time
 
 from ..physics_generic import SimulationError, GenericPhysics3D
-
+from ..material_assignment import MaterialAssignment
 ############################################################
 #                 MULTI PROCESSING FUNCTION                #
 ############################################################
@@ -52,7 +52,7 @@ def run_job_multi(job: SimJob) -> SimJob:
         SimJob: The solved SimJob
     """
     nr = int(mp.current_process().name.split("-")[1])
-    routine = DEFAULT_ROUTINE._configure_routine("MP", proc_nr=nr)
+    routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
     solution, report = routine.solve(A, bmat, ids, id=job.id)
     report.add(**aux)
@@ -77,6 +77,14 @@ class HeatConduction3D(GenericPhysics3D):
         self, state: SimState, mesher: Mesher, settings: Settings, order: int = 2
     ):
 
+        """The heat conduction physics. Access it through Simulation.hc.
+
+        Args:
+            state (SimState): The simulation state
+            mesher (Mesher): The mesher
+            settings (Settings): The simulation settings
+            order (int, optional): The discretization order (always 2). Defaults to 2.
+        """
         self._settings: Settings = settings
 
         self.T_initial_K: float = 293.15
@@ -90,10 +98,11 @@ class HeatConduction3D(GenericPhysics3D):
             None
         )  # The boundary condition set class.
         self.basis: Legrange2 | None = None
-        self.solveroutine: SolveRoutine = DEFAULT_ROUTINE
+        self.solveroutine: SolveRoutine = AutomaticRoutine()
         self.cache_matrices: bool = True
 
         ## States
+        self.mat_assy: MaterialAssignment | None = None
         self._bc_initialized: bool = False
         self._simstart: float = 0.0
         self._simend: float = 0.0
@@ -106,10 +115,12 @@ class HeatConduction3D(GenericPhysics3D):
 
     @property
     def mesh(self) -> Mesh3D:
+        """The mesh of the simulation."""
         return self._state.mesh
 
     @property
     def data(self) -> HCData:
+        """The heat conduction dataset of the simulation."""
         return self._state.data.hc
 
     def _check_meshed(self) -> None:
@@ -132,7 +143,7 @@ class HeatConduction3D(GenericPhysics3D):
 
     def _initialize_bc_data(self):
         """Initializes auxilliary required boundary condition information before running simulations."""
-        logger.debug("Initializing boundary conditions")
+        logger.debug("(Heat conduction) Initializing boundary condition data")
         # Removes non-assigned boundary conditions.
         # This happens for example if the initial boundary PEC gets overwritten.
         self.bc.cleanup()
@@ -208,7 +219,7 @@ class HeatConduction3D(GenericPhysics3D):
         # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         # --------------------------------------------------------------------
         # Initializing solve functions
@@ -236,7 +247,7 @@ class HeatConduction3D(GenericPhysics3D):
 
         # Assemble the FEM problem
         job, mats, T_current = self.assembler.assemble_hc_matrix(
-            self.basis, materials, self.bc.boundary_conditions, self.T_initial_K
+            self.basis, self.mat_assy, self.bc.boundary_conditions, self.T_initial_K
         )
         material_set = mats
 
@@ -245,7 +256,7 @@ class HeatConduction3D(GenericPhysics3D):
             self.solveroutine.use_preconditioner = True
 
         # Finally solve the problems for each frequency individually.
-        logger.info("Starting single threaded solve.")
+        logger.info("Starting serial solve.")
         job = run_job_single(job)
 
         self.solveroutine.reset()
@@ -258,9 +269,9 @@ class HeatConduction3D(GenericPhysics3D):
 
         self.data.setreport(job.reports, **self._params)
 
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
+        for dataentry in self.data.sim.iterate():
+            logger.trace(f"Sim variable: {dataentry.vars}")
+            for item in dataentry.reports:
                 item.logprint(logger.trace)
 
         # --------------------------------------------------------------------
@@ -331,7 +342,7 @@ class HeatConduction3D(GenericPhysics3D):
         # --------------------------------------------------------------------
 
         logger.debug("Resolving material assingments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         # --------------------------------------------------------------------
         # Initializing solve functions
@@ -340,7 +351,7 @@ class HeatConduction3D(GenericPhysics3D):
         # Assemble the FEM problem
         job, mats, T_current = self.assembler.assemble_hc_matrix(
             self.basis,
-            materials,
+            self.mat_assy,
             self.bc.boundary_conditions,
             self.T_initial_K,
             transient=True,
@@ -428,6 +439,8 @@ class HeatConduction3D(GenericPhysics3D):
             max_nonlinear_iter (int, optional): The maximum number of iterations
             nonlinear_tol (float, optional): The tolerance before a solution is considered converged
             anderson_m (int, optional): The window size for the Anderson update calculation.
+            anderson_beta (float, optional): The Anderson mixing parameter. Defaults to 1.0.
+            anderson_reg (float, optional): The Anderson regularization parameter. Defaults to 0.0.
 
         Copyright clarification:
         The logic of the solve loop including the Anderson update is a mix of hand written code
@@ -459,7 +472,7 @@ class HeatConduction3D(GenericPhysics3D):
             )
 
         logger.debug("Resolving material assignments.")
-        materials = self._get_material_assignment(self.mesher.volumes)
+        self._generate_material_assignment()
 
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
@@ -489,7 +502,7 @@ class HeatConduction3D(GenericPhysics3D):
 
             # Assemble with current temperature for radiation linearization
             job, mats, T_current = self.assembler.assemble_hc_matrix(
-                self.basis, materials, self.bc.boundary_conditions, T_current
+                self.basis, self.mat_assy, self.bc.boundary_conditions, T_current
             )
             material_set = mats
 
@@ -542,9 +555,9 @@ class HeatConduction3D(GenericPhysics3D):
 
         self.data.setreport(job.reports, **self._params)
 
-        for variables, data in self.data.sim.iterate():
-            logger.trace(f"Sim variable: {variables}")
-            for item in data["report"]:
+        for dataentry in self.data.sim.iterate():
+            logger.trace(f"Sim variable: {dataentry.vars}")
+            for item in dataentry.reports:
                 item.logprint(logger.trace)
 
         self._post_process(job, material_set)

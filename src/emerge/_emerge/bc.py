@@ -50,6 +50,11 @@ class BoundaryCondition(Saveable):
     
     def __init__(self, assignment: GeoObject | Selection):
         
+        """Create a boundary condition on a selection.
+
+        Args:
+            assignment (GeoObject | Selection): The geometry or selection to assign the boundary condition to
+        """
         if assignment.dim != self.dim and self.dim != -1:
             raise ValueError(f'Boundary condition of type {type(self).__name__} requires a selection of dimension {self.dim}, but got dimension {assignment.dim} instead.')
         self.indices: list[int] = []
@@ -63,11 +68,20 @@ class BoundaryCondition(Saveable):
         self.tags: list[int] = self.selection.tags
         
         
+    # True if _size_constraint is a physical length (e.g. from user-given port dimensions) rather than one
+    # measured on the gmsh geometry. The mesher multiplies physical constraints by the model scale factor.
+    _size_constraint_is_physical: bool = False
+
     @property
     def _size_constraint(self) -> float | None:
         return None
     
     def valid_after_fragment(self) -> bool:
+        """Whether the selection was made after the geometry was committed (fragmented).
+
+        Returns:
+            bool: True if the selection tags are still valid
+        """
         return self.selection._valid_after_fragment
     
     def __repr__(self) -> str:
@@ -75,15 +89,12 @@ class BoundaryCondition(Saveable):
 
     def __str__(self) -> str:
         return self.__repr__()
-
-    def details(self) -> str:
-        return ''
     
     def add_tags(self, dimtags: list[tuple[int,int]]) -> None:
         """Adds the given taggs to this boundary condition.
 
         Args:
-            tags (list[tuple[int,int]]): The tags to include
+            dimtags (list[tuple[int,int]]): The (dim, tag) pairs to include
         """
         tags = [x[1] for x in dimtags]
         self.tags = _unique(self.tags + tags)
@@ -119,6 +130,7 @@ class BoundaryConditionSet(Saveable):
 
     def __init__(self):
 
+        """Create an empty set of boundary conditions."""
         self.boundary_conditions: list[BoundaryCondition] = []
         self._initialized_with_defaults: bool = False
         self._overwrite: bool = True
@@ -186,10 +198,10 @@ class BoundaryConditionSet(Saveable):
         """Returns a list of all boundary conditions of a certain type.
 
         Args:
-            bctype (type): The boundar condition type
+            bctype (Type[T]): The boundar condition type
 
         Returns:
-            list[BoundaryCondition]: The list of boundary conditions
+            list[T]: The list of boundary conditions
         """
         return [item for item in self.boundary_conditions if isinstance(item, bctype)]
 
@@ -202,7 +214,7 @@ class BoundaryConditionSet(Saveable):
         """Turns overwrite of for the next boundary condition assignment
 
         Returns:
-            BoundaryConditionSet: _description_
+            BoundaryConditionSet: The same BCS object
 
         """
 
@@ -215,7 +227,7 @@ class BoundaryConditionSet(Saveable):
         This method must be called to submit any boundary condition object you made to the physics.
 
         Args:
-            bcs *(BoundaryCondition): A list of boundary condition objects.
+            bc (BoundaryCondition): The boundary condition object.
         """
         if bc in self.boundary_conditions:
             return
@@ -236,7 +248,13 @@ class BoundaryConditionSet(Saveable):
                         logger.debug(f'Removed the {excluded} tags from object with dimension {bc.dim} BC {existing_bc}')
                 else:
                     bc.exclude_bc(existing_bc)
-        logger.trace(f'Adding {bc}')
+        dname = {
+            0: 'point',
+            1: 'edge',
+            2: 'surface',
+            3: 'domain',
+        }
+        logger.info(f'Adding {type(bc).__name__} to {dname[bc.dim]} tags {bc.tags}(dim = {bc.dim})')
         self._overwrite = True
         self.boundary_conditions.append(bc)
 
@@ -251,6 +269,13 @@ class Periodic(BoundaryCondition, Saveable):
                  selection2: Selection,
                  dv: tuple[float,float,float],
                  ):
+        """A periodic boundary condition pair.
+
+        Args:
+            selection1 (Selection): The first face
+            selection2 (Selection): The second face
+            dv (tuple[float,float,float]): The displacement vector from the first to the second face
+        """
         self.face1: BoundaryCondition = BoundaryCondition(selection1)
         self.face2: BoundaryCondition = BoundaryCondition(selection2)
         super().__init__(FaceSelection(selection1.tags + selection2.tags))
@@ -260,6 +285,14 @@ class Periodic(BoundaryCondition, Saveable):
         self.uz: float = 0
 
     def phi(self, k0) -> complex:
+        """The Floquet phase shift between the two faces.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            complex: The phase factor exp(-j k0 u·dv)
+        """
         dx, dy, dz = self.dv
         return np.exp(-1j*k0*(self.ux*dx+self.uy*dy+self.uz*dz))
     

@@ -32,7 +32,7 @@ fl = 25 * mm  # Feed length
 
 # We start again by defining our simulation model
 model = em.Simulation("Periodic")
-model.check_version("2.8.9")  # Checks version compatibility.
+model.check_version("3.0.0")  # Checks version compatibility.
 
 # Next we will create a PeriodicCell class (in our case a hexagonal cell). This class
 # is simply meant to simplify our lives and improve the simulation setup flow.
@@ -111,10 +111,10 @@ data = model.mw.run_sweep()
 
 model.display.add_object(waveguide)
 model.display.add_object(box)
-model.display.cbar("Ey").add_field(
-    data.field[0].cutplane(3 * mm, y=0).scalar("Ey", "real"), symmetrize=True
+model.display.animate().cbar("Ey").add_field(
+    data.field[0].cutplane(3 * mm, y=0).scalar("Ey", "complex"), symmetrize=True
 )
-model.display.cbar("Ey").add_field(
-    data.field[0].cutplane(3 * mm, x=0).scalar("Ey", "real"), symmetrize=True
+model.display.animate().cbar("Ey").add_field(
+    data.field[0].cutplane(3 * mm, x=0).scalar("Ey", "complex"), symmetrize=True
 )
 model.display.show()

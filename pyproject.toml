@@ -1,23 +1,19 @@
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [project]
 name = "emerge"
-version = "2.8.9"
+version = "3.0.0b1"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"
 dependencies = [
-    "gmsh>=4.13.0, <4.15",
+    "gmsh>=4.13.0, <=5.0",
     "joblib>=1.5.1",
     "loguru>=0.7.3",
     "matplotlib>=3.8.0",
     "numpy>=2.2, <2.5",
-    "numba>=0.60.0",
     "pyvista>=0.45.2",
     "scipy>=1.14.0",
     "mkl!=2024.0; platform_machine == \"x86_64\" or platform_machine == \"AMD64\"",
-    "emsutil>=0.8.3, <0.9.0",
+    "emsutil>=1.1.3, <1.2.0",
     "msgpack>=1.1.2",
     "msgpack-numpy>=0.4.8",
     "psutil>=7.2.2",
@@ -25,9 +21,6 @@ dependencies = [
 
 [project.scripts]
 emerge = "emerge.cli:main"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/emerge", "src/emerge_config"]
 
 [project.optional-dependencies]
 umfpack = [
@@ -46,13 +39,28 @@ cudss12 = [
 dxf = [
   "ezdxf"
 ]
-gerber = [
-  "pygerber"
+cad = [
+  "pygerber>=2.4, <3",
+  "emcad>=0.2, <0.3",
+]
+spyder = [
+  "trame-pyvista",
+  "nest_asyncio2",
+  "ipywidgets",
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+# The EMR Rust kernels (emr/) are compiled into the emr._emr extension module of this package.
+manifest-path = "emr/Cargo.toml"
+module-name = "emr._emr"
+python-source = "src"
+python-packages = ["emerge", "emerge_config"]
+features = ["pyo3/extension-module"]
+include = [{ path = "LICENSE", format = "sdist" }, { path = "THIRD_PARTY_LICENSES.md", format = "sdist" }]
 
 [dependency-groups]
 dev = [
@@ -64,6 +72,7 @@ dev = [
 
 [tool.uv]
 no-build-isolation-package = ["cchardet"]
+cache-keys = [{ file = "pyproject.toml" }, { file = "emr/Cargo.toml" }, { file = "emr/src/**/*.rs" }]
 
 [project.urls]
 Homepage = "https://github.com/FennisRobert/EMerge"

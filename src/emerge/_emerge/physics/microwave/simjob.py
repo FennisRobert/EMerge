@@ -19,24 +19,24 @@
 import numpy as np
 import os
 from typing import Hashable
-from scipy.sparse import csr_matrix, save_npz, load_npz, issparse  # type: ignore
+from scipy.sparse import csc_matrix, save_npz, load_npz, issparse  # type: ignore
 from ...solver import SolveReport, MatrixType
 from loguru import logger
-
-
+from ...mldata import MLPreconData
 class SimJob:
 
     def __init__(
         self,
-        A: csr_matrix,
+        A: csc_matrix,
         b_vectors: dict[float | int, np.ndarray] | None,
         freq: float,
-        B: csr_matrix | None = None,
+        B: csc_matrix | None = None,
         symmetric: bool = False,
+        mldataset: MLPreconData | None = None,
     ):
 
-        self.A: csr_matrix = A
-        self.B: csr_matrix | None = B
+        self.A: csc_matrix = A
+        self.B: csc_matrix | None = B
         if symmetric:
             self.mtype: MatrixType = MatrixType.COMPLEX_SYMMETRIC
         else:
@@ -53,13 +53,13 @@ class SimJob:
                 self.b_vectors[:, index] = b_vectors[key]
         else:
             self.b_vectors = None
-        self.P: csr_matrix | None = None
+        self.P: csc_matrix | None = None
         self.has_periodic: bool = False
         self.solve_ids: np.ndarray | None = None
         self.freq: float = freq
         self.k0: float = 2 * np.pi * freq / 299792458
         self.is_solved: bool = False
-
+        self._mlpd: MLPreconData | None = mldataset
         self._solutions: np.ndarray | None = None
         self._solutions_dict: dict[Hashable, np.ndarray] = None
 
@@ -80,17 +80,17 @@ class SimJob:
         """Ensures that the store directory exists."""
         os.makedirs(self.relative_path, exist_ok=True)
 
-    def gen_filename(self, matrix: np.ndarray | csr_matrix, name: str) -> str:
+    def gen_filename(self, matrix: np.ndarray | csc_matrix, name: str) -> str:
         if issparse(matrix):
             return os.path.join(
-                self.relative_path, f"csr_{str(self.freq).replace('.','_')}_{name}.npz"
+                self.relative_path, f"csc_{str(self.freq).replace('.','_')}_{name}.npz"
             )
         elif isinstance(matrix, np.ndarray):
             return os.path.join(
                 self.relative_path, f"np_{str(self.freq).replace('.','_')}_{name}.npy"
             )
 
-    def maybe_store(self, matrix: csr_matrix | np.ndarray, name: str) -> None:
+    def maybe_store(self, matrix: csc_matrix | np.ndarray, name: str) -> None:
         if matrix is not None and self.store_data:
             # Create temp directory if needed
             self.ensure_directory()
@@ -131,7 +131,7 @@ class SimJob:
                 return load_npz(filename)
         return getattr(self, name)
 
-    def get_Ab(self) -> tuple[csr_matrix, np.ndarray, np.ndarray, bool, dict]:
+    def get_Ab(self) -> tuple[csc_matrix, np.ndarray, np.ndarray, bool, dict]:
         # Set port as active and add the port mode to the forcing vector
 
         self.A = self.load_if_needed("A")
@@ -195,3 +195,17 @@ class SimJob:
         if not os.listdir(self.relative_path):
             logger.trace(f'   removing directory "{self.relative_path}"')
             os.rmdir(self.relative_path)
+
+class CNOSDDSimJob(SimJob):
+    """Adapts already-solved CNOSDD per-port field vectors to the SimJob
+    interface _post_process expects. The fields are already fully resolved
+    in memory by the time this is constructed, so the solve/cache machinery
+    inherited from SimJob (A, b_vectors, store_if_needed, etc.) is unused --
+    only .freq and ._solutions_dict are ever read by _post_process.
+    """
+
+    def load_solutions(self) -> None:
+        pass  # _solutions_dict is populated directly by solve_cnosdd
+
+    def clear_solutions(self) -> None:
+        pass  # kept in memory -- nothing on disk to release

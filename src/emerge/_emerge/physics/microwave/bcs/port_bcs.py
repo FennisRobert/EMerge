@@ -2,10 +2,10 @@ from ....selection import Selection, FaceSelection
 from ....cs import CoordinateSystem, Axis, _parse_axis
 from ....coord import Line
 from ....geometry import GeoSurface, GeoObject
-from ....const import Z0
-from ....logsettings import DEBUG_COLLECTOR
-from ....const import EPS0, MU0
+from ....const import Z0,EPS0, MU0
 from ....cs import GCS
+from ...._global import _GlobalHandler
+from ....attributes import LumpedPortAttribute
 
 from emsutil import Saveable
 from typing import Literal
@@ -16,6 +16,9 @@ from loguru import logger
 from collections import defaultdict
 from .portmode import PortMode
 
+
+class BoundaryConditionError(Exception):
+    pass
 
 ############################################################
 #                     UTILITY FUNCTIONS                    #
@@ -60,6 +63,7 @@ class PortBC(RobinBC, Saveable):
 
     @property
     def voltage(self) -> complex | None:
+        """The port voltage, None if it is not defined for this port type."""
         return None
 
     def _gen_port_number(self, mode_nr: int) -> int | float:
@@ -101,9 +105,19 @@ class PortBC(RobinBC, Saveable):
                 yield self._gen_port_number(mode_nr), Ufunc
 
     def get_basis(self) -> np.ndarray:
+        """The basis of the local port coordinate system.
+
+        Returns:
+            np.ndarray: The (3, 3) basis matrix
+        """
         return self.cs._basis
 
     def get_inv_basis(self) -> np.ndarray:
+        """The inverse basis of the local port coordinate system.
+
+        Returns:
+            np.ndarray: The (3, 3) inverse basis matrix
+        """
         return self.cs._basis_inv
 
     def portZ0(self, k0: float) -> complex | float | None:
@@ -113,16 +127,24 @@ class PortBC(RobinBC, Saveable):
             k0 (float): The phase constant
 
         Returns:
-            complex: The port impedance
+            complex | float | None: The port impedance
         """
         return self.Z0
 
     @property
     def mode_number(self) -> int:
+        """The (1-based) number of the selected port mode."""
         return self.selected_mode + 1
 
     def get_beta(self, k0) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         return k0
 
     def get_gamma(self, k0) -> complex:
@@ -136,6 +158,35 @@ class PortBC(RobinBC, Saveable):
         """
         return 1j * self.get_beta(k0)
 
+    def get_Uinc(
+            self,
+            x_global: np.ndarray,
+            y_global: np.ndarray,
+            z_global: np.ndarray,
+            k0: float,
+            mode_nr: int = 1,
+        ) -> np.ndarray:
+            """The incident field excitation term of the port at global coordinates.
+
+            Args:
+                x_global (np.ndarray): The global X-coordinates
+                y_global (np.ndarray): The global Y-coordinates
+                z_global (np.ndarray): The global Z-coordinates
+                k0 (float): The free space propagation constant
+                mode_nr (int, optional): The port mode number. Defaults to 1.
+
+            Returns:
+                np.ndarray: The (3, N) excitation field
+            """
+            return (
+                -2
+                * 1j
+                * self.get_beta(k0)
+                * self.port_mode_3d_global(
+                    x_global, y_global, z_global, k0, mode_nr=mode_nr
+                )
+            )
+    
     def port_mode_3d(
         self,
         xs: np.ndarray,
@@ -144,6 +195,18 @@ class PortBC(RobinBC, Saveable):
         which: Literal["E", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
+        """Compute the port mode field in local coordinates (XY) + Z out of plane.
+
+        Args:
+            xs (np.ndarray): The local X-coordinates
+            ys (np.ndarray): The local Y-coordinates
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) port mode field in local coordinates
+        """
         raise NotImplementedError("port_mode_3d not implemented for Port class")
 
     def port_mode_3d_global(
@@ -155,6 +218,19 @@ class PortBC(RobinBC, Saveable):
         which: Literal["E", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
+        """Compute the port mode field for global xyz coordinates.
+
+        Args:
+            x_global (np.ndarray): The global X-coordinates
+            y_global (np.ndarray): The global Y-coordinates
+            z_global (np.ndarray): The global Z-coordinates
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) port mode field in global coordinates
+        """
         xl, yl, _ = self.cs.in_local_cs(x_global, y_global, z_global)
         Ex, Ey, Ez = self.port_mode_3d(xl, yl, k0, mode_nr=mode_nr)
         Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
@@ -176,7 +252,7 @@ class ModalPort(PortBC, Saveable):
         port_number: int,
         cs: CoordinateSystem | None = None,
         power: float = 1,
-        modetype: Literal["TE", "TM", "TEM"] | None = None,
+        modetype: Literal["TE", "TM", "TEM","any"] | None = None,
         number_of_modes: int = 1,
         mixed_materials: bool = False,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
@@ -192,13 +268,15 @@ class ModalPort(PortBC, Saveable):
         the port mode.
 
         Args:
-            face (FaceSelection, GeoSurface): The port mode face
+            face (FaceSelection | GeoSurface): The port mode face
             port_number (int): The port number as an integer
             cs (CoordinateSystem, optional): The local coordinate system of the port face. Defaults to None.
             power (float, optional): The radiated power. Defaults to 1.
-            modetype (str[TE, TM, TEM], optional): Wether the mode should be considered as a TEM mode. Defaults to False
+            modetype (Literal["TE", "TM", "TEM","any"] | None, optional): Force the port mode type (None selects automatically). Defaults to None.
+            number_of_modes (int, optional): The number of port modes to compute. Defaults to 1.
             mixed_materials (bool, optional): Wether the port consists of multiple different dielectrics. This requires
                 A recalculation of the port mode at every frequency
+            impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed: from power and voltage, power and current, or voltage and current. Defaults to "PV".
         """
         super().__init__(face)
 
@@ -217,7 +295,7 @@ class ModalPort(PortBC, Saveable):
             self.port_modes[i] = vec
 
         self._desired_number_of_modes: int = number_of_modes
-        self.forced_modetype: Literal["TE", "TM", "TEM"] | None = modetype
+        self.forced_modetype: Literal["TE", "TM", "TEM","any"] | None = modetype
         self.mixed_materials: bool = mixed_materials
         self.initialized: bool = False
         self._first_k0: float | None = None
@@ -232,14 +310,23 @@ class ModalPort(PortBC, Saveable):
             logger.info("Constructing coordinate system from port normal")
             self.cs = Axis(self.selection.normal).construct_cs()  # type: ignore
         else:
-            raise ValueError("No Coordinate System could be derived.")
+            # A copy, because the modal analysis may flip the z-axis of the port coordinate system in place.
+            self.cs = cs.copy()
         # self._er: np.ndarray | None = None
         # self._ur: np.ndarray | None = None
 
         self.voltage_integration_line: list[Line] = []
         self.current_integration_line: list[Line] = []
 
-    def neff_estimate(self, k0: float) -> float:
+    def neff_estimate(self, k0: float) -> float | None:
+        """The effective index of the first computed port mode.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float | None: The effective mode index, None if no modes have been computed yet
+        """
         if len(self.available_modes) == 0:
             return None
         else:
@@ -266,7 +353,10 @@ class ModalPort(PortBC, Saveable):
         self.voltage_integration_line.append(Line.from_points(c1, c2, N))
 
     def reset(self) -> None:
-        self.available_modes: dict[float, list[PortMode]] = defaultdict(list)
+        """Clear all computed modes and terminal assignments."""
+        self._last_k0 = None
+        self._first_k0 = None
+        self.available_modes: dict[float, list[PortMode]] = dict()
         self.initialized: bool = False
         self.plus_terminal: list[tuple[int, int]] = []
         self.minus_terminal: list[tuple[int, int]] = []
@@ -275,9 +365,25 @@ class ModalPort(PortBC, Saveable):
         return self.get_modes(k0)[0].Z0
 
     def modetype(self, k0: float) -> Literal["TEM", "TE", "TM"]:
+        """The mode type of the port.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            Literal["TEM", "TE", "TM"]: The mode type
+        """
         return self.get_modes(k0)[0].modetype
 
     def get_mode_EH(self, k0: float) -> tuple[Callable, Callable, np.ndarray, float]:
+        """The E and H field functions of the first port mode.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            tuple[Callable, Callable, np.ndarray, float]: The E-field function, the H-field function and the amplitude (1.0)
+        """
         mode = self.get_modes(k0)[0]
         return mode.E_function, mode.H_function, 1.0
 
@@ -288,7 +394,7 @@ class ModalPort(PortBC, Saveable):
         The modes will be sorted to maximize the inner product: |∬ E(x,y) · ax dS|
 
         Args:
-            *axes (tuple, np.ndarray, Axis): The alignment vectors.
+            *axes (tuple | np.ndarray | Axis): The alignment vectors.
         """
         self.alignment_vectors = [_parse_axis(ax) for ax in axes]
 
@@ -313,7 +419,7 @@ class ModalPort(PortBC, Saveable):
         Args:
             positive (Selection | GeoObject | None, optional): The postive terminal. Defaults to None.
             negative (Selection | GeoObject | None, optional): The negative terminal. Defaults to None.
-            ground (Selection | GeoObject | None, optional): _description_. Defaults to None.
+            ground (Selection | GeoObject | None, optional): The ground terminal (currently unused). Defaults to None.
         """
         if positive is not None:
             self.plus_terminal = positive.dimtags
@@ -322,20 +428,22 @@ class ModalPort(PortBC, Saveable):
 
     @property
     def nmodes(self) -> int:
+        """The number of port modes found by the modal analysis."""
         if self._last_k0 is None:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 "The modal analysis turned up with no solutions. This can be because:\n"
                 " - You assigned the wrong materials to geometries.\n"
                 + " - You simulate at a frequency that is too low.\n"
                 + " - Your mode face is not appropriately supporting a modal solution."
             )
-            raise ValueError(
-                "ModalPort is not properly configured. No modes are defined."
+            raise BoundaryConditionError(
+                "ModalPort could find no modes and thus the simulation can't run. Double check your port mode and port geometry to make sure modes exist that aren't in cutoff."
             )
         return len(self.available_modes[self._last_k0])
 
     @property
     def voltage(self) -> complex:
+        """The port mode voltage √Z0 of a unit power mode."""
         mode = self.get_modes(0)[0]
         return np.sqrt(mode.Z0)
 
@@ -357,7 +465,7 @@ class ModalPort(PortBC, Saveable):
                     f"A variation in port mode propagation constants (k0={k0:.1f}) of {std_beta / mean_beta * 100:.2f}% is detected. Only multi mode ports with similar"
                     + f"propagation constants are suppored. Betas are {str_betas}"
                 )
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     "A variation in port mode propagation constants (k0={k0:.1f}) is detected. Only multi mode ports with similar"
                     + f"propagation constants are suppored. Betas are {str_betas}"
                 )
@@ -404,7 +512,7 @@ class ModalPort(PortBC, Saveable):
             k0 (float): The propagation constant
 
         Returns:
-            PortMode: The requested PortMode object
+            list[PortMode]: The requested PortMode object
         """
         options = self.available_modes[
             min(self.available_modes.keys(), key=lambda k: abs(k - k0))
@@ -415,7 +523,16 @@ class ModalPort(PortBC, Saveable):
         self, k0: float = 0, which: Literal["E", "H"] = "E", mode_nr: int = 1
     ) -> Callable:
         """The field function used to compute the E-field.
-        This field-function is defined in global coordinates (not local coordinates)."""
+        This field-function is defined in global coordinates (not local coordinates).
+
+        Args:
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            Callable: A function f(x, y, z) that returns the (3, N) mode field
+        """
         modes = self.get_modes(k0)
 
         if which == "E":
@@ -493,7 +610,7 @@ class ModalPort(PortBC, Saveable):
 
     def clear_modes(self) -> None:
         """Clear all port mode data"""
-        self.available_modes = defaultdict(list)
+        self.available_modes = dict()
         self.initialized = False
 
     def try_add_mode(
@@ -519,11 +636,16 @@ class ModalPort(PortBC, Saveable):
             PortMode: The port mode object.
         """
         mode = PortMode(field, E_function, H_function, k0, beta, freq=freq)
-        if mode.energy * beta < 1e-8:
-            logger.debug(f"Ignoring mode due to a low mode energy: {mode.energy}")
+        # Evanescent modes (Re(beta) ~ 0) carry no power and cannot be power normalized.
+        if mode.energy * np.real(beta) < 1e-8:
+            logger.debug(f"Ignoring mode due to a low mode energy or no propagation: energy {mode.energy}, beta {beta}")
             return None
 
-        self.available_modes[k0].append(mode)
+        if k0 not in self.available_modes:
+            self.available_modes[k0] = [mode]
+        else:
+            self.available_modes[k0].append(mode)
+
         self.initialized = True
 
         self._last_k0 = k0
@@ -555,23 +677,6 @@ class ModalPort(PortBC, Saveable):
     def get_gamma(self, k0: float) -> complex:
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0,
-        mode_nr: int = 1,
-    ) -> np.ndarray:
-
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
 
     def port_mode_3d(
         self,
@@ -639,13 +744,13 @@ class WavePortIH(ModalPort, Saveable):
         the port mode.
 
         Args:
-            face (FaceSelection, GeoSurface): The port mode face
+            face (FaceSelection | GeoSurface): The port mode face
             port_number (int): The port number as an integer
-            cs (CoordinateSystem, optional): The local coordinate system of the port face. Defaults to None.
+            cs (CoordinateSystem | None, optional): The local coordinate system of the port face. Defaults to None.
             power (float, optional): The radiated power. Defaults to 1.
-            modetype (str[TE, TM, TEM], optional): Wether the mode should be considered as a TEM mode. Defaults to False
-            mixed_materials (bool, optional): Wether the port consists of multiple different dielectrics. This requires
-                A recalculation of the port mode at every frequency
+            number_of_modes (int, optional): The number of port modes. Defaults to 1.
+            impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed:
+                from power and voltage, power and current, or voltage and current. Defaults to "PV".
         """
         super(ModalPort, self).__init__(face)
 
@@ -655,7 +760,7 @@ class WavePortIH(ModalPort, Saveable):
         self.alignment_vectors: list[Axis] = []
 
         self.selected_mode: int = 0
-        self.available_modes: dict[float, list[PortMode]] = defaultdict(list)
+        self.available_modes: dict[float, list[PortMode]] = dict()
         self.port_modes: dict[int | float, tuple[complex, ...]] = dict()
         self.forced_modetype = "TEM"
         for i in range(1, number_of_modes + 1):
@@ -678,18 +783,53 @@ class WavePortIH(ModalPort, Saveable):
             logger.info("Constructing coordinate system from port normal")
             self.cs = Axis(self.selection.normal).construct_cs()  # type: ignore
         else:
-            raise ValueError("No Coordinate System could be derived.")
+            # A copy, because the modal analysis may flip the z-axis of the port coordinate system in place.
+            self.cs = cs.copy()
 
         self.voltage_integration_line: list[Line] = []
         self.current_integration_line: list[Line] = []
 
-    def get_modepf_kappa(
-        self, k0: float, nodes: np.ndarray, tris: np.ndarray
-    ) -> tuple[Callable, complex]:
-        """Return the modeprofile function γetm - ∇ez
+    def get_Uinc(
+        self,
+        x_global: np.ndarray,
+        y_global: np.ndarray,
+        z_global: np.ndarray,
+        k0: float,
+        mode_nr: int = 1,
+    ) -> np.ndarray:
+        """Excitation field for the WPBC: -2 (γ e_t + ∇e_z) of the port mode.
+
+        This is the same effective mode profile as the dense WPBC matrix term (assemble_wpbc),
+        including the E_z part of quasi-TEM / hybrid modes. The assembler normally uses the
+        excitation vector computed by assemble_wpbc directly; this is the fallback when the matrix
+        term is not assembled (bc._assemble_matrix=False or a PML-backed WPBC).
 
         Args:
-            k0 (_type_): _description_
+            x_global (np.ndarray): The global X-coordinates
+            y_global (np.ndarray): The global Y-coordinates
+            z_global (np.ndarray): The global Z-coordinates
+            k0 (float): The free space propagation constant
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) excitation field
+        """
+        return -2 * self.port_mode_3d_global(
+            x_global, y_global, z_global, k0, which="modprof", mode_nr=mode_nr
+        )
+
+    def get_modepf_kappa(
+        self, k0: float, nodes: np.ndarray, tris: np.ndarray
+    ) -> tuple[Callable, Callable, complex]:
+        """Return the modeprofile function γetm + ∇ez
+
+        Args:
+            k0 (float): The free space propagation constant
+            nodes (np.ndarray): The mesh node coordinates
+            tris (np.ndarray): The port face triangle node indices
+
+        Returns:
+            tuple[Callable, Callable, complex]: The mode profile function, the transverse mode field function and kappa
         """
         mode = self.get_modes(k0)[0]
 
@@ -720,6 +860,7 @@ class FloquetPort(PortBC, Saveable):
         face: FaceSelection | GeoSurface,
         port_number: int,
         cs: CoordinateSystem | None = None,
+        polarization_deg: float = 0.0,
         power: float = 1.0,
         er: float = 1.0,
     ):
@@ -734,9 +875,9 @@ class FloquetPort(PortBC, Saveable):
         self.cs: CoordinateSystem = cs
         self.scan_theta: float = 0
         self.scan_phi: float = 0
+        self.polarization_deg: float = polarization_deg
         self.port_modes: dict[int, tuple[complex, complex]] = {
             1: (1.0 + 0.0j, 0.0 + 0.0j),
-            2: (0.0 + 0.0j, 1.0 + 0.0j),
         }
         self.area: float = 1
         self.width: float | None = None
@@ -749,12 +890,40 @@ class FloquetPort(PortBC, Saveable):
         return Z0
 
     def get_amplitude(self, k0: float) -> float:
+        """The amplitude of the port mode field such that the mode carries the port power.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The mode amplitude
+        """
         amplitude = np.sqrt(2 * Z0 * self.power / (self.area * np.cos(self.scan_theta)))
         return amplitude
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         return k0 * np.cos(self.scan_theta)
+
+    def set_polarization(self, polarization_deg: float) -> None:
+        """Set the polarization angle from 0deg = S to 90deg = P
+
+        Args:
+            polarization_deg (float): The polarization angle in degrees
+        """
+        self.polarization_deg = polarization_deg
+        S = np.cos(polarization_deg * np.pi/180)
+        P = np.sin(polarization_deg * np.pi/180)
+        self.port_modes = {
+            1: (S + 0.0j, P + 0.0j)
+        }
 
     def get_gamma(self, k0: float) -> complex:
         """Computes the γ-constant for matrix assembly. This constant is required for the Robin boundary condition.
@@ -765,7 +934,11 @@ class FloquetPort(PortBC, Saveable):
         Returns:
             complex: The γ-constant
         """
-        return 1j * self.get_beta(k0)
+        S, P = self.port_modes[1]
+        beta = self.get_beta(k0)
+        gamma_te = beta
+        gamma_tm = k0**2 / beta
+        return 1j * (abs(S)**2 * gamma_te + abs(P)**2 * gamma_tm)
 
     def get_Uinc(
         self,
@@ -777,8 +950,7 @@ class FloquetPort(PortBC, Saveable):
     ) -> np.ndarray:
         return (
             -2
-            * 1j
-            * self.get_beta(k0)
+            * self.get_gamma(k0)
             * self.port_mode_3d_global(
                 x_global, y_global, z_global, k0, mode_nr=mode_nr
             )
@@ -792,7 +964,18 @@ class FloquetPort(PortBC, Saveable):
         which: Literal["E", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
-        """Compute the port mode E-field in local coordinates (XY) + Z out of plane."""
+        """Compute the port mode E-field in local coordinates (XY) + Z out of plane.
+
+        Args:
+            x_local (np.ndarray): The local X-coordinates
+            y_local (np.ndarray): The local Y-coordinates
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) port mode E-field in local coordinates
+        """
 
         S, P = self.port_modes[mode_nr]
         kx = k0 * np.sin(self.scan_theta) * np.cos(self.scan_phi)
@@ -850,7 +1033,19 @@ class FloquetPort(PortBC, Saveable):
         which: Literal["E", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
-        """Compute the port mode field for global xyz coordinates."""
+        """Compute the port mode field for global xyz coordinates.
+
+        Args:
+            x_global (np.ndarray): The global X-coordinates
+            y_global (np.ndarray): The global Y-coordinates
+            z_global (np.ndarray): The global Z-coordinates
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) port mode E-field in global coordinates
+        """
         if self.cs is None:
             raise ValueError("No coordinate system is defined for this FloquetPort")
         xl, yl, _ = self.cs.in_local_cs(x_global, y_global, z_global)
@@ -886,7 +1081,7 @@ class RectangularWaveguide(PortBC, Saveable):
         identically zero.
 
         Args:
-            face (FaceSelection, GeoSurface): The port boundary face selection
+            face (FaceSelection | GeoSurface): The port boundary face selection
             port_number (int): The port number
             mode (tuple[int, int], optional): The mode number (m, n). Defaults to (1, 0).
             mode_type (Literal["TE", "TM"], optional): The mode family. Defaults to "TE".
@@ -955,7 +1150,14 @@ class RectangularWaveguide(PortBC, Saveable):
         return self.cs._basis_inv
 
     def portZ0(self, k0: float) -> complex:
-        """Return the modal wave impedance, TE or TM as appropriate."""
+        """Return the modal wave impedance, TE or TM as appropriate.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            complex: The modal wave impedance in Ohm
+        """
         beta = self.get_beta(k0)
         omega = k0 * 299792458.0
         if self.type == "TE":
@@ -966,6 +1168,14 @@ class RectangularWaveguide(PortBC, Saveable):
             raise ValueError(f"Unsupported mode type: {self.type!r}")
 
     def modetype(self, k0):
+        """The mode type of the port.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            Literal["TEM", "TE", "TM"]: The mode type
+        """
         return self.type
 
     def get_amplitude(self, k0: float) -> float:
@@ -974,6 +1184,12 @@ class RectangularWaveguide(PortBC, Saveable):
         Derived by integrating the Poynting flux of the transverse fields over
         the port face and solving for the amplitude at fixed power. Reduces
         exactly to the original TE0n normalisation in that special case.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The mode amplitude
         """
         width, height = self.dims
         m, n = self.mode
@@ -991,7 +1207,14 @@ class RectangularWaveguide(PortBC, Saveable):
             raise ValueError(f"Unsupported mode type: {self.type!r}")
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         width = self.dims[0]
         height = self.dims[1]
         beta = np.sqrt(
@@ -1002,25 +1225,16 @@ class RectangularWaveguide(PortBC, Saveable):
         return beta
 
     def get_gamma(self, k0: float) -> complex:
-        """Computes the γ-constant for matrix assembly (Robin boundary condition)."""
+        """Computes the γ-constant for matrix assembly (Robin boundary condition).
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            complex: The γ-constant (j·β)
+        """
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0: float,
-        mode_nr: int = None,
-    ) -> np.ndarray:
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
 
     def port_mode_3d(
         self,
@@ -1032,19 +1246,29 @@ class RectangularWaveguide(PortBC, Saveable):
     ) -> np.ndarray:
         """Compute the port mode field in local coordinates (XY) + Z out of plane.
 
-        The local coordinate system is centred on the port face
+        NOTE: the local coordinate system is centred on the port face
         (x_local, y_local in [-w/2, w/2] x [-h/2, h/2]), whereas the standard
         mode expressions are written for a corner-origin face. The x_local/
         y_local inputs are therefore shifted by half the face dimension
         (xs, ys) before the trig patterns are evaluated.
 
         TE_mn: Ex ∝ (n/height) cos(mπxs/w) sin(nπys/h)
-            Ey ∝ -(m/width) sin(mπxs/w) cos(nπys/h)
-            Ez = 0
+               Ey ∝ -(m/width) sin(mπxs/w) cos(nπys/h)
+               Ez = 0
 
         TM_mn: Ex ∝ -(m/width) cos(mπxs/w) sin(nπys/h)
-            Ey ∝ -(n/height) sin(mπxs/w) cos(nπys/h)
-            Ez ∝ sin(mπxs/w) sin(nπys/h)
+               Ey ∝ -(n/height) sin(mπxs/w) cos(nπys/h)
+               Ez ∝ sin(mπxs/w) sin(nπys/h)
+
+        Args:
+            x_local (np.ndarray): The local X-coordinates
+            y_local (np.ndarray): The local Y-coordinates
+            k0 (float): The free space propagation constant
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+
+        Returns:
+            np.ndarray: The (3, N) port mode field in local coordinates
         """
         width, height = self.dims
         m, n = self.mode
@@ -1106,11 +1330,24 @@ class RectangularWaveguide(PortBC, Saveable):
         mode_nr: int = None,
         which: Literal["E", "H"] = "E",
     ) -> np.ndarray:
-        """Compute the port mode field for global xyz coordinates."""
+        """Compute the port mode field for global xyz coordinates.
+
+        Args:
+            x_global (np.ndarray): The global X-coordinates
+            y_global (np.ndarray): The global Y-coordinates
+            z_global (np.ndarray): The global Z-coordinates
+            k0 (float): The free space propagation constant
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+
+        Returns:
+            np.ndarray: The (3, N) port mode field in global coordinates
+        """
         xl, yl, _ = self.cs.in_local_cs(x_global, y_global, z_global)
         Ex, Ey, Ez = self.port_mode_3d(xl, yl, k0, which=which)
         Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
         return np.array([Exg, Eyg, Ezg])
+
 
 class CoaxPort(PortBC, Saveable):
     _include_stiff: bool = True
@@ -1129,22 +1366,18 @@ class CoaxPort(PortBC, Saveable):
         er: float = 1.0,
         power: float = 1,
     ):
-        """Creates a rectangular waveguide as a port boundary condition.
+        """Creates a coaxial (TEM) port boundary condition with an analytic mode field.
 
-        Currently the Rectangular waveguide only supports TE0n modes. The mode field
-        is derived analytically. The local face coordinate system and dimensions can be provided
-        manually. If not provided the class will attempt to derive the local coordinate system and
-        face dimensions itself. It always orients the longest edge along the local X-direction.
-        The information on the derived coordiante system will be shown in the DEBUG level logs.
+        The TEM mode field is derived analytically from the conductor radii, centered on the origin of the
+        provided coordinate system.
 
         Args:
-            face (FaceSelection, GeoSurface): The port boundary face selection
+            face (FaceSelection | GeoSurface): The port boundary face selection
             port_number (int): The port number
-            mode: (tuple[int, int], optional): The TE mode number. Defaults to (1,0).
-            er: (float, optional): The Dielectric constant. Defaults to 1.0.
-            cs (CoordinateSystem, optional): The local coordinate system. Defaults to None.
-            dims (tuple[float, float], optional): The port face. Defaults to None.
-            power (float): The port power. Default to 1.
+            rad_in_out (tuple[float, float]): The inner and outer conductor radius (meters)
+            cs (CoordinateSystem): The local coordinate system with its origin at the coax center and Z-axis along the coax.
+            er (float, optional): The dielectric constant of the coax filling. Defaults to 1.0.
+            power (float, optional): The port power. Defaults to 1.
         """
         super().__init__(face)
 
@@ -1176,15 +1409,38 @@ class CoaxPort(PortBC, Saveable):
         return k0 * 299792458 * MU0 / self.get_beta(k0)
 
     def modetype(self, k0):
+        """The mode type of the port.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            Literal["TEM", "TE", "TM"]: The mode type
+        """
         return self.type
 
     def get_amplitude(self, k0: float) -> float:
+        """The amplitude of the port mode field such that the mode carries the port power.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The mode amplitude
+        """
         Zte = Z0
         amplitude = np.sqrt(self.power * 4 * Zte / (self.dims[0] * self.dims[1]))
         return amplitude
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         return np.sqrt(self.er) * k0
 
     def get_gamma(self, k0: float) -> complex:
@@ -1198,22 +1454,7 @@ class CoaxPort(PortBC, Saveable):
         """
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0: float,
-        mode_nr: int = None,
-    ) -> np.ndarray:
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
+
 
     def port_mode_3d(
         self,
@@ -1223,7 +1464,18 @@ class CoaxPort(PortBC, Saveable):
         mode_nr: int = None,
         which: Literal["E", "H"] = "E",
     ) -> np.ndarray:
-        """Compute the port mode E-field in local coordinates (XY) + Z out of plane."""
+        """Compute the port mode E-field in local coordinates (XY) + Z out of plane.
+
+        Args:
+            x_local (np.ndarray): The local X-coordinates
+            y_local (np.ndarray): The local Y-coordinates
+            k0 (float): The free space propagation constant
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+
+        Returns:
+            np.ndarray: The (3, N) port mode E-field in local coordinates
+        """
         # Constants
         eta = Z0 / np.sqrt(self.er)
 
@@ -1275,7 +1527,19 @@ class CoaxPort(PortBC, Saveable):
         mode_nr: int = None,
         which: Literal["E", "H"] = "E",
     ) -> np.ndarray:
-        """Compute the port mode field for global xyz coordinates."""
+        """Compute the port mode field for global xyz coordinates.
+
+        Args:
+            x_global (np.ndarray): The global X-coordinates
+            y_global (np.ndarray): The global Y-coordinates
+            z_global (np.ndarray): The global Z-coordinates
+            k0 (float): The free space propagation constant
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+
+        Returns:
+            np.ndarray: The (3, N) port mode E-field in global coordinates
+        """
         xl, yl, _ = self.cs.in_local_cs(x_global, y_global, z_global)
         Ex, Ey, Ez = self.port_mode_3d(xl, yl, k0, which=which)
         Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
@@ -1318,13 +1582,15 @@ class UserDefinedPort(PortBC, Saveable):
         >>>     return #shape like x
 
         Args:
-            face (FaceSelection, GeoSurface): The port boundary face selection
+            face (FaceSelection | GeoSurface): The port boundary face selection
             port_number (int): The port number
             Ex (Callable): The Ex(k0,x,y,z) field
             Ey (Callable): The Ey(k0,x,y,z) field
             Ez (Callable): The Ez(k0,x,y,z) field
             kz (Callable): The out of plane propagation constant kz(k0)
             power (float): The port output power
+            modetype (Literal["TEM", "TE", "TM"], optional): The mode type of the port. Defaults to "TEM".
+            cs (CoordinateSystem | None, optional): The local coordinate system of the port face. Defaults to None.
         """
         super().__init__(face)
         if cs is None:
@@ -1357,13 +1623,36 @@ class UserDefinedPort(PortBC, Saveable):
         return self.cs._basis_inv
 
     def modetype(self, k0):
+        """The mode type of the port.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            Literal["TEM", "TE", "TM"]: The mode type
+        """
         return self.type
 
     def get_amplitude(self, k0: float) -> float:
+        """The amplitude of the port mode field such that the mode carries the port power.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The mode amplitude
+        """
         return np.sqrt(self.power)
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
         return self._fkz(k0)
 
     def get_gamma(self, k0: float) -> complex:
@@ -1377,20 +1666,6 @@ class UserDefinedPort(PortBC, Saveable):
         """
         return 1j * self.get_beta(k0)
 
-    def get_Uinc(
-        self,
-        x_global: np.ndarray,
-        y_global: np.ndarray,
-        z_global: np.ndarray,
-        k0: float,
-        mode_nr: int = 1,
-    ) -> np.ndarray:
-        return (
-            -2
-            * 1j
-            * self.get_beta(k0)
-            * self.port_mode_3d_global(x_global, y_global, z_global, k0)
-        )
 
     def port_mode_3d(
         self,
@@ -1420,7 +1695,19 @@ class UserDefinedPort(PortBC, Saveable):
         which: Literal["E", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
-        """Compute the port mode field for global xyz coordinates."""
+        """Compute the port mode field for global xyz coordinates.
+
+        Args:
+            x_global (np.ndarray): The global X-coordinates
+            y_global (np.ndarray): The global Y-coordinates
+            z_global (np.ndarray): The global Z-coordinates
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+
+        Returns:
+            np.ndarray: The (3, N) port mode field in global coordinates
+        """
         xl, yl, zl = self.cs.in_local_cs(x_global, y_global, z_global)
         Ex = self._fex(k0, xl, yl, zl)
         Ey = self._fey(k0, xl, yl, zl)
@@ -1433,6 +1720,7 @@ class LumpedPort(PortBC, Saveable):
     _include_stiff: bool = True
     _include_mass: bool = False
     _include_force: bool = True
+    _size_constraint_is_physical: bool = True  # derived from the physical width/height
     _color: str = "#e1851c"
     _name: str = "LumpedPort"
     _texture: str = "tex5.png"
@@ -1457,11 +1745,11 @@ class LumpedPort(PortBC, Saveable):
         its the circumpherance.
 
         Args:
-            face (FaceSelection, GeoSurface): The port surface
+            face (FaceSelection | GeoSurface): The port surface
             port_number (int): The port number
             width (float): The port width (meters).
             height (float): The port height (meters).
-            direction (Axis): The port direction as an Axis object (em.Axis(..) or em.ZAX)
+            direction (Axis | tuple[float, float, float] | None): The port direction as an Axis object (em.Axis(..) or em.ZAX)
             power (float, optional): The port output power. Defaults to 1.
             Z0 (float, optional): The port impedance. Defaults to 50.
         """
@@ -1472,9 +1760,11 @@ class LumpedPort(PortBC, Saveable):
                 raise ValueError(
                     f"The width, height and direction must be defined. Information cannot be extracted from {face}"
                 )
-            for lpd in face._mdi.iter('lumpedport'):
-                width, height, direction = lpd['width'], lpd['height'], lpd['vdir']
-        
+            if attr := face.properties.get(LumpedPortAttribute):
+                width = attr.width
+                height = attr.height
+                direction = attr.direction
+
         if width is None or height is None or direction is None:
             raise ValueError(
                 f"The width, height and direction could not be extracted from {face}"
@@ -1500,7 +1790,7 @@ class LumpedPort(PortBC, Saveable):
 
         # Sanity checks
         if self.width > 0.5 or self.height > 0.5:
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 f"{self}: A lumped port width/height larger than 0.5m has been detected: width={self.width:.3f}m. Height={self.height:.3f}.m. Perhaps you forgot a unit like mm, um, or mil"
             )
 
@@ -1533,7 +1823,14 @@ class LumpedPort(PortBC, Saveable):
         return self.cs._basis_inv
 
     def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz."""
+        """Return the out of plane propagation constant. βz.
+
+        Args:
+            k0 (float): The free space propagation constant
+
+        Returns:
+            float: The out of plane propagation constant βz (rad/m)
+        """
 
         return k0
 
@@ -1567,7 +1864,15 @@ class LumpedPort(PortBC, Saveable):
         which: Literal["E", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
-        """Compute the port mode E-field in local coordinates (XY) + Z out of plane."""
+        """Not available for lumped ports (they have no mode field); always raises a RuntimeError.
+
+        Args:
+            x_local (np.ndarray): The local X-coordinates
+            y_local (np.ndarray): The local Y-coordinates
+            k0 (float): The free space propagation constant
+            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            mode_nr (int, optional): The port mode number. Defaults to 1.
+        """
         raise RuntimeError("This function should never be called in this context.")
 
     def port_mode_3d_global(
@@ -1590,6 +1895,7 @@ class LumpedPort(PortBC, Saveable):
             z_global (np.ndarray): The Z-coordinate
             k0 (float): The free space propagation constant
             which (Literal["E","H"], optional): Which field to return. Defaults to 'E'.
+            mode_nr (int, optional): The port mode number. Defaults to 1.
 
         Returns:
             np.ndarray: The E-field in (3,N) indexing.

@@ -39,8 +39,10 @@ class SimJob:
         self.b_vec: np.ndarray = b_vec
         self.i_prescribed: list[int] = i_prescribed
 
-        self.i_free: list[int] = [i for i in range(n_dof) if i not in self.i_prescribed]
-        self.n_free: int = len(self.i_free)
+        mask = np.ones(n_dof, dtype=bool)
+        mask[self.i_prescribed] = False
+        self.i_free: np.ndarray = np.flatnonzero(mask)
+        self.n_free: int = self.i_free.size
         self.n_dof: int = n_dof
 
         self.t_prescribed: np.ndarray = np.array(t_prescribed)

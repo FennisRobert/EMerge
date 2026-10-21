@@ -21,6 +21,7 @@ from __future__ import annotations
 import gmsh  # type: ignore
 from emsutil import Material
 from emsutil.lib import AIR
+from .attributes import PhysicalAttributeSet, PhysicalAttribute, PhysicalAttributeDescriptor
 from .selection import (
     FaceSelection,
     DomainSelection,
@@ -35,6 +36,8 @@ from .cs import Anchor
 from .file import Saveable
 from typing import TypeVar
 from .mdi import MetaDataInstructions
+from ._global import _GlobalHandler, _BaseManager
+
 FaceNames = Literal["back", "front", "left", "right", "top", "bottom"]
 
 ############################################################
@@ -42,7 +45,7 @@ FaceNames = Literal["back", "front", "left", "right", "top", "bottom"]
 ############################################################
 
 
-class _KEY_GENERATOR:
+class _KeyGenerator(_BaseManager):
     def __init__(self):
         self.start = -1
 
@@ -54,7 +57,7 @@ class _KEY_GENERATOR:
         return self.start
 
 
-class _GeometryManager:
+class _GeometryManager(_BaseManager):
     """The Geometry manager is a singleton class that keeps track of all geometries
 
     The GeometryManager exists to make sure that EMerge geometry state is in sync with
@@ -139,8 +142,9 @@ class _GeometryManager:
         self.geometry_list[modelname] = dict()
         self.active = modelname
 
-    def reset(self, modelname: str) -> None:
-        self.sign_in(modelname)
+    def reset(self) -> None:
+        self.geometry_list: dict[str, dict[str, GeoObject]] = dict()
+        self.active: str = ""
 
     def clear(self) -> None:
         self.geometry_list = dict()
@@ -169,6 +173,9 @@ class _FacePointer(Saveable):
         self.o = np.array(origin)
         self.n = np.array(normal)
         self.n = self.n / np.linalg.norm(self.n)
+
+    def _apply_size_scaling(self, factor: float) -> None:
+        self.o = self.o/factor
 
     def find(
         self,
@@ -295,8 +302,6 @@ class _FacePointer(Saveable):
         ) < 1e-6
 
 
-_GENERATOR = _KEY_GENERATOR()
-_GEOMANAGER = _GeometryManager()
 
 
 class AnchorSet(Saveable):
@@ -420,11 +425,28 @@ class AnchorSet(Saveable):
             return self.__dict__[name]
         raise AttributeError(f"AnchorSet has no attribute {name}")
 
+    def _apply_size_scaling(self, factor: float) -> None:
+        for anch in self._anchors:
+            anch.c0 = anch.c0/factor
+        for anchset in self.tool.values():
+            anchset._apply_size_scaling(factor)
+
     def take_as_tools(self, key: int, other: AnchorSet) -> None:
+        """Store the anchor set of a tool object under its key.
+
+        Args:
+            key (int): The key of the tool object
+            other (AnchorSet): The anchor set of the tool object
+        """
         self.tool[key] = other
         self.tool.update(other.tool)
 
     def update(self, other: AnchorSet) -> None:
+        """Re-initialize this anchor set from another anchor set, keeping both sets of tools.
+
+        Args:
+            other (AnchorSet): The anchor set to copy from
+        """
         self.init(*other._args)
         self.tool.update(other.tool)
 
@@ -432,7 +454,7 @@ class AnchorSet(Saveable):
         """Copies the anchor set
 
         Returns:
-            AnchorSet: _description_
+            AnchorSet: A new anchor set with the same anchors and tool anchor sets
         """
         anch = AnchorSet()
         if self._args is not None:
@@ -442,7 +464,11 @@ class AnchorSet(Saveable):
         return anch
 
     def all_anchors(self) -> list[Anchor]:
-        """Returns a list of all anchors"""
+        """Returns a list of all anchors
+
+        Returns:
+            list[Anchor]: All anchors of this set
+        """
         anchors = self._anchors
         for key, value in self.tool.items():
             anchors.extend(value._anchors)
@@ -463,6 +489,27 @@ class AnchorSet(Saveable):
         dz: np.ndarray,
     ) -> AnchorSet:
 
+        """Initialize the anchors from the eight corner points of a (possibly deformed) box.
+
+        The corner names use lower case for the minimum and upper case for the maximum side
+        along each axis (xyz is the minimum corner, XYZ the maximum corner).
+
+        Args:
+            xyz (np.ndarray): The x-min, y-min, z-min corner
+            xYz (np.ndarray): The x-min, y-max, z-min corner
+            Xyz (np.ndarray): The x-max, y-min, z-min corner
+            XYz (np.ndarray): The x-max, y-max, z-min corner
+            xyZ (np.ndarray): The x-min, y-min, z-max corner
+            xYZ (np.ndarray): The x-min, y-max, z-max corner
+            XyZ (np.ndarray): The x-max, y-min, z-max corner
+            XYZ (np.ndarray): The x-max, y-max, z-max corner
+            dx (np.ndarray): The local x-direction vector
+            dy (np.ndarray): The local y-direction vector
+            dz (np.ndarray): The local z-direction vector
+
+        Returns:
+            AnchorSet: This anchor set (for method chaining)
+        """
         xy = (xyz + xyZ) / 2
         xY = (xYz + xYZ) / 2
         Xy = (Xyz + XyZ) / 2
@@ -524,6 +571,17 @@ class AnchorSet(Saveable):
     def init(
         self, p0: np.ndarray, dx: np.ndarray, dy: np.ndarray, dz: np.ndarray
     ) -> AnchorSet:
+        """Initialize the anchors of a box defined by its center and half-size vectors.
+
+        Args:
+            p0 (np.ndarray): The center point
+            dx (np.ndarray): The half-size vector along the local x-axis
+            dy (np.ndarray): The half-size vector along the local y-axis
+            dz (np.ndarray): The half-size vector along the local z-axis (zero for flat objects)
+
+        Returns:
+            AnchorSet: This anchor set (for method chaining)
+        """
         self._args = (p0, dx, dy, dz)
         vecs = {
             "x": -dx,
@@ -567,9 +625,7 @@ class GeoObject(Saveable):
 
     dim: int = -1
     _default_name: str = "GeoObject"
-    skip_fields = [
-        "_mdi",
-    ]
+    properties: PhysicalAttributeSet = PhysicalAttributeDescriptor()
 
     def __init__(
         self,
@@ -577,11 +633,16 @@ class GeoObject(Saveable):
         name: str | None = None,
         _submit_geometry: bool = True,
     ):
+        """Create a GeoObject from a list of OpenCASCADE tags.
+
+        Args:
+            tags (list[int] | None, optional): The OpenCASCADE tags of the object. Defaults to None.
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         if tags is None:
             tags = []
         self.old_tags: list[int] = []
         self.tags: list[int] = tags
-        self.material: Material = AIR
         self.mesh_multiplier: float = 1.0
         self.max_meshsize: float = 1e9
 
@@ -591,8 +652,8 @@ class GeoObject(Saveable):
         self.anch: AnchorSet = AnchorSet()
         self._tools: dict[int, dict[str, _FacePointer]] = dict()
         self._hidden: bool = False
-        self._key = _GENERATOR.new()
-        self._mdi: MetaDataInstructions = MetaDataInstructions()
+        self._key = _GlobalHandler.active().generator.new()
+        
         self._base_priority: int = 10.0
         self._sub_priority: int = 0
         self._self_destruct: bool = False
@@ -604,9 +665,17 @@ class GeoObject(Saveable):
 
         self.give_name(name)
         if _submit_geometry:
-            _GEOMANAGER.submit_geometry(self)
-        self._fill_face_pointers()
+            _GlobalHandler.active().geomanager.submit_geometry(self)
 
+        if self.dim==3:
+            self.properties += AIR
+        
+
+    @property
+    def material(self) -> Material:
+        """The material assigned to this object."""
+        return self.properties.get(Material)
+    
     @property
     def _priority(self) -> float:
         """The Priority of the geometry material
@@ -616,6 +685,50 @@ class GeoObject(Saveable):
         """
         return self._base_priority + self._sub_priority / 2
 
+    def _become(self: T, other: GeoObject) -> T:
+        """In-place mutating transformation of self into another GeoObject instance.
+        
+        Transfers all internal attributes, tags, anchors, and geometric properties
+        from `other` to `self`, deactivates `other`, and updates the geometry manager.
+        """
+        # 1. Clean up old GMSH entity tags if self is completely replaced
+        if self._exists and self.dimtags != other.dimtags:
+            self._do_self_destruct()
+
+        # 2. Preserve self's name and registration key identity
+        target_name = self.name
+
+        # 3. Swap instance state completely
+        self.__dict__.clear()
+        self.__dict__.update(other.__dict__)
+
+        # 4. Restore original name to avoid global manager lookup conflicts
+        self.name = target_name
+
+        # 5. Deactivate and mark the transient object as removed
+        other._exists = False
+        other.deactivate() if hasattr(other, "deactivate") else None
+
+        # 6. Re-register self with the active GeometryManager
+        _GlobalHandler.active().geomanager.submit_geometry(self)
+
+        return self
+    
+    def _apply_size_scaling(self, factor: float) -> None:
+        """Apply a size scaling to all geometric quantities
+
+        Args:
+            factor (float): The global scaling factor
+        """
+        self.anch._apply_size_scaling(factor)
+
+        for face_pointer in self._face_pointers.values():
+            face_pointer._apply_size_scaling(factor)
+
+        for toolfps in self._tools.values():
+            for face_pointer in toolfps.values():
+                face_pointer._apply_size_scaling(factor)
+        
     def _do_self_destruct(self) -> None:
         if self._self_destruct:
             self.remove()
@@ -635,26 +748,6 @@ class GeoObject(Saveable):
                 self._face_pointers[f"Face{ctr}"] = fp
                 ctr += 1
 
-    def _store(self, name: str, data: Any) -> None:
-        """Store a property as auxilliary data under a given name
-
-        Args:
-            name (str): Name field
-            data (Any): Data to store
-        """
-        self._mdi.store(name, data)
-
-    def _load(self, name: str) -> Any | None:
-        """Load data with a given name. If it doesn't exist, it returns None
-
-        Args:
-            name (str): The property to retreive
-
-        Returns:
-            Any | None: The property
-        """
-        return self._mdi.get(name)
-
     def _get_boundary(self) -> list[tuple[float, float]]:
         if not self._cached:
             return gmsh.model.get_boundary(self.dimtags, True, False)
@@ -673,17 +766,22 @@ class GeoObject(Saveable):
 
         Args:
             name (str | None, optional): The name for the object. Defaults to None.
+
+        Returns:
+            GeoObject: This object (for method chaining)
         """
         if name is None:
             name = self._default_name
-        self.name: str = _GEOMANAGER.get_name(name)
-        _GEOMANAGER.set_name(self)
+        self.name: str = _GlobalHandler.active().geomanager.get_name(name)
+        _GlobalHandler.active().geomanager.set_name(self)
         return self
 
     @property
     def color_str(self) -> str:
         """The string getter for the object color"""
-        return self.material.color
+        if mat := self.material:
+            return mat.color
+        return "#999999"
 
     @property
     def color_rgb(self) -> tuple[float, float, float]:
@@ -692,7 +790,9 @@ class GeoObject(Saveable):
         Returns:
             tuple[float, float, float]: The color
         """
-        return self.material.color_rgb
+        if mat := self.material:
+            return mat.color_rgb
+        return (1.0, 1.0, 1.0)
 
     @property
     def opacity(self) -> float:
@@ -701,12 +801,16 @@ class GeoObject(Saveable):
         Returns:
             float: The opacity
         """
-        return self.material.opacity
+        if mat := self.material:
+            return mat.opacity
+        return 0.0
 
     @property
     def _metal(self) -> bool:
         """If the material should be rendered as metal"""
-        return self.material._metal
+        if mat := self.material:
+            return mat._metal
+        return False
 
     @property
     def selection(self) -> Selection:
@@ -737,7 +841,7 @@ class GeoObject(Saveable):
             objects (list[GeoPoint  |  GeoEdge  |  GeoSurface  |  GeoVolume  |  GeoObject]): A list of geo objects
 
         Returns:
-            GeoPoint | GeoEdge | GeoSurface | GeoVolume | GeoObject: The resultant object
+            list[GeoPoint | GeoEdge | GeoSurface | GeoVolume | GeoObject] | GeoPoint | GeoEdge | GeoSurface | GeoVolume | GeoObject: The resultant object
         """
         dim = objects[0].dim
         tags = []
@@ -753,10 +857,18 @@ class GeoObject(Saveable):
         else:
             out = GeoObject(tags)
 
-        out.material = objects[0].material
+        out.properties += objects[0].properties.copy(deep=True)
         out.prio_set(objects[0]._priority)
         out.give_name(f"MergedGeometries{[obj.name for obj in objects]}")
         return out
+
+    def remove_tags(self, tags: list[int]) -> None:
+        """Removes tags from this assignment
+
+        Args:
+            tags (list[int]): The tags to remove
+        """
+        self.tags = [tag for tag in self.tags if tag not in tags]
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.name},{self.dim},{self.tags})"
@@ -800,13 +912,16 @@ class GeoObject(Saveable):
         self._face_pointers[name] = fp
 
     def make_copy(self: T) -> T:
-        """Copies this object and returns a new object (also in GMSH)"""
+        """Copies this object and returns a new object (also in GMSH)
+
+        Returns:
+            T: The new copy of this object
+        """
         new_dimtags = gmsh.model.occ.copy(self.dimtags)
         new_obj = GeoObject.from_dimtags(new_dimtags)
-        new_obj.material = self.material
         new_obj.mesh_multiplier = self.mesh_multiplier
         new_obj.max_meshsize = self.max_meshsize
-
+        new_obj.properties = self.properties.copy(deep=True)
         new_obj._unset_constraints = self._unset_constraints
         new_obj._embeddings = [emb.make_copy() for emb in self._embeddings]
         new_obj._face_pointers = {
@@ -818,7 +933,6 @@ class GeoObject(Saveable):
         }
         new_obj.anch = self.anch.copy()
 
-        new_obj._mdi = self._mdi.copy()
         new_obj._base_priority = self._base_priority
         new_obj._exists = self._exists
         new_obj._self_destruct = self._self_destruct
@@ -845,7 +959,14 @@ class GeoObject(Saveable):
         logger.debug(f"{self} Replaced {self.old_tags} -> {self.tags}")
 
     def update_tags(self: T, tag_mapping: dict[int, dict]) -> T:
-        """Update the tag definition of a GeoObject after fragementation."""
+        """Update the tag definition of a GeoObject after fragementation.
+
+        Args:
+            tag_mapping (dict[int, dict]): The old to new tag mapping for each dimension
+
+        Returns:
+            T: This object (for method chaining)
+        """
         self.replace_tags(tag_mapping[self.dim])
         return self
 
@@ -888,26 +1009,6 @@ class GeoObject(Saveable):
             self.anch.take_as_tools(obj._key, obj.anch)
         return self
 
-    def _face_tags(self, name: FaceNames, tool: GeoObject | None = None) -> list[int]:
-        names = self._all_pointer_names
-        if name not in names:
-            raise ValueError(
-                f"The face {name} does not exist in {self}. Only {list(self._face_pointers.keys())}"
-            )
-
-        gmsh.model.occ.synchronize()
-        dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
-
-        normals = [gmsh.model.get_normal(t, [0, 0]) for d, t in dimtags]
-        origins = [gmsh.model.occ.get_center_of_mass(d, t) for d, t in dimtags]
-
-        if tool is not None:
-            tags = self._tools[tool._key][name].find(dimtags, origins, normals)
-        else:
-            tags = self._face_pointers[name].find(dimtags, origins, normals)
-        logger.trace(f"Selected face {tags}.")
-        return tags
-
     def set_material(self: T, material: Material) -> T:
         """Assign a material to this geometry object.
 
@@ -917,8 +1018,11 @@ class GeoObject(Saveable):
         Returns:
             GeoObject: This same object
         """
-        self.material = material
-        self._prio_half_up()
+        if isinstance(material, Material):
+            self.properties += material
+            self._prio_half_up()
+        else:
+            logger.warning(f'Trying to assign material {material} to {self} which is not of type Material. Skipping the assignment.')
         return self
 
     def prio_set(self: T, level: int) -> T:
@@ -966,140 +1070,82 @@ class GeoObject(Saveable):
         return self
 
     def prio_up(self: T) -> T:
-        """Increases the material selection priority by 1"""
+        """Increases the material selection priority by 1
+
+        Returns:
+            T: This object (for method chaining)
+        """
         self._base_priority += 1
         return self
 
     def prio_down(self: T) -> T:
-        """Decreases the material selection priority by 1"""
+        """Decreases the material selection priority by 1
+
+        Returns:
+            T: This object (for method chaining)
+        """
         self._base_priority -= 1
         return self
 
     def background(self: T) -> T:
-        """Set the material selection priority to be on the background."""
-        self._base_priority = _GEOMANAGER.lowest_priority() - 10
+        """Set the material selection priority to be on the background.
+
+        Returns:
+            T: This object (for method chaining)
+        """
+        self._base_priority = _GlobalHandler.active().geomanager.lowest_priority() - 10
         return self
 
     def foreground(self: T) -> T:
-        """Set the material selection priority to be on top."""
-        self._base_priority = _GEOMANAGER.highest_priority() + 10
+        """Set the material selection priority to be on top.
+
+        Returns:
+            T: This object (for method chaining)
+        """
+        self._base_priority = _GlobalHandler.active().geomanager.highest_priority() + 10
         return self
 
-    def boundary(
-        self,
-        exclude: Iterable[FaceNames, ...] | str | None = None,
-        tags: list[int] | None = None,
-        tool: GeoObject | None = None,
-    ) -> FaceSelection:
-        """Returns the complete set of boundary faces.
-
-        If implemented, it is possible to exclude a set of faces based on their name
-        or a list of tags.
-
-        Args:
-            exclude: (Iterable[str], str, None): A single string or list/tuple of strings.
-            tags: A list of face integers (if known)
-            tool: The tool object to base the selection face names one.
-
-        Returns:
-            FaceSelection: The selected faces
-        """
-        # if not self._exists:
-        #     raise SelectionError('Cannot select faces from an object that no longer exists.')
-
-        if isinstance(exclude, str):
-            exclude = (exclude,)
-
-        if exclude is None:
-            exclude = tuple()
-
-        if tags is None:
-            tags = []
-
-        for name in exclude:
-            tags.extend(self.face(name, tool=tool).tags)
-        dimtags = self._get_boundary()
-        selname = "Boundary"
-        if exclude:
-            selname = selname + "Except[" + ",".join(exclude) + "]"
-        return FaceSelection([t for d, t in dimtags if t not in tags])._named(selname)
-
-    def face(
-        self,
-        name: FaceNames = None,
-        tool: GeoObject | None = None,
-        no: FaceNames = None,
-    ) -> FaceSelection:
-        """Returns the FaceSelection for a given face name.
-
-        The face name must be defined for the type of geometry.
-
-        FaceNames include: front, back, left, right, top, bottom, disc
-
-        Args:
-            name (FaceNames): The name of the face to select.
-            tool (GeoObject, None): Which object should be used as a source for the face selection.
-            no (FaceNames): If everything BUT a face name should be selected, Equivalent to .boundary(exclude=name).
-
-        Returns:
-            FaceSelection: The selected face
-        """
-        if no is not None:
-            return self.boundary(exclude=no)
-
-        return FaceSelection(self._face_tags(name, tool))._named(name)
-
-    def all_faces(self, tool: GeoObject | None = None) -> list[FaceSelection]:
-        """Returns a list of all face selections of this object
-
-        Returns:
-            list[FaceSelection]: A list of all face selections
-        """
-        if tool is not None:
-            return [
-                self.face(name, tool=tool) for name in self._tools[tool._key].keys()
-            ]
-        return [self.face(name) for name in self._face_pointers]
-
-    def faces(self, *names: FaceNames, tool: GeoObject | None = None) -> FaceSelection:
-        """Returns the FaceSelection for a given face names.
-
-        The face name must be defined for the type of geometry.
-
-        Args:
-            name (FaceNames): The name of the face to select.
-            tool (GeoObject, None): The tool object to use as source of the selection.
-
-        Returns:
-            FaceSelection: The selected face
-        """
-        tags = []
-        for name in names:
-            tags.extend(self._face_tags(name, tool))
-        return FaceSelection(tags)._named("Faces[" + ",".join(names) + "]")
-
+    
     def hide(self: T) -> T:
-        """Hides the object from views"""
+        """Hides the object from views
+
+        Returns:
+            T: This object (for method chaining)
+        """
         self._hidden = True
         return self
 
     def unhide(self: T) -> T:
-        """Unhides the object from views"""
+        """Unhides the object from views
+
+        Returns:
+            T: This object (for method chaining)
+        """
         self._hidden = False
         return self
 
     @property
     def dimtags(self) -> list[tuple[int, int]]:
+        """The (dim, tag) pairs of this object."""
         return [(self.dim, tag) for tag in self.tags]
 
     @property
     def embeddings(self) -> list[tuple[int, int]]:
+        """The (dim, tag) pairs of the objects embedded in this object."""
         return []
 
     @staticmethod
     def from_dimtags(
         dimtags: list[tuple[int, int]], _submit_geometry: bool = True
     ) -> GeoVolume | GeoSurface | GeoObject:
+        """Create the GeoObject subclass matching the dimension of a list of (dim, tag) pairs.
+
+        Args:
+            dimtags (list[tuple[int, int]]): The (dim, tag) pairs, all of the same dimension
+
+        Returns:
+            GeoVolume | GeoSurface | GeoObject: A GeoPoint, GeoEdge, GeoSurface or GeoVolume
+        """
         dim = dimtags[0][0]
         tags = [t for d, t in dimtags]
         if dim == 0:
@@ -1125,7 +1171,7 @@ class GeoObject(Saveable):
         """Returns a new GeoObject of the same dimensional type that isolates a set of given tags
 
         Args:
-            tags (list[int]): A list of GMSH tags
+            tags (int | list[int]): A list of GMSH tags
 
         Returns:
             GeoObject: The resultant geometry object.
@@ -1149,7 +1195,14 @@ class GeoVolume(GeoObject):
     def __init__(
         self, tag: int | Iterable[int], name: str | None = None, _submit_geometry=True
     ):
+        """Create a GeoVolume from one or more OpenCASCADE volume tags.
+
+        Args:
+            tag (int | Iterable[int]): The volume tag(s)
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         super().__init__(name=name, _submit_geometry=_submit_geometry)
+
 
         self.tags: list[int] = []
 
@@ -1159,14 +1212,56 @@ class GeoVolume(GeoObject):
             self.tags = [
                 tag,
             ]
+        self.tags = self._rebuild_positive_volume(self.tags)
 
         self._normals_cache: list[tuple[float, float, float]] = None
         self._origins_cache: list[tuple[float, float, float]] = None
+        self._face_tag_cache: dict[str, list[int]] = dict()
 
         self._fill_face_pointers()
         self._autoname()
 
+    @staticmethod
+    def _check_negative_volume(tags: list[int]) -> bool:
+        for t in tags:
+            if gmsh.model.occ.get_mass(3,t) < 0:
+                return True
+        return False
+
+    @staticmethod
+    def _rebuild_positive_volume(tags: list[int]) -> list[int]:
+        """
+        Extract surface loops from 3D entities and rebuild them as positive-mass volumes.
+        """
+        
+        if not GeoVolume._check_negative_volume(tags):
+            return tags
+
+        logger.warning(f'Negative volumes detected for dimtags {tags}. Reconstructing topology.')
+
+        gmsh.model.occ.synchronize()
+        new_solids = []
+        
+        for tag in tags:
+            surfloop, _ = gmsh.model.occ.getSurfaceLoops(tag)
+            gmsh.model.occ.remove([(3, tag)])
+            new_volume = gmsh.model.occ.addVolume(surfloop)
+            new_solids.append((3, new_volume))
+
+        gmsh.model.occ.synchronize()
+        return new_solids
+
+    def _apply_size_scaling(self, factor: float) -> None:
+        """Apply a size scaling to all geometric quantities
+
+        Args:
+            factor (float): The global scaling factor
+        """
+        super()._apply_size_scaling(factor)
+        self._origins_cache = [(x/factor, y/factor, z/factor) for x,y,z in self._origins_cache]
+                
     def _cache_gmsh(self):
+        self._fill_face_pointers()
         self._get_boundary_cache = gmsh.model.get_boundary(self.dimtags, True, False)
         self._normals_cache = [
             gmsh.model.get_normal(t, [0, 0]) for d, t in self._get_boundary_cache
@@ -1175,6 +1270,13 @@ class GeoVolume(GeoObject):
             gmsh.model.occ.get_center_of_mass(d, t) for d, t in self._get_boundary_cache
         ]
         self._cached = True
+        boundary = (self._get_boundary_cache, self._origins_cache, self._normals_cache)
+        for name in self._face_pointers.keys():
+            self._face_tag_cache[name] = self._face_tags(name, _boundary=boundary)
+        
+        for tool, fpdict in self._tools.items():
+            for name in fpdict.keys():
+                self._face_tag_cache[f'{tool}.{name}'] = self._face_tags(name, tool_key=tool, _boundary=boundary)
 
     def _get_normal(self):
         if not self._cached:
@@ -1340,6 +1442,139 @@ class GeoVolume(GeoObject):
             ),
         )
 
+    def boundary(
+        self,
+        exclude: Iterable[FaceNames, ...] | str | None = None,
+        tags: list[int] | None = None,
+        tool: GeoObject | None = None,
+    ) -> FaceSelection:
+        """Returns the complete set of boundary faces.
+
+        If implemented, it is possible to exclude a set of faces based on their name
+        or a list of tags.
+
+        Args:
+            exclude: (Iterable[str], str, None): A single string or list/tuple of strings.
+            tags: A list of face integers (if known)
+            tool: The tool object to base the selection face names one.
+
+        Returns:
+            FaceSelection: The selected faces
+        """
+        # if not self._exists:
+        #     raise SelectionError('Cannot select faces from an object that no longer exists.')
+
+        if isinstance(exclude, str):
+            exclude = (exclude,)
+
+        if exclude is None:
+            exclude = tuple()
+
+        if tags is None:
+            tags = []
+
+        for name in exclude:
+            tags.extend(self.face(name, tool=tool).tags)
+        dimtags = self._get_boundary()
+        selname = "Boundary"
+        if exclude:
+            selname = selname + "Except[" + ",".join(exclude) + "]"
+        return FaceSelection([t for d, t in dimtags if t not in tags])._named(selname)
+
+    def face(
+        self,
+        name: FaceNames = None,
+        tool: GeoObject | None = None,
+        no: FaceNames = None,
+    ) -> FaceSelection:
+        """Returns the FaceSelection for a given face name.
+
+        The face name must be defined for the type of geometry.
+
+        FaceNames include: front, back, left, right, top, bottom, disc
+
+        Args:
+            name (FaceNames): The name of the face to select.
+            tool (GeoObject | None): Which object should be used as a source for the face selection.
+            no (FaceNames): If everything BUT a face name should be selected, Equivalent to .boundary(exclude=name).
+
+        Returns:
+            FaceSelection: The selected face
+        """
+        if no is not None:
+            return self.boundary(exclude=no)
+
+        return FaceSelection(self._face_tags(name, tool))._named(name)
+
+    def all_faces(self, tool: GeoObject | None = None) -> list[FaceSelection]:
+        """Returns a list of all face selections of this object
+
+        Args:
+            tool (GeoObject | None, optional): Return the faces originating from this tool object instead. Defaults to None.
+
+        Returns:
+            list[FaceSelection]: A list of all face selections
+        """
+        if tool is not None:
+            return [
+                self.face(name, tool=tool) for name in self._tools[tool._key].keys()
+            ]
+        return [self.face(name) for name in self._face_pointers]
+
+    def faces(self, *names: FaceNames, tool: GeoObject | None = None) -> FaceSelection:
+        """Returns the FaceSelection for a given face names.
+
+        The face name must be defined for the type of geometry.
+
+        Args:
+            *names (FaceNames): The names of the faces to select.
+            tool (GeoObject | None, optional): The tool object to use as source of the selection. Defaults to None.
+
+        Returns:
+            FaceSelection: The selected faces
+        """
+        tags = []
+        for name in names:
+            tags.extend(self._face_tags(name, tool))
+        return FaceSelection(tags)._named("Faces[" + ",".join(names) + "]")
+
+    def _face_tags(self, name: FaceNames, tool: GeoObject | None = None, tool_key: int | None = None,
+                   _boundary: tuple[list, list, list] | None = None) -> list[int]:
+        names = self._all_pointer_names
+
+        if name not in names:
+            raise ValueError(
+                f"The face {name} does not exist in {self}. Only {list(self._face_pointers.keys())}"
+            )
+
+        cachename = name
+
+        if tool is not None:
+            cachename = f'{tool._key}.{name}'
+
+        if tool_key is not None:
+            cachename = f'{tool_key}.{name}'
+        
+        if cachename in self._face_tag_cache:
+            return self._face_tag_cache[cachename]
+        
+        if _boundary is not None:
+            dimtags, origins, normals = _boundary
+        else:
+            gmsh.model.occ.synchronize()
+            dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
+            normals = [gmsh.model.get_normal(t, [0, 0]) for d, t in dimtags]
+            origins = [gmsh.model.occ.get_center_of_mass(d, t) for d, t in dimtags]
+
+        if tool is not None:
+            tags = self._tools[tool._key][name].find(dimtags, origins, normals)
+        elif tool_key is not None:
+            tags = self._tools[tool_key][name].find(dimtags, origins, normals)
+        else:
+            tags = self._face_pointers[name].find(dimtags, origins, normals)
+        logger.trace(f" - Face {name} with tool {tool} on {self} resolved in tags: {tags}.")
+        return tags
+
 
 class GeoPoint(GeoObject):
     dim = 0
@@ -1355,6 +1590,12 @@ class GeoPoint(GeoObject):
         name: str | None = None,
         _submit_geometry: bool = True,
     ):
+        """Create a GeoPoint from one or more OpenCASCADE point tags.
+
+        Args:
+            tag (int | list[int]): The point tag(s)
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         super().__init__(name=name, _submit_geometry=_submit_geometry)
 
         self.tags: list[int] = []
@@ -1380,6 +1621,12 @@ class GeoEdge(GeoObject):
         name: str | None = None,
         _submit_geometry: bool = True,
     ):
+        """Create a GeoEdge from one or more OpenCASCADE curve tags.
+
+        Args:
+            tag (int | list[int]): The curve tag(s)
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         super().__init__(name=name, _submit_geometry=_submit_geometry)
         self.tags: list[int] = []
         if isinstance(tag, Iterable):
@@ -1407,6 +1654,12 @@ class GeoSurface(GeoObject):
         name: str | None = None,
         _submit_geometry: bool = True,
     ):
+        """Create a GeoSurface from one or more OpenCASCADE surface tags.
+
+        Args:
+            tag (int | list[int]): The surface tag(s)
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         super().__init__(name=name, _submit_geometry=_submit_geometry)
         self.tags: list[int] = []
         if isinstance(tag, Iterable):
@@ -1435,6 +1688,12 @@ class GeoPolygon(GeoSurface):
     def __init__(
         self, tags: list[int], name: str | None = None, _submit_geometry: bool = True
     ):
+        """Create a GeoPolygon from one or more OpenCASCADE surface tags.
+
+        Args:
+            tags (list[int]): The surface tag(s)
+            name (str | None, optional): The name of the object. Defaults to None.
+        """
         super().__init__(tags, name=name, _submit_geometry=_submit_geometry)
         self.points: list[int] = []
         self.lines: list[int] = []
@@ -1447,6 +1706,9 @@ class GeoPolygon(GeoSurface):
 
 def select(*items: Selection | GeoObject) -> Selection:
     """Generate a selection from a series of selections and/or objects that share the same dimension.
+
+    Args:
+        *items (Selection | GeoObject): The selections and objects to combine
 
     Raises:
         ValueError: Raised if the dimensions provided are not consistent

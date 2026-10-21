@@ -49,7 +49,7 @@ def _discretize_curve(xfunc: Callable,
     Returns:
         tuple[np.ndarray, np.ndarray]: _description_
     """
-    from ..mth.optimized import _subsample_coordinates
+    from emr.mth import _subsample_coordinates
     
     td = np.linspace(t0, t1, 10_001)
     xs = xfunc(td)
@@ -73,7 +73,7 @@ def rotate_point(point: tuple[float, float, float],
         degrees (bool): If True, `ang` is interpreted in degrees; otherwise in radians.
 
     Returns:
-        (x,y,z) : tuple with the rotated coordinates.
+        tuple[float, float, float]: The rotated (x, y, z) coordinates.
     """
 
     p = np.asarray(point, dtype=float)
@@ -122,12 +122,15 @@ def orthonormalize(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray
 
 
 class GeoPrism(GeoVolume):
-    """The GepPrism class generalizes the GeoVolume for extruded convex polygons.
-    Besides having a volumetric definitions, the class offers a .front_face 
+    """The GeoPrism class generalizes the GeoVolume for extruded convex polygons.
+    Besides having a volumetric definitions, the class offers a .front_face
     and .back_face property that selects the respective faces.
 
     Args:
-        GeoVolume (_type_): _description_
+        volume_tag (int): The GMSH tag of the volume.
+        front_tag (int | None, optional): The GMSH tag of the front face (the extruded polygon). Defaults to None.
+        side_tags (list[int] | None, optional): The GMSH tags of the side faces. Defaults to None.
+        name (str | None, optional): The name of the object. Defaults to None.
     """
     def __init__(self,
                  volume_tag: int,
@@ -136,8 +139,6 @@ class GeoPrism(GeoVolume):
                  _axis: Axis | None = None,
                  name: str | None = None):
         super().__init__(volume_tag, name=name)
-        
-        
         
         if front_tag is not None and side_tags is not None:
             self.front_tag: int = front_tag
@@ -233,8 +234,8 @@ class XYPolygon:
 
         The resolution parameter will define if points are removed if they are too close. Default limit is 1 um.
         Args:
-            xs (np.ndarray, optional): The starting stet of X-points
-            ys (np.ndarray, optional): The starting stet of Y-points
+            xs (np.ndarray | list[float] | tuple[float,...] | None, optional): The starting stet of X-points
+            ys (np.ndarray | list[float] | tuple[float,...] | None, optional): The starting stet of Y-points
             cs (CoordinateSystem, optional): The coordinate system to put the XYPolygon in. Optional can be provided later.
             resolution (float, optional): The numerical resolution to use for polygon simplification. 1e-6 is the default.
         """
@@ -275,7 +276,7 @@ class XYPolygon:
         The XYPolygon does not store redundant points p[0]==p[N] so if these are
         the same, this function will remove the last point.
         """
-        if np.sqrt((self.x[-1]-self.x[0])**2 + (self.y[-1]-self.y[0])**2) < 1e-9:
+        if np.sqrt((self.x[-1]-self.x[0])**2 + (self.y[-1]-self.y[0])**2) < 1e-6:
             self.x = self.x[:-1]
             self.y = self.y[:-1]
         
@@ -289,7 +290,14 @@ class XYPolygon:
         return 0.5*np.abs(np.dot(self.x,np.roll(self.y,1))-np.dot(self.y,np.roll(self.x,1)))
 
     def incs(self, cs: CoordinateSystem) -> XYPolygon:
-        """ Sets a coordinate system and returns the same XYPolygon object. """
+        """ Sets a coordinate system and returns the same XYPolygon object.
+
+        Args:
+            cs (CoordinateSystem): The coordinate system of the polygon
+
+        Returns:
+            XYPolygon: This XYPolygon object
+        """
         self._cs = cs
         return self
 
@@ -308,7 +316,11 @@ class XYPolygon:
         return self
     
     def iterate(self) -> Generator[tuple[float, float],None, None]:
-        """ Iterates over the x,y coordinates as a tuple."""
+        """ Iterates over the x,y coordinates as a tuple.
+
+        Yields:
+            tuple[float, float]: The (x, y) coordinate of each polygon point
+        """
         for i in range(self.N):
             yield (self.x[i], self.y[i])
 
@@ -321,6 +333,9 @@ class XYPolygon:
         Args:
             radius (float): The radius
             *indices (int): The indices for which to apply the fillet.
+
+        Returns:
+            XYPolygon: This XYPolygon object
         """
         for i in indices:
             self.fillets.append((radius, i))
@@ -352,10 +367,11 @@ class XYPolygon:
 
         ptags = []
         
+        # Original global transformation preserved
         xg, yg, zg = cs.in_global_cs(self.x, self.y, 0*self.x)
-
+        
         points = dict()
-        for x,y,z in zip(xg, yg, zg):
+        for x, y, z in zip(xg, yg, zg):
             reuse = False
             for key, (px, py, pz) in points.items():
                 if ((x-px)**2 + (y-py)**2 + (z-pz)**2)**0.5 < 1e-12:
@@ -365,25 +381,37 @@ class XYPolygon:
             if reuse:
                 logger.warning(f'Reusing {ptags[-1]}')
                 continue
-            ptag = gmsh.model.occ.add_point(x,y,z)
-            points[ptag] = (x,y,z)
+            ptag = gmsh.model.occ.add_point(x, y, z)
+            points[ptag] = (x, y, z)
             ptags.append(ptag)
         
         lines = []
-        for i1, p1 in enumerate(ptags):
-            p2 = ptags[(i1+1) % len(ptags)]
+        num_pts = len(ptags)
+        for i in range(num_pts):
+            p1 = ptags[i]
+            p2 = ptags[(i + 1) % num_pts]
             lines.append(gmsh.model.occ.add_line(p1, p2))
         
-        add = 0
-        for radius, index in self.fillets:
-            t1 = lines[(index + add-1) % len(lines)]
-            t2 = lines[index + add]
-            tag = gmsh.model.occ.fillet2_d(t1, t2, radius)
-            lines.insert(index, tag)
-            add += 1
+        # Map indices to radii for O(1) lookup
+        fillet_map = {index: radius for radius, index in self.fillets}
+        final_edges = []
 
-        wiretag = gmsh.model.occ.add_wire(lines)
-        return ptags, lines, wiretag
+        for i in range(num_pts):
+            # Vertex i always connects the end of line(i-1) to the start of line(i)
+            t1 = lines[(i - 1) % num_pts]
+            t2 = lines[i]
+
+            if i in fillet_map:
+                radius = fillet_map[i]
+                # OCC trims t1 and t2 in place, and returns the newly created arc
+                arc_tag = gmsh.model.occ.fillet2_d(t1, t2, radius)
+                final_edges.append(arc_tag)
+            
+            # The outgoing line t2 is always appended after its preceding vertex
+            final_edges.append(t2)
+
+        wiretag = gmsh.model.occ.add_wire(final_edges)
+        return ptags, final_edges, wiretag
         
     def _finalize(self, cs: CoordinateSystem, name: str | None = 'GeoPolygon') -> GeoPolygon:
         """Turns the XYPolygon object into a GeoPolygon that is embedded in 3D space.
@@ -412,10 +440,12 @@ class XYPolygon:
         of sections N.
 
         Args:
-            length (length): The length of the extrusion.
+            length (float): The length of the extrusion.
+            cs (CoordinateSystem | None, optional): The coordinate system in which the polygon is placed. Defaults to None (GCS).
+            name (str, optional): The name of the object. Defaults to 'Extrusion'.
 
         Returns:
-            GeoVolume: The resultant Volumetric object.
+            GeoPrism: The resultant Volumetric object.
         """
         if cs is None:
             cs = GCS
@@ -432,6 +462,7 @@ class XYPolygon:
 
         Args:
             cs (CoordinateSystem, optional): The Coordinate system of which the XY plane will be used. Defaults to None.
+            name (str, optional): The name of the object. Defaults to 'GeoPolygon'.
 
         Returns:
             GeoPolygon: The resultant object.
@@ -450,14 +481,14 @@ class XYPolygon:
         """Applies a revolution to the XYPolygon along the provided rotation ais
 
         Args:
-            cs (CoordinateSystem, optional): _description_. Defaults to None.
-            origin: tuple[float, float, float]: The origin of the revolution axis
-            axis: tuple[float, float, float] | Axis: The revolution axis.
-            angle: float - The revolution angle. Defaults to 360 degrees
-            angle (float, optional): _description_. Defaults to 360.0.
+            cs (CoordinateSystem): The coordinate system in which the polygon is placed (None uses GCS)
+            origin (tuple[float, float, float] | Anchor): The origin of the revolution axis
+            axis (tuple[float, float, float] | Axis): The revolution axis.
+            angle (float, optional): The revolution angle in degrees. Defaults to 360.0.
+            name (str, optional): The name of the object. Defaults to 'Revolution'.
 
         Returns:
-            Prism: The resultant 
+            GeoPrism: The resultant revolved volume
         """
         
         if cs is None:
@@ -516,7 +547,7 @@ class XYPolygon:
         Args:
             width (float): The width (X)
             height (float): The height (Y)
-            origin (tuple[float, float]): The origin (x,y)
+            origin (tuple[float, float] | Anchor): The origin (x,y)
             alignment (Alignment, optional): What point the origin describes. Defaults to Alignment.CORNER.
 
         Returns:
@@ -550,13 +581,14 @@ class XYPolygon:
         Args:
             xfunc (Callable): The x-coordinate function.
             yfunc (Callable): The y-coordinate function
-            tolerance (float): A maximum distance tolerance. Defaults to 10um.
+            xmin (float, optional): The minimum distance between subsequent points. Defaults to 1e-3.
+            tolerance (float, optional): A maximum distance tolerance. Defaults to 1e-5.
             tmin (float, optional): The start value of the t-parameter. Defaults to 0.
             tmax (float, optional): The end value of the t-parameter. Defaults to 1.
-            reverse (bool, optional): Reverses the curve.
+            reverse (bool, optional): Reverses the curve. Defaults to False.
 
         Returns:
-            XYPolygon: _description_
+            XYPolygon: This XYPolygon object
         """
         xs, ys = _discretize_curve(xfunc, yfunc, tmin, tmax, xmin, tolerance)
 
@@ -588,7 +620,7 @@ class XYPolygon:
             offset (float, optional): The offset of the first corrugation in percentage of a single period. Defaults to 0.0.
 
         Returns:
-            XYPolygon: _description_
+            XYPolygon: This XYPolygon object
         """
         ds = _parse_vector(direction)
         if corr_axis is not None:
@@ -636,6 +668,7 @@ class XYPolygon:
         
         Args:
             other (XYPolygon): _descrThe otheiption_
+            name (str, optional): The name of the object. Defaults to 'Connection'.
 
         Returns:
             GeoVolume: The resultant volume object
@@ -648,7 +681,7 @@ class XYPolygon:
         p2, l2, w2 = other._make_wire(other._cs)
         o1 = np.array(self._cs.in_global_cs(*self.center, 0)).flatten()
         o2 = np.array(other._cs.in_global_cs(*other.center, 0)).flatten()
-        dts = gmsh.model.occ.addThruSections([w1, w2], True, parametrization="IsoParametric")
+        dts = gmsh.model.occ.addThruSections([w1, w2], True, True, parametrization="IsoParametric")
         vol = GeoVolume([t for d,t in dts if d==3], name=name)
         
         vol._add_face_pointer('front',o1, self._cs.zax.np)
@@ -734,10 +767,12 @@ class Disc(GeoSurface):
         """Creates a circular Disc surface.
 
         Args:
-            origin (tuple[float, float, float]): The center of the disc
+            origin (tuple[float, float, float] | Anchor): The center of the disc
             radius (float): The radius of the disc
-            axis (tuple[float, float, float], optional): The disc normal axis. Defaults to (0,0,1.0).
-            radius_opt (float, None): Secondary radius in case where one wants to make an ellipse.
+            axis (tuple[float, float, float] | Axis, optional): The disc normal axis. Defaults to (0,0,1.0).
+            radius_opt (float | None): Secondary radius in case where one wants to make an ellipse.
+            axis_opt (tuple[float, float, float] | None, optional): The secondary (x) axis, required when radius_opt is given. Defaults to None.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         origin = _parse_vector(origin)
         axis = _parse_vector(axis)
@@ -763,24 +798,23 @@ class Curve(GeoEdge):
                  degree: int = 3,
                  weights: list[float] | None = None,
                  knots: list[float] | None = None,
+                 multiplicities: list[float] | None = None,
                  ctype: Literal['Spline','BSpline','Bezier'] = 'Spline',
                  name: str | None = None):
         """Generate a Spline/Bspline or Bezier curve based on a series of points
 
         This calls the different curve features in OpenCASCADE.
-        
-        The dstart parameter defines the departure direction of the curve. If not provided this is inferred as the
-        discrete derivative from the first to second coordinate. 
-        
+
         Args:
             xpts (np.ndarray): The X-coordinates
             ypts (np.ndarray): The Y-coordinates
             zpts (np.ndarray): The Z-coordinates
             degree (int, optional): The BSpline degree parameter. Defaults to 3.
             weights (list[float] | None, optional): An optional point weights list. Defaults to None.
-            knots (list[float] | None, optional): A nkots list. Defaults to None.
+            knots (list[float] | None, optional): A knots list. Defaults to None.
+            multiplicities (list[float] | None, optional): The multiplicity of each knot. Defaults to None.
             ctype (Literal['Spline','BSpline','Bezier'], optional): The type of curve. Defaults to 'Spline'.
-            dstart (tuple[float, float, float] | None, optional): The departure direction. Defaults to None.
+            name (str | None, optional): The name of the object. Defaults to None.
         """
         self.xpts: np.ndarray = xpts
         self.ypts: np.ndarray = ypts
@@ -796,7 +830,7 @@ class Curve(GeoEdge):
                 weights = []
             if knots is None:
                 knots = []
-            tags = gmsh.model.occ.addBSpline(points, degree=degree, weights=weights, knots=knots)
+            tags = gmsh.model.occ.addBSpline(points, degree=degree, weights=weights, knots=knots, multiplicities=multiplicities)
         else:
             tags = gmsh.model.occ.addBezier(points)
         
@@ -805,9 +839,11 @@ class Curve(GeoEdge):
         super().__init__(tags, name=name)
     
         gmsh.model.occ.synchronize()
-        p1 = gmsh.model.getValue(self.dim, self.tags[0], [0,])
-        p2 = gmsh.model.getValue(self.dim, self.tags[0], [1e-6])
-        self.dstart: tuple[float, float, float] = (p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2])
+        # 2. Compute analytical initial tangent from P1 - P0 (Always exact for Bezier/Splines)
+        dx = float(xpts[1] - xpts[0])
+        dy = float(ypts[1] - ypts[0])
+        dz = float(zpts[1] - zpts[0])
+        self.dstart: tuple[float, float, float] = (dx, dy, dz)  
     
         
     @property
@@ -828,12 +864,13 @@ class Curve(GeoEdge):
         """Generates a Helical curve
 
         Args:
-            pstart (tuple[float, float, float]): The start of the center of rotation (not the start of the curve)
-            pend (tuple[float, float, float]): The end of the center of rotation
+            pstart (tuple[float, float, float] | Anchor): The start of the center of rotation (not the start of the curve)
+            pend (tuple[float, float, float] | Anchor): The end of the center of rotation
             r_start (float): The (start) radius of the helix
             pitch (float): The pitch angle of the helix
             r_end (float | None, optional): The ending radius. If default, the same is used as the start. Defaults to None.
             _narc (int, optional): The number of Spline arc sections used. Defaults to 8.
+            startfeed (float, optional): The length of an extra feed section added at the start of the helix. Defaults to 0.0 (none).
 
         Returns:
             Curve: The Curve geometry object
@@ -907,12 +944,13 @@ class Curve(GeoEdge):
         """Generates a Helical curve
 
         Args:
-            pstart (tuple[float, float, float]): The start of the center of rotation (not the start of the curve)
-            pend (tuple[float, float, float]): The end of the center of rotation
+            pstart (tuple[float, float, float] | Anchor): The start of the center of rotation (not the start of the curve)
+            pend (tuple[float, float, float] | Anchor): The end of the center of rotation
             r_start (float): The (start) radius of the helix
             pitch (float): The pitch angle of the helix
             r_end (float | None, optional): The ending radius. If default, the same is used as the start. Defaults to None.
             _narc (int, optional): The number of Spline arc sections used. Defaults to 8.
+            startfeed (float, optional): The length of an extra feed section added at the start of the helix. Defaults to 0.0 (none).
 
         Returns:
             Curve: The Curve geometry object
@@ -979,6 +1017,7 @@ class Curve(GeoEdge):
              max_mesh_size: float | None = None,
              start_tangent: Axis | tuple[float, float, float] | np.ndarray | None = None,
              x_axis: Axis | tuple[float, float, float] | np.ndarray | None = None,
+             trihedron: Literal["DiscreteTrihedron", "CorrectedFrenet", "Fixed", "Frenet", "ConstantNormal", "Darboux", "GuideAC", "GuidePlan", "GuideACWithContact", "GuidePlanWithContact"] = "GuidePlan",
              name: str = 'PipedVolume') -> GeoVolume:
         """Extrudes a surface or XYPolygon object along the given curve
 
@@ -990,15 +1029,18 @@ class Curve(GeoEdge):
         Args:
             crossection (GeoSurface | XYPolygon): The cross section definition to be used
             max_mesh_size (float, optional): The maximum mesh size. Defaults to None
-            start_tangent (Axis, tuple, ndarray, optional): The input polygon plane normal direction. Defaults to None
-            x_axis (Axis, tuple, ndarray optional): The reference X-axis to align the input polygon. Defaults to None
+            start_tangent (Axis | tuple[float, float, float] | np.ndarray | None, optional): The input polygon plane normal direction. Defaults to None
+            x_axis (Axis | tuple[float, float, float] | np.ndarray | None, optional): The reference X-axis to align the input polygon. Defaults to None
+            trihedron (Literal["DiscreteTrihedron", "CorrectedFrenet", "Fixed", "Frenet", "ConstantNormal", "Darboux", "GuideAC", "GuidePlan", "GuideACWithContact", "GuidePlanWithContact"], optional): The GMSH/OCC trihedron mode used for the sweep. Defaults to "GuidePlan".
+            name (str, optional): The name of the object. Defaults to 'PipedVolume'.
         Returns:
             GeoVolume: The resultant volume object
         """
         if isinstance(crossection, XYPolygon):
-            if start_tangent is None:
-                start_tangent = self.dstart
-            if x_axis is not None:
+            if start_tangent is not None:
+                cs = _parse_axis(start_tangent).construct_cs(self.p0)
+                surf = crossection.geo(cs)
+            elif x_axis is not None:
                 xax = _parse_axis(x_axis)
                 zax = _parse_axis(self.dstart)
                 yax = zax.cross(xax)
@@ -1006,12 +1048,13 @@ class Curve(GeoEdge):
             else:
                 zax = self.dstart
                 cs = Axis(np.array(zax)).construct_cs(self.p0)
-                surf = crossection.geo(cs)
+            surf = crossection.geo(cs)
         else:
             surf = crossection
         x1, y1, z1, x2, y2, z2 = gmsh.model.occ.getBoundingBox(*surf.dimtags[0])
         diag = ((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)**(0.5)
-        pipetag = gmsh.model.occ.addPipe(surf.dimtags, self.tags[0], 'GuidePlan')
+        gmsh.model.occ.synchronize()
+        pipetag = gmsh.model.occ.addPipe(surf.dimtags, self.tags[0], trihedron=trihedron)
         self.remove()
         surf.remove()
         volume = GeoVolume(pipetag[0][1], name=name)

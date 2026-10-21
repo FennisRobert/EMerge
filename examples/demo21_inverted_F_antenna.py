@@ -38,7 +38,7 @@ f2 = 3e9  # stop frequency
 
 # --- Create simulation object -------------------------------------------
 model = em.Simulation("IFA")
-model.check_version("2.8.9")  # Checks version compatibility.
+model.check_version("3.0.0")  # Checks version compatibility.
 
 # --- Define geometry primitives -----------------------------------------
 # Substrate block, thickness in Z (negative down)
@@ -119,7 +119,7 @@ model.commit_geometry()
 # --- Mesh refinement settings --------------------------------------------
 # Refined mesh on port face for excitation accuracy
 model.mesher.set_face_size(port, 0.25 * mm)
-model.mesher.set_boundary_size(ant_element.face("-z"), 1 * mm)
+
 # --- Generate mesh and preview ------------------------------------------
 model.generate_mesh()  # build the finite-element mesh
 model.view(selections=[port])  # show the mesh around the port
@@ -138,8 +138,11 @@ boundary_selection = air.boundary()
 abc = model.mw.bc.AbsorbingBoundary(boundary_selection)
 
 # --- Run frequency-domain solver ----------------------------------------
-model.view(plot_mesh=True, volume_mesh=False)
 model.view(bc=True)
+model.view(plot_mesh=True, volume_mesh=True)
+model.adaptive_mesh_refinement(min_refined_passes=2, max_steps=10, show_mesh=True)
+model.view(plot_mesh=True, volume_mesh=True)
+
 data = model.mw.run_sweep()
 
 # --- Post-process S-parameters ------------------------------------------

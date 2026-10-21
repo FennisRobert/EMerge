@@ -34,7 +34,7 @@ dx = 2 * mm  # distance from horn exit to PML start
 # Create simulation object
 
 model = em.Simulation("StandardGainHornAntenna")
-model.check_version("2.8.9")  # Checks version compatibility.
+model.check_version("3.0.0")  # Checks version compatibility.
 
 # --- Coordinate system for horn geometry -------------------------------
 hornCS = em.CS(em.YAX, em.ZAX, em.XAX)
@@ -120,9 +120,9 @@ ff_data = data.field[0].farfield_2d(
 plot_ff(ff_data.ang * 180 / np.pi, ff_data.gain.norm, dB=True, ylabel="Gain [dBi]")
 # Normalize to free-space impedance and convert to dB
 
-model.display.add_object(horn_in, opacity=0.1)
-model.display.add_object(air2, opacity=0.1)
-model.display.add_object(feed, opacity=0.1)
+model.display.add_object(horn_in)
+model.display.add_object(air2)
+model.display.add_object(feed)
 
 ff3d = data.field[0].farfield_3d(
     radiation_boundary, syms=["Ez", "Hy"], origin=(0, 0, 0)

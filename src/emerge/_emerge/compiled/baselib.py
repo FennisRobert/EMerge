@@ -17,6 +17,7 @@
 
 # Last Cleanup: 2025-03-12
 import numpy as np
+from emr import interp, index_interp
 
 
 class CompiledLib:
@@ -39,9 +40,7 @@ class CompiledLib:
         tet_mapping: np.ndarray,
         dofcodes: np.ndarray,
     ):
-        from .base.interp import ned2_tet_interp
-
-        return ned2_tet_interp(
+        return interp.ned2_tet_interp(
             coords,
             solutions,
             tets,
@@ -72,9 +71,7 @@ class CompiledLib:
         tet_mapping: np.ndarray,
         dofcodes: np.ndarray,
     ):
-        from .base.interp import ned2_tet_interp_curl
-
-        return ned2_tet_interp_curl(
+        return interp.ned2_tet_interp_curl(
             coords,
             solutions,
             tets,
@@ -105,9 +102,7 @@ class CompiledLib:
         tetids: np.ndarray,
         tet_mapping: np.ndarray,
     ) -> np.ndarray:
-        from .base.interp import leg2_tet_interp
-
-        return leg2_tet_interp(
+        return interp.leg2_tet_interp(
             coords,
             solutions,
             tets,
@@ -129,9 +124,7 @@ class CompiledLib:
         tetids: np.ndarray,
         tet_mapping: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        from .base.interp import leg2_tet_interp_grad
-
-        return leg2_tet_interp_grad(
+        return interp.leg2_tet_interp_grad(
             coords, solutions, tets, edges, nodes, tet_to_field, tetids, tet_mapping
         )
 
@@ -148,9 +141,7 @@ class CompiledLib:
         tri_to_field: np.ndarray,
         dofcodes: np.ndarray,
     ):
-        from .base.interp import ned2_tri_interp_full
-
-        return ned2_tri_interp_full(coords, solutions, tris, nodes, tri_to_field, dofcodes)
+        return interp.ned2_tri_interp_full(coords, solutions, tris, nodes, tri_to_field, dofcodes)
 
     @staticmethod
     def ned2_tri_interp_ezgrad(
@@ -161,9 +152,7 @@ class CompiledLib:
         tri_to_field: np.ndarray,
         dofcodes: np.ndarray,
     ):
-        from .base.interp import ned2_tri_interp_grad
-
-        return ned2_tri_interp_grad(coords, solutions, tris, nodes, tri_to_field, dofcodes)
+        return interp.ned2_tri_interp_grad(coords, solutions, tris, nodes, tri_to_field, dofcodes)
 
     @staticmethod
     def ned2_tri_interp_curl(
@@ -176,9 +165,7 @@ class CompiledLib:
         beta: float,
         dofcodes: np.ndarray,
     ):
-        from .base.interp import ned2_tri_interp_curl
-
-        return ned2_tri_interp_curl(
+        return interp.ned2_tri_interp_curl(
             coords, solutions, tris, nodes, tri_to_field, diadic, beta, dofcodes
         )
 
@@ -190,6 +177,4 @@ class CompiledLib:
     def index_interp(
         coords: np.ndarray, tets: np.ndarray, nodes: np.ndarray, tetids: np.ndarray
     ):
-        from .base.index_inter import index_interp
-
-        return index_interp(coords, tets, nodes, tetids)
+        return index_interp.index_interp(coords, tets, nodes, tetids)

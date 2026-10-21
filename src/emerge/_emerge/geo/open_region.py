@@ -22,6 +22,7 @@ from .shapes import Box, GeoVolume
 from .operations import bounding_box
 from emsutil import Material, AIR
 from numbers import Number
+import gmsh
 
 def open_region(xmargin: float | tuple[float, float],
                 ymargin: float | tuple[float, float],
@@ -38,7 +39,7 @@ def open_region(xmargin: float | tuple[float, float],
     Returns:
         Box: The airbox geoemtry object
     """
-    
+    gmsh.model.occ.synchronize()
     if isinstance(xmargin, Number):
         xmargin = (xmargin, xmargin)
     if isinstance(ymargin, Number):
@@ -82,8 +83,6 @@ def open_pml_region(xmargin: float | tuple[float, float],
         xmargin (float | tuple[float, float]): The X-margin as a single number of the -x and +x margin.
         ymargin (float | tuple[float, float]): The Y-margin as a single number of the -y and +y margin.
         zmargin (float | tuple[float, float]): The Z-margin as a single number of the -z and +z margin.
-        position (tuple, optional): The placmeent of the box. Defaults to (0, 0, 0).
-        alignment (Alignment, optional): Which point of the box is placed at the given coordinate. Defaults to Alignment.CORNER.
         material (Material, optional): The material of the box. Defaults to AIR.
         thickness (float, optional): The thickness of the PML Layer. Defaults to 0.1.
         Nlayers (int, optional): The number of geometrical PML layers. Defaults to 1.
@@ -91,15 +90,15 @@ def open_pml_region(xmargin: float | tuple[float, float],
         exponent (float, optional): The PML gradient growth function. Defaults to 1.5.
         deltamax (float, optional): A PML matching coefficient. Defaults to 8.0.
         sides (str, optional): A string of pml sides as characters ([T]op, [B]ottom, [L]eft, [R]ight, [F]ront, b[A]ck)
-        top (bool, optional): Add a top PML layer. Defaults to True.
+        top (bool, optional): Add a top PML layer. Defaults to False.
         bottom (bool, optional): Add a bottom PML layer. Defaults to False.
         left (bool, optional): Add a left PML layer. Defaults to False.
         right (bool, optional): Add a right PML layer. Defaults to False.
         front (bool, optional): Add a front PML layer. Defaults to False.
         back (bool, optional): Add a back PML layer. Defaults to False.
-        
+
     Returns:
-        _type_: _description_
+        list[GeoVolume]: The air box followed by the PML layer volumes
     """
     if isinstance(xmargin, Number):
         xmargin = (xmargin, xmargin)

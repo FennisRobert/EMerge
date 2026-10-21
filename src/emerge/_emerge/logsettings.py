@@ -17,17 +17,17 @@
 
 # Last Cleanup: 2025-01-01
 from loguru import logger
+from ._global import _GlobalHandler, _BaseManager
 import sys
 from typing import Literal, Generator
 from pathlib import Path
 import os
-from collections import deque
 import platform
 import importlib
 import multiprocessing
 
 packages = [
-    "numba",
+    "emr",
     "numpy",
     "scipy",
     "gmsh",
@@ -56,11 +56,8 @@ def get_version(pkg_name):
         return "not installed"
 
 
-_LOG_BUFFER = deque()
-
-
 def _log_sink(message):
-    _LOG_BUFFER.append(message)
+    _GlobalHandler.active().logbuffer.append(message)
 
 
 ############################################################
@@ -99,15 +96,21 @@ LLTYPE = Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]
 ############################################################
 
 
-class LogController:
+class LogController(_BaseManager):
     def __init__(self):
+        """Controls the loguru handlers for the terminal and the log file."""
         logger.remove()
         self.std_handlers: list[int] = []
         self.file_handlers: list[int] = []
         self.level: str = "INFO"
         self.file_level: str = "INFO"
 
+    def reset(self):
+        """Remove all log handlers."""
+        self.clear()
+        
     def clear(self):
+        """Remove all log handlers and reset the log levels to INFO."""
         logger.remove()
         self.std_handlers: list[int] = []
         self.file_handlers: list[int] = []
@@ -115,10 +118,16 @@ class LogController:
         self.file_level: str = "INFO"
 
     def set_default(self):
+        """Set the terminal log level from the EMERGE_STD_LOGLEVEL environment variable (default INFO)."""
         value = os.getenv("EMERGE_STD_LOGLEVEL", default="INFO")
         self.set_std_loglevel(value)
 
     def add_std_logger(self, loglevel: LLTYPE) -> None:
+        """Add a terminal (stderr) log handler.
+
+        Args:
+            loglevel (LLTYPE): The log level
+        """
         handle_id = logger.add(
             sys.stderr, level=loglevel, format=FORMAT_DICT.get(loglevel, INFO_FORMAT)
         )
@@ -128,9 +137,9 @@ class LogController:
         logger.add(_log_sink)
 
     def _flush_log_buffer(self):
-        for msg in list(_LOG_BUFFER):
+        for msg in list(_GlobalHandler.active().logbuffer):
             logger.opt(depth=6).log(msg.record["level"].name, msg.record["message"])
-        _LOG_BUFFER.clear()
+        _GlobalHandler.active().logbuffer.clear()
 
     def _sys_info(self) -> None:
         logger.trace(" (!) System Information:")
@@ -153,6 +162,11 @@ class LogController:
         logger.trace(f" (!) CPU cores: {multiprocessing.cpu_count()}")
 
     def set_std_loglevel(self, loglevel: str):
+        """Set the terminal log level.
+
+        Args:
+            loglevel (str): The log level
+        """
         handler = {
             "sink": sys.stdout,
             "level": loglevel,
@@ -163,6 +177,12 @@ class LogController:
         os.environ["EMERGE_STD_LOGLEVEL"] = loglevel
 
     def set_write_file(self, path: Path, loglevel: str = "TRACE"):
+        """Also write the log to logging.log in a directory.
+
+        Args:
+            path (Path): The directory
+            loglevel (str, optional): The log level of the file. Defaults to "TRACE".
+        """
         handler_id = logger.add(
             str(path / "logging.log"),
             mode="w",
@@ -177,7 +197,7 @@ class LogController:
         os.environ["EMERGE_FILE_LOGLEVEL"] = loglevel
 
 
-class DebugCollector:
+class DebugCollector(_BaseManager):
     """The DebugController is used by EMerge to collect heuristic
     warnings for detections of things that might be causing problems but aren't
     guaranteed to cause them. These logs will be printed at the end of a simulation
@@ -189,25 +209,34 @@ class DebugCollector:
         self.reports: list[str] = []
 
     def clear(self):
+        """Remove all reports."""
+        self.reports = []
+    
+    def reset(self):
+        """Remove all reports."""
         self.reports = []
 
     @property
     def any_warnings(self) -> bool:
+        """Whether any reports were collected."""
         return len(self.reports) > 0
 
     def add_report(self, message: str):
+        """Add a report that is shown to the user at the end of the simulation.
+
+        Args:
+            message (str): The report message
+        """
         self.reports.append(message)
 
     def all_reports(self) -> Generator[tuple[int, str], None, None]:
+        """Iterate over the unique reports.
+
+        Yields:
+            tuple[int, str]: The (1-based) report number and the message
+        """
         reports = set(self.reports)
         for i, message in enumerate(reports):
             yield i + 1, message
 
 
-############################################################
-#                        SINGLETONS                       #
-############################################################
-
-
-LOG_CONTROLLER = LogController()
-DEBUG_COLLECTOR = DebugCollector()

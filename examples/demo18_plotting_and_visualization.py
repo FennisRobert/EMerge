@@ -28,7 +28,7 @@ distance = 2 * mm
 # Setup the simulation
 
 m = em.Simulation("PlottingDemo")
-m.check_version("2.8.9")
+m.check_version("3.0.0")
 
 box = em.geo.Box(wgb, wga, L, (-wgb / 2, -wga / 2, -L))
 cut1 = em.geo.Box(
@@ -242,7 +242,7 @@ dp.show()
 # Plotting fields on the surface of an object is also possible.
 dp.add_objects(*m.all_geos())
 dp.add_field(
-    field.boundary(abc).scalar("Ex", "abs"), clim=(0, 600)
+    field.boundary(abc).scalar("Ex", "abs")
 )  # we don't unpack here because of how this method is designed.
 dp.show()
 

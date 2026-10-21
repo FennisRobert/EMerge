@@ -35,35 +35,33 @@ warnings.filterwarnings(
 
 import os
 
-__version__ = "2.1.1"
+__version__ = "3.0.0b1"
 
 NTHREADS = "1"
-os.environ["EMERGE_STD_LOGLEVEL"] = os.getenv("EMERGE_STD_LOGLEVEL", default="INFO")
-os.environ["EMERGE_FILE_LOGLEVEL"] = os.getenv("EMERGE_FILE_LOGLEVEL", default="DEBUG")
-os.environ["OMP_NUM_THREADS"] = os.getenv("OMP_NUM_THREADS", default="8")
-os.environ["MKL_NUM_THREADS"] = os.getenv("MKL_NUM_THREADS", default="4")
-os.environ["OPENBLAS_NUM_THREADS"] = os.getenv("OPENBLAS_NUM_THREADS", default=NTHREADS)
-os.environ["VECLIB_NUM_THREADS"] = NTHREADS
-os.environ["VECLIB_MAXIMUM_THREADS"] = NTHREADS
-os.environ["NUMEXPR_NUM_THREADS"] = NTHREADS
-os.environ["NUMBA_NUM_THREADS"] = os.getenv("NUMBA_NUM_THREADS", default="4")
-os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
+os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
+os.environ.setdefault("EMERGE_FILE_LOGLEVEL", "DEBUG")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "4")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", NTHREADS)
+os.environ.setdefault("VECLIB_NUM_THREADS", NTHREADS)
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", NTHREADS)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", NTHREADS)
 
 
 ############################################################
 #                      IMPORT MODULES                     #
 ############################################################
-
-from ._emerge.logsettings import LOG_CONTROLLER
 from loguru import logger
+import multiprocessing as _mp
 
-LOG_CONTROLLER.set_default()
-logger.debug('Importing modules')
-LOG_CONTROLLER._set_log_buffer()
+_is_main_process = _mp.current_process().name == "MainProcess"
+
+if _is_main_process:
+    logger.info(f'EMerge v{__version__}')
+    logger.info('Importing modules')
 
 import gmsh
-from ._emerge.simmodel import Simulation, SimulationBeta
-#from ._emerge.material import Material, FreqCoordDependent, FreqDependent, CoordDependent
+from ._emerge.simmodel import Simulation
 from ._emerge.solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, Sorter, SolverPardiso, SolverUMFPACK, SolverSuperLU, EMSolver
 from ._emerge.cs import CoordinateSystem, CS, GCS, Plane, Axis, XAX, YAX, ZAX, XYPLANE, XZPLANE, YZPLANE, YXPLANE, ZXPLANE, ZYPLANE, cs
 from ._emerge.coord import Line
@@ -76,7 +74,7 @@ from ._emerge.geo.polybased import XYPolygon, GeoPrism, Disc, Curve
 from ._emerge.geo.step import STEPItems
 from ._emerge.geo.open_region import open_region, open_pml_region
 from ._emerge.selection import Selection, FaceSelection, DomainSelection, EdgeSelection
-from ._emerge.geometry import select
+from ._emerge.geometry import select, _GeometryManager, _KeyGenerator
 from ._emerge.mth.common_functions import norm, coax_rout, coax_rin, dot, cross
 from ._emerge.periodic import RectCell, HexCell
 from ._emerge.mesher import Algorithm2D, Algorithm3D
@@ -94,9 +92,27 @@ howto = _HowtoClass()
 
 logger.debug('Importing complete!')
 
-from ._emerge.install_check import run_installation_checks
 
-run_installation_checks()
+############################################################
+#                      GLOBAL HANDLER                     #
+############################################################
+
+from ._emerge._global import _GlobalHandler, cleanup
+from ._emerge.geo.pcb import _PCBManager
+from ._emerge.simstate import _SimStateManager
+from ._emerge.selection import Selector
+from ._emerge.logsettings import LogController, DebugCollector
+
+GLOBALHANDLER = _GlobalHandler()
+GLOBALHANDLER.geomanager = _GeometryManager()
+GLOBALHANDLER.generator = _KeyGenerator()
+GLOBALHANDLER.pcbmanager = _PCBManager()
+GLOBALHANDLER.simstates = _SimStateManager()
+GLOBALHANDLER.selector = Selector()
+GLOBALHANDLER.logcontroller = LogController()
+GLOBALHANDLER.logcontroller.set_default()
+GLOBALHANDLER.debugcollector = DebugCollector()
+# Install global states
 
 ############################################################
 #                         CONSTANTS                        #

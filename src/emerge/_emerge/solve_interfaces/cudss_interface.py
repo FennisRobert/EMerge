@@ -44,10 +44,19 @@ from typing import Literal
 #                         CONSTANTS                        #
 ############################################################
 
-ALG_NEST_DISS_METIS = cudss.AlgType.ALG_DEFAULT
-ALG_COLAMD = cudss.AlgType.ALG_1
-ALG_COLAMD_BLOCK_TRI = cudss.AlgType.ALG_2
-ALG_AMD = cudss.AlgType.ALG_3
+# nvmath-python 1.0 renamed AlgType (ALG_DEFAULT/ALG_1/2/3) to ReorderingAlg with descriptive names.
+if hasattr(cudss, "ReorderingAlg"):
+    ReorderingAlg = cudss.ReorderingAlg
+    ALG_NEST_DISS_METIS = ReorderingAlg.DEFAULT
+    ALG_COLAMD = ReorderingAlg.COLAMD
+    ALG_COLAMD_BLOCK_TRI = ReorderingAlg.BTF_COLAMD
+    ALG_AMD = ReorderingAlg.AMD
+else:
+    ReorderingAlg = cudss.AlgType
+    ALG_NEST_DISS_METIS = ReorderingAlg.ALG_DEFAULT
+    ALG_COLAMD = ReorderingAlg.ALG_1
+    ALG_COLAMD_BLOCK_TRI = ReorderingAlg.ALG_2
+    ALG_AMD = ReorderingAlg.ALG_3
 
 FLOAT64 = CudaDataType.CUDA_R_64F
 FLOAT32 = CudaDataType.CUDA_R_32F
@@ -60,6 +69,46 @@ INDEX_BASE = cudss.IndexBase.ZERO
 
 def _c_pointer(arry) -> int:
     return int(arry.data.ptr)
+
+
+def _matrix_create_csr(nrows, ncols, nnz, row_start, row_end, col_indices, values,
+                       index_type, value_type, mtype, mview, index_base) -> int:
+    """cudss.matrix_create_csr for both nvmath APIs: nvmath >= 1.0 has an extra offset_type argument
+    (the integer type of the row pointers) before index_type."""
+    try:
+        return cudss.matrix_create_csr(nrows, ncols, nnz, row_start, row_end, col_indices, values,
+                                       index_type, index_type, value_type, mtype, mview, index_base)
+    except TypeError:
+        return cudss.matrix_create_csr(nrows, ncols, nnz, row_start, row_end, col_indices, values,
+                                       index_type, value_type, mtype, mview, index_base)
+
+
+############################################################
+#                    GPU PRECISION CHECK                   #
+############################################################
+
+# Fallback FP32:FP64 throughput ratios by compute capability, for CuPy versions that do not report
+# singleToDoublePrecisionPerfRatio. Data center GPUs (P100, V100, A100, H100, B200) run FP64 at half
+# rate; consumer and workstation GPUs at 1/32 or 1/64.
+_FP64_RATIO_BY_CC = {
+    (6, 0): 2, (6, 1): 32, (6, 2): 32,
+    (7, 0): 2, (7, 2): 32, (7, 5): 32,
+    (8, 0): 2, (8, 6): 64, (8, 7): 64, (8, 9): 64,
+    (9, 0): 2,
+    (10, 0): 2, (12, 0): 64,
+}
+
+
+def gpu_fp64_ratio(device: int | None = None) -> tuple[int | None, str]:
+    """Returns (FP32:FP64 throughput ratio, device name) of a CUDA device. The ratio is None if unknown."""
+    dev = cp.cuda.Device().id if device is None else device
+    props = cp.cuda.runtime.getDeviceProperties(dev)
+    name = props.get("name", b"")
+    name = name.decode(errors="replace") if isinstance(name, bytes) else str(name)
+    ratio = props.get("singleToDoublePrecisionPerfRatio")
+    if not ratio:
+        ratio = _FP64_RATIO_BY_CC.get((props.get("major"), props.get("minor")))
+    return (int(ratio) if ratio else None), name
 
 
 
@@ -78,7 +127,7 @@ class CuDSSInterface(metaclass=Singleton):
     """the CuDSSInterface class implements the nvmath bindings and cupy
     control for EMerge.
     """
-    AlgType = cudss.AlgType
+    AlgType = ReorderingAlg
 
     def __init__(self):
         self.A_cu = None
@@ -95,7 +144,7 @@ class CuDSSInterface(metaclass=Singleton):
 
         self.MTYPE = cudss.MatrixType.GENERAL
         self.MVIEW = cudss.MatrixViewType.FULL
-        self.RALG = cudss.AlgType.ALG_DEFAULT
+        self.RALG = ALG_NEST_DISS_METIS
         self.VTYPE = CudaDataType.CUDA_R_64F
 
         self._INDPTR = None
@@ -109,15 +158,19 @@ class CuDSSInterface(metaclass=Singleton):
         self._COL_IDS = None
         self._csym: bool = True
         self._initialized = False
+        self._factorized: bool = False  # the first numeric phase after ANALYSIS must be FACTORIZATION
 
+        self._apply_reordering()
+
+    def _apply_reordering(self) -> None:
         param = cudss.ConfigParam.REORDERING_ALG
         dtype = cudss.get_config_param_dtype(int(param))
         reorder_alg = np.array(self.RALG, dtype=dtype)
 
         cudss.config_set(
-            self._config,   
+            self._config,
             int(param),
-            reorder_alg.ctypes.data, 
+            reorder_alg.ctypes.data,
             reorder_alg.nbytes
         )
 
@@ -125,12 +178,12 @@ class CuDSSInterface(metaclass=Singleton):
         # TODO: Implement this
         pass
     
-    def set_algorithm(self, alg_type: Literal['METIS','COLAMD','COLAM_BT','AMD']):
+    def set_algorithm(self, alg_type: Literal['METIS','COLAMD','COLAMD_BT','AMD']):
         """Define fill-in reduction column permuation algorithm. The options are:
 
          - "METIS" (Default) = NVidia's own Nested Dissection METIS sorter
          - "COLAMD" = Column approximate minimum degree
-         - "COLAM_BT" = Column Approximate Minimum Degree Block Triangular
+         - "COLAMD_BT" = Column Approximate Minimum Degree Block Triangular ("COLAM_BT" is also accepted)
          - "AMD" = Approximate Minimum Degree
 
         Args:
@@ -140,12 +193,14 @@ class CuDSSInterface(metaclass=Singleton):
             self.RALG = ALG_NEST_DISS_METIS
         elif alg_type =='COLAMD':
             self.RALG = ALG_COLAMD
-        elif alg_type == 'COLAMD_BT':
+        elif alg_type in ('COLAMD_BT', 'COLAM_BT'):
             self.RALG = ALG_COLAMD_BLOCK_TRI
         elif alg_type == 'AMD':
             self.RALG = ALG_AMD
         else:
             logger.warning(f'Algorithm type {alg_type} is not of the chosen set. Ignoring setting.')
+            return
+        self._apply_reordering()
     
     def init_type(self):
         """Initializes the value data type of the solver (float vs complex, single vs double).
@@ -221,10 +276,11 @@ class CuDSSInterface(metaclass=Singleton):
 
     def _create_dss_data(self):
         """Creates a new memory slot for the CSR matrix of the matrix A"""
-        self.A_cobj = cudss.matrix_create_csr(
+        # Plain CSR: row_end is NULL (cuDSS >= 0.8 rejects separate row_start/row_end arrays).
+        self.A_cobj = _matrix_create_csr(
             self.N,self.N,self._NNZ,
-            _c_pointer(self._ROW_START),
-            _c_pointer(self._ROW_END),
+            _c_pointer(self._INDPTR),
+            0,
             _c_pointer(self._COL_IDS),
             _c_pointer(self._VAL),
             int(INT32), 
@@ -269,7 +325,8 @@ class CuDSSInterface(metaclass=Singleton):
         self.submit_vector(np.zeros((A.shape[0],), dtype=np.complex128))
         self.create_solvec()
         self._update_dss_data()
-        self._numeric(True)
+        self._numeric(refactorize=self._factorized)
+        self._factorized = True
 
     def solve(self, b: np.ndarray) -> np.ndarray:
         """Solves Ax=b only with a new b vector.
@@ -288,6 +345,7 @@ class CuDSSInterface(metaclass=Singleton):
 
     def _symbolic(self):
         logger.trace('Executing symbolic factorization')
+        self._factorized = False
         cudss.execute(self._handle, cudss.Phase.ANALYSIS, self._config, self._data, 
                       self.A_cobj, self.x_cobj, self.b_cobj)
 

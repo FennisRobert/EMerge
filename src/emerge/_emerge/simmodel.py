@@ -19,28 +19,29 @@
 from __future__ import annotations
 
 import sys
+from ._global import _GlobalHandler
 from .geometry import GeoObject
 from .geo.modeler import Modeler
 from .physics.microwave.microwave_3d import Microwave3D
 from .physics.heatconduction.heatconduction_3d import HeatConduction3D
 from .mesh3d import Mesh3D
-from .mesher import Mesher
+from .mesher import Mesher, MeshError
 from .dataset import SimulationDataset
-from .logsettings import LOG_CONTROLLER, DEBUG_COLLECTOR
 from .plot.pyvista import PVDisplay
 from .periodic import PeriodicCell
 from .cacherun import get_build_section, get_run_section
 from .settings import DEFAULT_SETTINGS, Settings
 from .solver import EMSolver, Solver
 from .simstate import SimState
-from .selection import Selector, Selection, FaceSelection
+from .selection import Selector, Selection, FaceSelection, DomainSelection
 from .optim import Optimizer
-from typing import Literal, Generator, Any
+from typing import Literal, Generator, Any, Callable
 from loguru import logger
 import numpy as np
 import gmsh  # type: ignore
 import os
 import inspect
+import time
 from pathlib import Path
 import joblib
 from pickle import PicklingError
@@ -112,7 +113,7 @@ class Simulation:
         save_file: bool = False,
         write_log: bool = False,
         path_suffix: str = ".EMResults",
-        store_system: Literal["msgpack", "joblib"] = "joblib",
+        store_system: Literal["msgpack", "joblib"] = "msgpack",
     ):
         """Generate a Simulation class object.
 
@@ -121,7 +122,7 @@ class Simulation:
 
         Args:
             modelname (str): The name of the simulation model. This will be used for filenames and path names when saving data.
-            loglevel ("DEBUG","INFO","WARNING","ERROR", optional): The loglevel to use for loguru. Defaults to 'INFO'.
+            loglevel (Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"], optional): The loglevel to use for loguru. Defaults to 'INFO'.
             load_file (bool, optional): If the simulatio model should be loaded from a file. Defaults to False.
             save_file (bool, optional): if the simulation file should be stored to a file. Defaults to False.
             write_log (bool, optional): If a file should be created that contains the entire log of the simulation. Defaults to False.
@@ -161,6 +162,11 @@ class Simulation:
         self.hc: HeatConduction3D = HeatConduction3D(
             self.state, self.mesher, self.settings
         )
+        # AutomaticRoutine is a process-wide singleton, so a new Simulation must
+        # explicitly clear any solver state (e.g. cached METIS orderings) left
+        # behind by a previous, unrelated Simulation in this process.
+        self.mw.solveroutine.reset()
+        self._geo_scale_factor: float = 1.0
 
         self._mw_active: bool = True
         self._hc_active: bool = False
@@ -172,8 +178,8 @@ class Simulation:
         if write_log:
             self.set_write_log()
 
-        LOG_CONTROLLER._flush_log_buffer()
-        LOG_CONTROLLER._sys_info()
+        _GlobalHandler.active().logcontroller._flush_log_buffer()
+        _GlobalHandler.active().logcontroller._sys_info()
 
         self.__post_init__()
 
@@ -181,8 +187,9 @@ class Simulation:
     #                       PRIVATE FUNCTIONS                  #
     ############################################################
 
-    def _reset_mesh(self) -> None:
-        gmsh.model.mesh.clear()
+    def _reset_mesh(self, reset_gmsh: bool = True) -> None:
+        if reset_gmsh:
+            gmsh.model.mesh.clear()
         self.mw.reset(_reset_bc=False)
         self.state.reset_mesh()
 
@@ -201,10 +208,12 @@ class Simulation:
 
     @property
     def data(self) -> SimulationDataset:
+        """The simulation dataset of the active state."""
         return self.state.data
 
     @property
     def mesh(self) -> Mesh3D:
+        """The mesh of the active state."""
         return self.state.mesh
 
     def __del__(self):
@@ -299,9 +308,9 @@ class Simulation:
         return self
 
     def _print_summary(self):
-        if DEBUG_COLLECTOR.any_warnings:
+        if _GlobalHandler.active().debugcollector.any_warnings:
             logger.warning("EMerge simulation warnings:")
-        for i, report in DEBUG_COLLECTOR.all_reports():
+        for i, report in _GlobalHandler.active().debugcollector.all_reports():
             logger.warning(f"{i}: {report}")
 
     def _exit_gmsh(self):
@@ -340,20 +349,163 @@ class Simulation:
         logger.trace("Committing temporary geometry.")
         self.state.store_geometry_data()
         logger.trace(f"Parsed geometries = {self.state.current_geo_state}")
-        self.mesher.submit_objects(self.state.current_geo_state)
-        self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
+        self._submit_objects(self.state.current_geo_state)
+        self._add_facetags_to_display()
+
+    def _add_facetags_to_display(self) -> None:
+        """ Adds facetags to the current display."""
+        from collections import defaultdict
+        tag_container = defaultdict(list)
+        for obj in self.state.all3d:
+            for face in obj.all_faces():
+                for tag in face.tags:
+                    tag_container[tag].append(f'{obj.name}<{face.name}>')
+
+        self.display._facetags = {key: ', '.join(names) for key,names in tag_container.items()}
+
+    def _apply_size_scaling(self) -> None:
+        """Applies size scaling factor
+
+
+        Returns:
+            _type_: _description_
+
+        Yields:
+            _type_: _description_
+        """
+        if self._geo_scale_factor == 1.0:
+            return
+        logger.info(f'Applying global size scaling with factor: {self._geo_scale_factor}')
+        # Apply scale factor
+        
+        s = 1/self._geo_scale_factor
+        scale_down_matrix = [
+            s,   0.0, 0.0, 0.0,
+            0.0, s,   0.0, 0.0,
+            0.0, 0.0, s,   0.0,
+            0.0, 0.0, 0.0, 1.0
+        ]
+        # Apply to all nodes in the mesh
+        gmsh.model.mesh.affineTransform(scale_down_matrix)
+
+        for geo in self.all_geos():
+            geo._apply_size_scaling(self._geo_scale_factor)
+
+    def _remove_voids(self):
+        """Subtracting voids from all objects.
+        """
+        from .geo.operations import subtract
+        objects = self.state.all3d
+        voids = [obj for obj in objects if obj._is_void]
+
+        new_objects = []
+        for base_obj in objects:
+            if base_obj._is_void:
+                continue
+
+            for void in voids:
+                logger.debug(f' - Subtracting {void} from {base_obj}')
+                new_obj = subtract(base_obj, void, remove_tool=False)
+                base_obj._become(new_obj)
+        for void in voids:
+            void.remove()
+
+    def _submit_objects(
+            self, objects: GeoObject | list[GeoObject] | list[list[GeoObject]]
+        ) -> None:
+            """Takes al ist of GeoObjects and computes the fragment.
+    
+            Args:
+                objects (GeoObject | list[GeoObject] | list[list[GeoObject]]): The set of GeoObjects
+            """
+            def unpack_lists(_list: Any, collector: list | None = None) -> list[Any]:
+                """Unpack a recursive list of lists"""
+                if collector is None:
+                    collector = []
+                for item in _list:
+                    if isinstance(item, list):
+                        unpack_lists(item, collector)
+                    else:
+                        collector.append(item)
+
+                return collector
+            
+            if not isinstance(objects, list):
+                objects = [
+                    objects,
+                ]
+    
+            objects = unpack_lists(objects)
+            embeddings: list = []
+            gmsh.model.occ.synchronize()
+    
+            final_dimtags = unpack_lists([domain.dimtags for domain in objects])  # type: ignore
+    
+            dom_mapping = dict()
+    
+            for dom in objects:  # type: ignore
+                embeddings.extend(dom._embeddings)  # type: ignore
+                for dt in dom.dimtags:  # type: ignore
+                    dom_mapping[dt] = dom
+    
+            embedding_dimtags = unpack_lists([emb.dimtags for emb in embeddings])
+    
+            tag_mapping: dict[int, dict] = {0: dict(), 1: dict(), 2: dict(), 3: dict()}
+    
+            if len(objects) > 0:  # type: ignore
+                dimtags, output_mapping = gmsh.model.occ.fragment(
+                    final_dimtags, embedding_dimtags
+                )
+                gmsh.model.occ.remove_all_duplicates()
+                for domain, mapping in zip(
+                    final_dimtags + embedding_dimtags, output_mapping
+                ):
+                    tag_mapping[domain[0]][domain[1]] = [o[1] for o in mapping]
+                for dom in objects:  # type: ignore
+                    dom.update_tags(tag_mapping)  # type: ignore
+            else:
+                dimtags = final_dimtags
+    
+            self.mesher.objects = objects  # type: ignore
+    
+            gmsh.model.occ.synchronize()
 
     ############################################################
     #                       PUBLIC FUNCTIONS                  #
     ############################################################
 
-    def ping(self, message: str, channel: str) -> None:
-        """Send a message to a ntfy app channel. Messages are public. Pick a channel name that only you would guess."""
+    def set_scale_factor(self, scale_factor: float) -> None:
+        """Define the scaling factor at which modelling occurs relative to the actual size.
+        The physical mesh will be descaled with 1/factor after meshing.
+
+        For example, if you want to model some object 1000x larger than it really is, the scale factor becomes 1000
+
+        This can be used when modelling tiny structures like bond wires which may trip up GMSH and OpenCASCADE
+
+        Args:
+            scale_factor (float): The modelling size divided by the physical size
+        """
+        self._geo_scale_factor = scale_factor
+        self.mesher._scale = scale_factor
+        msg = """Applying a global scaling is an experimental feature that may break EMerge features.
+        If you run into issues, please contact me through robertfennis@emerge-software.com so that I can resolve any issues."""
+        logger.warning(msg)
+        
+    def ping(self, message: str, channel: str) -> bytes:
+        """Send a message to a ntfy app channel. Messages are public. Pick a channel name that only you would guess.
+
+        Args:
+            message (str): The message to send
+            channel (str): The ntfy channel name
+
+        Returns:
+            bytes: The response of the ntfy server
+        """
         import urllib.request
         import urllib.parse
 
         if channel.lower().strip() == "emerge":
-            DEBUG_COLLECTOR.add_report(
+            _GlobalHandler.active().debugcollector.add_report(
                 "You are using the EMerge ping channel. All pings are public! Everybody can read them who is subscribed to the same channel. This is being broadcast. Please use private channels."
             )
         url = f"https://ntfy.sh/{channel}"
@@ -489,23 +641,16 @@ class Simulation:
         return True
 
     def check_version(self, target_version: str, *, log: bool = False) -> None:
-        """
-        Ensure the script targets an EMerge major.minor compatible with the current runtime.
-
+        """Ensure the script targets an EMerge major.minor compatible with the current runtime.
         Only major.minor is enforced. Patch differences are ignored.
 
-        Parameters
-        ----------
-        target_version : str
-            The EMerge version this script was written for (e.g. "1.4.0" or "1.4").
-        log : bool, optional
-            If True and a `logger` is available, emit a single WARNING with the same
-            message as the exception. Defaults to False.
+        Args:
+            target_version (str): The EMerge version this script was written for (e.g. "1.4.0" or "1.4").
+            log (bool, optional): If True, also emit a single WARNING with the same message as the exception.
+                Defaults to False.
 
-        Raises
-        ------
-        VersionError
-            If the script's target major.minor differs from the running EMerge major.minor.
+        Raises:
+            VersionError: If the script's target major.minor differs from the running EMerge major.minor.
         """
         try:
             from packaging.version import Version as _V
@@ -576,12 +721,20 @@ class Simulation:
         self._hc_active = heatconduction
 
     def activate(self, _indx: int | None = None, **variables) -> Simulation:
-        """Searches for the permutaions of parameter sweep variables and sets the current geometry to the provided set."""
+        """Searches for the permutaions of parameter sweep variables and sets the current geometry to the provided set.
+
+        Returns:
+            Simulation: This simulation object
+        """
         self.state.activate(_indx, **variables)
         return self
 
     def save(self, _force_save: bool = True, screenshot: bool = False) -> None:
-        """Saves the current model in the provided project directory."""
+        """Saves the current model in the provided project directory.
+
+        Args:
+            screenshot (bool, optional): Also save a screenshot of the model as model.png. Defaults to False.
+        """
         # Ensure directory exists
 
         if not self.state.has_been_modified:
@@ -613,7 +766,7 @@ class Simulation:
             try:
                 joblib.dump(dataset, str(data_path))
             except PicklingError as e:
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     'EMerge cannot save python functions. Set the save system to msgpack instead using em.Simulation(..., store_system="msgpack")'
                 )
                 raise e
@@ -654,17 +807,17 @@ class Simulation:
         """Set the loglevel for loguru.
 
         Args:
-            loglevel ('DEBUG','INFO','WARNING','ERROR'): The loglevel
+            loglevel (Literal["DEBUG", "INFO", "WARNING", "ERROR"]): The loglevel
         """
         logger.trace(f"Setting loglevel to {loglevel}")
-        LOG_CONTROLLER.set_std_loglevel(loglevel)
+        _GlobalHandler.active().logcontroller.set_std_loglevel(loglevel)
         if loglevel not in ("TRACE"):
             gmsh.option.setNumber("General.Terminal", 0)
 
     def set_write_log(self) -> None:
         """Adds a file output for the logger."""
         logger.trace(f"Writing log to path = {self.modelpath}")
-        LOG_CONTROLLER.set_write_file(self.modelpath)
+        _GlobalHandler.active().logcontroller.set_write_file(self.modelpath)
 
     def view(
         self,
@@ -698,7 +851,14 @@ class Simulation:
             assigned_materials: (bool, optional): Shows the materials in geometries as assigned per unique domain. Defaults to False
             off_screen: (bool, optional): Only shows off screen (useful for combinations with Screenshot). Defaults to False
         """
+        if not isinstance(selections, (list, set, tuple)) and selections is not None:
+            selections = [selections,]
 
+        # Use GMSH if there are only 3D geometries
+        if len(self.state.all3d) == 0:
+            use_gmsh = True
+        
+        
         def default_if_none(value, default):
             if value is None:
                 return default
@@ -740,6 +900,7 @@ class Simulation:
                         opacity=0.1,
                         label=face_name,
                         selectable_as=face_name,
+                        minimize_opacity=True,
                     )
 
         if selections:
@@ -792,7 +953,7 @@ class Simulation:
         self.mw.bc._cell = cell
         self._cell = cell
         self.mesher.periodic_cell = cell
-        
+
     def set_resolution(self, resolution: float) -> Simulation:
         """Sets the discretization resolution in the various physics interfaces.
 
@@ -805,7 +966,7 @@ class Simulation:
         """
         self.mw.set_resolution(resolution)
 
-    def commit_geometry(self, *geometries: GeoObject | list[GeoObject]) -> None:
+    def commit_geometry(self) -> None:
         """Finalizes and locks the current geometry state of the simulation.
 
         The geometries may be provided (legacy behavior) but are automatically managed in the background.
@@ -817,17 +978,18 @@ class Simulation:
 
         logger.trace(f"Parsed geometries = {self.state.current_geo_state}")
         self.state.manager.self_destruct()
-        self.mesher.submit_objects(self.state.current_geo_state)
+        self._submit_objects(self.state.current_geo_state)
 
         # Cache GMSH properties
         for geo in self.all_geos():
             geo._cache_gmsh()
 
         self.state._geometry_committed = True
-        self.display._facetags = [dt[1] for dt in gmsh.model.get_entities(2)]
+        self._add_facetags_to_display()
 
         if self._mw_active:
-            self.mw._initialize_bcs(None)
+            self.mw._autogenerate_bcs()
+
     def all_geos(self) -> list[GeoObject]:
         """Returns all geometries in a list
 
@@ -852,14 +1014,15 @@ class Simulation:
         """Searches first for an exact match and then the first partial match for the provided geometry name
 
         Args:
-            name (str): _description_
+            name (str): The (partial) geometry name
 
         Returns:
-            GeoObject: _description_
+            GeoObject: The matching geometry
         """
         return self.state.manager.find_geo(name)
 
     def quick_mesh(self) -> None:
+        """Generate a temporary mesh of the uncommitted geometry, used to view the model before generate_mesh() is called."""
         logger.info("Starting quick mesh generation phase.")
 
         self._commit_quick_geometries()
@@ -899,7 +1062,7 @@ class Simulation:
         gmsh.model.occ.synchronize()
 
         logger.info("GMSH Meshing complete!")
-        self.mesh._pre_update(self.mesher._get_periodic_bcs())
+        self.mesh._pre_update(self.mesher._get_periodic_bcs(), 1/self._geo_scale_factor)
         self.mesh.exterior_face_tags = self.mesher.domain_boundary_face_tags
         self.mesh._quick_mesh = True
         logger.trace(" (3) Mesh routine complete")
@@ -934,19 +1097,58 @@ class Simulation:
             gmsh.model.occ.synchronize()
 
         return orphans
-    
-    def generate_mesh(self, regenerate: bool = False) -> None:
+
+    def _check_mesh_consistency(self) -> None:
+        """Raises a MeshError if gmsh returned tetrahedra that reference nodes it does not have.
+
+        gmsh's boundary recovery (Delaunay and HXT 3D algorithms) can insert helper nodes on badly shaped
+        surface meshes and then lose them, leaving dangling node references. Without this check that
+        surfaces later as an unexplained KeyError while reading the mesh.
+        """
+        node_tags = gmsh.model.mesh.get_nodes()[0]
+        _, _, tet_node_tags = gmsh.model.mesh.get_elements(3)
+        if not len(tet_node_tags):
+            return
+        missing = np.setdiff1d(np.unique(tet_node_tags[0]), node_tags)
+        if len(missing) == 0:
+            return
+
+        # Which volumes (and which objects) contain the broken tetrahedra
+        bad_volumes = []
+        for _, vtag in gmsh.model.getEntities(3):
+            _, _, vnodes = gmsh.model.mesh.get_elements(3, vtag)
+            if len(vnodes) and np.isin(vnodes[0], missing).any():
+                bad_volumes.append(vtag)
+        names = sorted({obj.name for obj in self.mesher.objects
+                        for d, t in obj.dimtags if d == 3 and t in bad_volumes})
+
+        logger.error(f"GMSH produced an inconsistent mesh: {len(missing)} node(s) referenced by tetrahedra in "
+                     f"volumes {bad_volumes} do not exist.")
+        _GlobalHandler.active().debugcollector.add_report(
+            f"GMSH produced an inconsistent mesh: tetrahedra in volume(s) {bad_volumes} ({', '.join(names)}) "
+            f"reference {len(missing)} node(s) that do not exist. This happens when the 3D mesher has to repair "
+            "very badly shaped surface triangles, typically long slivers on thin layers or thin conductors when "
+            "the mesh size is much larger than the layer thickness. Possible solutions:\n"
+            "    1. Use the Frontal 3D algorithm, which does not use this repair step:\n"
+            "        model.mesher.set_algorithm(em.Algorithm3D.FRONTAL)\n"
+            "    2. Reduce the mesh size on the thin objects so their surface triangles are better shaped:\n"
+            "        object.max_meshsize = ..."
+        )
+        raise MeshError("GMSH produced an inconsistent mesh (tetrahedra reference missing nodes).")
+
+    def generate_mesh(self, regenerate: bool = False, remove_orphans: bool = False) -> None:
         """Generate the mesh.
         This can only be done after commit_geometry(...) is called and if frequencies are defined.
 
         Args:
-            name (str, optional): The mesh file name. Defaults to "meshname.msh".
+            regenerate (bool, optional): If the mesh should be regenerated, discarding old information
+            remove_orphans (bool, optional): If orphan geometries should be removed.
 
         Raises:
             ValueError: ValueError if no frequencies are defined.
         """
-        logger.info("Starting mesh generation phase.")
-
+        
+        # Check if there is at least one 3D geometry
         if len(self.state.all3d) == 0:
             raise SimulationError("EMerge can only generate meshes of 3D geometries. You need at least one 3D geometry to start the mesh procedure.")
         logger.info("Starting mesh generation phase.")
@@ -982,11 +1184,11 @@ class Simulation:
             # Validity check
             x1, y1, z1, x2, y2, z2 = gmsh.model.getBoundingBox(-1, -1)
             bb_volume = (x2 - x1) * (y2 - y1) * (z2 - z1)
-            wl = 299792458 / self.mw.frequencies[-1]
+            wl = self._geo_scale_factor * 299792458 / self.mw.frequencies[-1]
             Nelem = int(5 * bb_volume / (wl**3))
 
             if Nelem > 100_000 and DEFAULT_SETTINGS.size_check:
-                DEBUG_COLLECTOR.add_report(
+                _GlobalHandler.active().debugcollector.add_report(
                     f"An estimated {Nelem} tetrahedra are required for the bounding box of the geometry. This may imply a simulation domain that is very large."
                     + "To disable this message. Set the .size_check parameter in model.settings to False."
                 )
@@ -1002,14 +1204,11 @@ class Simulation:
             ) ** 0.5
             self.mesher._configure_mesh_size(lambda x: diagmax / 10, 1.0)
 
-        gmsh.model.occ.synchronize()
-        for dim, tag in gmsh.model.getEntities(2):
-            up = gmsh.model.getAdjacencies(2, tag)[0]  # parent volumes
-            if len(up) == 0:
-                logger.debug(f"  Surface {tag} has no parent volume — orphan face!")
-
-        self._cleanup_entities()
+        # Remove orphaned surfaces
+        if remove_orphans:
+            self._cleanup_entities()
         logger.info("Calling GMSH mesher")
+        
         try:
             gmsh.logger.start()
             gmsh.model.mesh.generate(3)
@@ -1023,12 +1222,16 @@ class Simulation:
             print(_GMSH_ERROR_TEXT)
             raise
 
+        self._check_mesh_consistency()
+        self._apply_size_scaling()
         
-        logger.info("GMSH Meshing complete!")
-        self.mesh._pre_update(self.mesher._get_periodic_bcs())
+        
+        self.mesh._pre_update(self.mesher._get_periodic_bcs(), 1/self._geo_scale_factor)
         if self.settings.safe_mode:
             self.mesh.diagnose()
 
+        logger.info(f"GMSH Meshing complete! (◮{self.mesh.n_tets}, ▲{self.mesh.n_tris})")
+        
         self.mesh.exterior_face_tags = self.mesher.domain_boundary_face_tags
         gmsh.model.occ.synchronize()
         self.state.store_geometry_data()
@@ -1108,7 +1311,7 @@ class Simulation:
         logger.trace(f"Writing geometry to {filename}")
         gmsh.write(filename)
 
-    def set_solver(self, solver: EMSolver | Solver):
+    def set_solver(self, solver: EMSolver | Solver) -> Solver:
         """Set a given Solver class instance as the main solver.
         Solvers will be checked on validity for the given problem.
 
@@ -1117,9 +1320,31 @@ class Simulation:
         """
         logger.trace(f"Setting solver to {solver}")
         self.mw.solveroutine.set_solver(solver)
+        return self.get_solver(solver)
 
+    def get_solver(self, solver: EMSolver | Solver) -> Solver | None:
+        """Return the solver of a specific type
+
+        Args:
+            solver (EMSolver | Solver): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        return self.mw.solveroutine.solvers[solver]
+    
     @staticmethod
     def from_simulations(name: str, *sims: Simulation, **kwargs) -> Simulation:
+        """Create a new simulation that combines the states (and data) of other simulations.
+
+        Args:
+            name (str): The name of the new simulation
+            *sims (Simulation): The simulations to combine
+            **kwargs: Passed on to the Simulation constructor
+
+        Returns:
+            Simulation: The combined simulation
+        """
         new = Simulation(name, **kwargs)
         for sim in sims:
             new.state.import_from(sim.state)
@@ -1136,383 +1361,7 @@ class Simulation:
     #                   ADAPTIVE MESH REFINEMENT              #
     ############################################################
 
-    @staticmethod
-    def guess_R(P: float, last_ratio: float = 1.0) -> float:
-        # Coefficients for the refinement ratio calculation.
-
-        a0 = 0.5
-        c0 = 0.85
-        x0 = 12
-        q0 = (1 - a0) * 2 / np.pi
-        b0 = np.tan((c0 - a0) / q0) / x0
-        q0 = (0.8 - a0) * 2 / np.pi
-
-        ratio = a0 + np.arctan(b0 * P) * q0
-        if last_ratio > 1.0:
-            ratio = ratio / 0.9
-        if last_ratio < 1.0:
-            ratio = ratio * 0.9
-
-        return ratio
-
-    @staticmethod
-    def compute_ratio(
-        ratios: np.ndarray, percentages: np.ndarray, P_target: float
-    ) -> float:
-        """
-        Strategy:
-        - n=0: use guess_R(P_target, throttle=1.0)
-        - n=1: use guess_R with throttle 0.5 if last P < target, else 2.0 if last P > 2*target,
-                else keep the same R (already acceptable)
-        - n=2: fit P = a1*(1/R) + a0 and solve for R; fallback to through-origin model if needed
-
-        Returns R_guess in (0, 1].
-        """
-        ratios = np.asarray(ratios, dtype=float)
-        percentages = np.asarray(percentages, dtype=float)
-
-        # Clean
-        n = ratios.size
-
-        # --------------------------------------------------------------------------
-        # N=1 Case
-        # --------------------------------------------------------------------------
-
-        if n == 1:
-            last_ratio = float(ratios[-1])
-            last_percentage = float(percentages[-1])
-
-            if P_target <= last_percentage <= 2.0 * P_target:
-                # Already acceptable
-                return last_ratio * ((1.5 * P_target) / last_percentage) ** 0.2
-
-            if last_percentage > P_target * 2.0:
-                return last_ratio / 0.8
-            else:
-                return last_ratio * 0.8
-
-        # --------------------------------------------------------------------------
-        # N>1 Case
-        # --------------------------------------------------------------------------
-
-        P_target = P_target * 1.5
-        refine_multiplier = 1.0 / ratios
-        change_percentage = percentages
-
-        line = np.polynomial.Polynomial.fit(refine_multiplier, change_percentage, deg=1)
-        b, a = line.convert().coef
-
-        # Use the full linear model only if it gives a sensible result
-        use_origin_model = False
-        if a < 0:
-            logger.debug("Negative growth correlation, reverting to origin model")
-            use_origin_model = True
-        else:
-            mult_target = (P_target - b) / a
-            if mult_target < 1.0:  # R > 1 makes no sense; model is extrapolating badly
-                logger.debug(
-                    "Linear model extrapolates beyond valid range, reverting to origin model"
-                )
-                use_origin_model = True
-            else:
-                Rnew = 1.0 / mult_target
-
-        if use_origin_model:
-            # Through-origin fit: P = a * (1/R), so R = a / P_target
-            a_origin = np.dot(refine_multiplier, change_percentage) / np.dot(
-                refine_multiplier, refine_multiplier
-            )
-            if a_origin > 0:
-                Rnew = a_origin / P_target
-            else:
-                # Last resort: scale last ratio
-                last_ratio = float(ratios[-1])
-                last_percentage = float(percentages[-1])
-                Rnew = last_ratio * (P_target / last_percentage)
-
-        return float(np.clip(Rnew, 0.05, 1.0))  # 0.05 floor, not 1e-6
-
     def adaptive_mesh_refinement(
-        self,
-        max_steps: int = 6,
-        min_refined_passes: int = 1,
-        convergence: float = 0.02,
-        magnitude_convergence: float = 2.0,
-        phase_convergence: float = 180,
-        max_tets: int = 1e6,
-        refinement_ratio: float = 0.60,
-        growth_rate: float = 1.6,
-        minimum_refinement_percentage: float = 20.0,
-        error_field_inclusion_percentage: float = 50.0,
-        minimum_steps: int = 1,
-        frequency: float | list[float] = None,
-        ensure_mesh_growth: bool = False,
-        show_mesh: bool = False,
-    ) -> SimulationDataset:
-        """A beta-version of adaptive mesh refinement.
-
-        Convergence Criteria:
-            (1): max(abs(S[n]-S[n-1]))
-            (2): max(abs(abs(S[n]) - abs(S[n-1])))
-            (3): max(angle(S[n]/S[n-1])) * 180/π
-
-        Args:
-            max_steps (int, optional): The maximum number of refinement steps. Defaults to 6.
-            min_refined_passes (int, optional): The minimum number of refined passes. Defaults to 1.
-            convergence (float, optional): The S-paramerter convergence (1). Defaults to 0.02.
-            magnitude_convergence (float, optional): The S-parameter magnitude convergence (2). Defaults to 2.0.
-            phase_convergence (float, optional): The S-parameter Phase convergence (3). Defaults to 180.
-            refinement_ratio (float, optional): The size reduction of mesh elements by original length. Defaults to 0.60.
-            growth_rate (float, optional): The mesh size growth rate. Defaults to 1.6.
-            minimum_refinement_percentage (float, optional): (DEPRICATED) The minimum mesh size increase . Defaults to 15.0.
-            error_field_inclusion_percentage (float, optional): A percentage of tet elements to be included for refinement. Defaults to 5.0.
-            minimum_steps (int, optional): The minimum number of adaptive steps to execute. Defaults to 1.
-            frequency (float, optional): The refinement frequency. Defaults to None.
-            ensure_mesh_growth (boo, optional): If the mesh generation should restart to ensure that the mesh growth per iteration is met. Defaults to False.
-            show_mesh (bool, optional): If the intermediate meshes should be shown (freezes simulation). Defaults to False
-
-        Returns:
-            SimulationDataset: _description_
-        """
-        from .physics.microwave.adaptive_mesh import (
-            select_refinement_indices,
-            reduce_point_set,
-            compute_convergence,
-            tet_to_node,
-        )
-
-        max_freq = np.max(self.mw.frequencies)
-
-        if frequency is not None:
-            sim_freqs = frequency
-            if isinstance(sim_freqs, float):
-                sim_freqs = [sim_freqs]
-        else:
-            sim_freqs = [max_freq]
-
-        S_matrices: list[list[np.ndarray]] = []
-
-        last_n_tets: int = self.mesh.n_tets
-        logger.info(f"Initial mesh has {last_n_tets} tetrahedra")
-
-        passed = 0
-
-        self.state.stash()
-
-        NF = len(sim_freqs)
-
-        original_ratio = refinement_ratio
-        logger.info("Stating adaptive mesh refinement process...")
-        self.mesher._amrobj.reset()
-        for step in range(1, max_steps + 1):
-            self.data.sim.new(iter_step=step)
-
-            datas = []
-            fields = []
-            Smats = []
-
-            logger.debug("Running frequency simulation.")
-            for sf in sim_freqs:
-                data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
-                datas.append(data)
-                fields.append(data.field[-1])
-                Smats.append(data.scalar[-1].Sp)
-
-            S_matrices.append(Smats)
-
-            if step > minimum_steps:
-                S0s = S_matrices[-2]
-                S1s = S_matrices[-1]
-
-                max_complx = 0
-                max_mag = 0
-                max_phase = 0
-
-                for i in range(NF):
-                    conv_complex, conv_mag, conv_phase = compute_convergence(
-                        S0s[i], S1s[i]
-                    )
-                    max_complx = max(max_complx, conv_complex)
-                    max_mag = max(max_mag, conv_mag)
-                    max_phase = max(max_phase, conv_phase)
-
-                logger.info(
-                    f"Pass {step}: Convergence = {max_complx:.3f}, Mag = {max_mag:.3f}, Phase = {max_phase:.1f} deg"
-                )
-
-                if (
-                    max_complx <= convergence
-                    and max_phase < phase_convergence
-                    and max_mag < magnitude_convergence
-                ):
-                    logger.info(f"Pass {step}: Mesh refinement passed!")
-                    passed += 1
-                else:
-                    passed = 0
-
-            if passed >= min_refined_passes and step > minimum_steps:
-                logger.info(
-                    f"Adaptive mesh refinement successfull with {self.mesh.n_tets} tetrahedra."
-                )
-                break
-
-            # ------------------------------------------------------------------------------------------
-            # Error estimate computation
-            # ------------------------------------------------------------------------------------------
-
-            errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
-            logger.debug(
-                f"Computing error estimates for {self.mesh.n_tets} tetrahedra."
-            )
-            for i in range(NF):
-                error, lengths = fields[i]._solution_quality(solve_ids)
-                errors[:, i] = error
-            error = np.max(errors, axis=1)
-
-            # ------------------------------------------------------------------------------------------
-            # Finding refinement coordinates
-            # ------------------------------------------------------------------------------------------
-
-            logger.debug("Selecting refinement indices.")
-            refine_tet_ids = select_refinement_indices(
-                error, error_field_inclusion_percentage / 100.0
-            )
-            refine_tet_ids = refine_tet_ids[::-1]
-
-            logger.info(
-                f" - Tet refinement percentage = {(refine_tet_ids.shape[0] / self.mesh.n_tets) * 100:.1f} %"
-            )
-            # F1 = (arctan(5*(x-0.5))+pi/2)/pi from 0 to 1
-            # refinement_ratio = (np.arctan(5*(refinement_ratio-0.5))+np.pi/2)/np.pi
-            refinement_ratio = 0.5 * original_ratio + 0.5 * refinement_ratio
-
-            included = np.zeros((self.mesh.n_tets,), dtype=np.bool_)
-            included[refine_tet_ids] = True
-
-            logger.debug(
-                f"Number of refined tetrahedron ids = {refine_tet_ids.shape[0]}"
-            )
-            # Convert the refined tetrahedra to refined nodes
-            coords, sizes = tet_to_node(
-                self.mesh.nodes, self.mesh.tets, lengths, included
-            )
-            logger.debug(f"Number of refinement vertex ids = {coords.shape[1]}")
-            self.mesher._amrobj.add_refinement_points(
-                coords, sizes, refinement_ratio * np.ones_like(sizes)
-            )
-
-            # Try to reduce the point set if there are more than 500 points.
-            if self.mesher._amrobj.npts >= 500 and False:
-                new_ids = reduce_point_set(
-                    self.mesher._amrobj._amr_coords,
-                    growth_rate,
-                    self.mesher._amrobj._amr_sizes,
-                    refinement_ratio,
-                    0.20,
-                )
-                nremoved = self.mesher._amrobj.npts - len(new_ids)
-                logger.info(
-                    f"    Pass {step}: Added {len(sizes) - nremoved} new refinement points with ratio {refinement_ratio}."
-                )
-                self.mesher._amrobj.reduce_set(new_ids)
-
-            logger.debug(f"    Initial refinement ratio: {refinement_ratio}")
-
-            # Fixed refinement
-            self._reset_mesh()
-            self.mesher._amrobj.set_refinement_function(growth_rate, 2.0)
-            self.generate_mesh(True)
-
-            # Growth percentage
-            percentage = (self.mesh.n_tets / last_n_tets - 1) * 100
-            logger.info(
-                f"    Pass {step}: New mesh has {self.mesh.n_tets} (+{percentage:.1f}%) tetrahedra."
-            )
-
-            # #Mesh refinement loop. Only escapes if the mesh refined a certain set percentage.
-            counter = 0
-            refinement_ratios = []
-            refinement_percentages = []
-
-            while ensure_mesh_growth:
-                counter += 1
-                if counter == 10:
-                    logger.warning(
-                        "    More than 10 attempts at reaching the target refinement. Continuing with current."
-                    )
-                    break
-
-                counter += 1
-
-                # Regenerate the mesh
-                self._reset_mesh()
-                self.mesher._amrobj.set_refinement_function(growth_rate, 2.0)
-                self.generate_mesh(True)
-
-                # Growth percentage
-                percentage = (self.mesh.n_tets / last_n_tets - 1) * 100
-                logger.info(
-                    f"    Pass {step}: New mesh has {self.mesh.n_tets} (+{percentage:.1f}%) tetrahedra."
-                )
-
-                # Update the lists
-                refinement_ratios.append(refinement_ratio)
-                refinement_percentages.append(percentage)
-
-                if len(refinement_percentages) >= 2:
-                    if (
-                        abs(refinement_percentages[-2] - refinement_percentages[-1])
-                        == 0.0
-                    ):
-                        logger.warning(
-                            "No refinement realized, decreasing refinment ratio."
-                        )
-                        refinement_ratio = refinement_ratio * 0.5
-                        self.mesher._amrobj.set_ratio(refinement_ratio)
-                        continue
-
-                if percentage < minimum_refinement_percentage or percentage > (
-                    minimum_refinement_percentage * 2
-                ):
-                    refinement_ratio = self.compute_ratio(
-                        refinement_ratios,
-                        refinement_percentages,
-                        minimum_refinement_percentage,
-                    )
-                    logger.info(
-                        f"    Refinement target not reached! New ratio = {refinement_ratio:.3f}"
-                    )
-
-                    if refinement_ratio >= 0.9:
-                        logger.warning(
-                            "Refinement ratio pushed above 0.9... continuing with current percentage."
-                        )
-                        break
-                    self.mesher._amrobj.set_ratio(refinement_ratio)
-                    continue
-
-                break
-
-            last_n_tets = self.mesh.n_tets
-            if show_mesh:
-                self.view(plot_mesh=True, volume_mesh=True)
-
-            if last_n_tets > max_tets:
-                logger.warning(
-                    f"Aborting refinement because the number of tets exceeds the maximum: {last_n_tets}>{max_tets}"
-                )
-                break
-        if passed < min_refined_passes:
-            logger.warning("Adaptive mesh refinement did not converge!")
-
-        if show_mesh:
-            self.view(plot_mesh=True, volume_mesh=True)
-        old = self.state.reload()
-        self.state.store_geometry_data()
-
-        return old
-
-    def adaptive_mesh_refinement_new(
         self,
         max_steps: int = 6,
         min_refined_passes: int = 1,
@@ -1522,66 +1371,119 @@ class Simulation:
         max_tets: int = 1_000_000,
         order: float = 2.0,
         theta: float = 0.5,
-        growth_clamps: float = (0.1, 2.0),
         minimum_steps: int = 1,
         frequency: float | list[float] | None = None,
         show_mesh: bool = False,
+        growth: float | str | list[float] | Callable[[int, dict], float] = 0.3,
+        growth_limits: tuple[float, float] = (0.1, 1.0),
+        max_depth: int = 6,
+        lepp_ratio: float = 0.7,
+        improve_sweeps: int = 3,
+        improve_layers: int = 2,
+        improve_initial: bool = False,
+        improve_global: bool = False,
+        strip_ratio: float = 0,
+        strip_max_growth: float = 2.0,
+        strip_gated: bool = True,
+        project_boundaries: bool = True,
     ) -> SimulationDataset:
-        """The new adaptive pass refinement algorithm designed with help from Claude Code.
+        """Adaptive mesh refinement by local refinement of the existing mesh (AURA).
+
+        Every pass the model is solved, the a-posteriori error is estimated and the mesh is refined
+        locally (longest-edge bisection of the highest-error tetrahedra, followed by flips and
+        smoothing) until it has (1+growth) times as many tetrahedra. All Mesh3D mappings are rebuilt
+        without GMSH. New nodes on curved faces/curves are projected onto a one-time snapshot of the
+        OCC geometry. Periodic face pairs are refined identically, keeping the node ordering consistent.
 
         Args:
-            max_steps (int, optional): The maximum number of converging steps. Quits and proceeds with the solve afterwards. Defaults to 6.
-            min_refined_passes (int, optional): The minimum number of subsequently refined passes. Defaults to 1.
-            convergence (float, optional): The absolute convergence limit for any S-parameter |Sij^(k+1)-Sij^(k)|. Defaults to 0.02.
-            magnitude_convergence (float, optional): An optional convergence limit for only the magnitude |Sij^(k+1)|-|Sij^k|. Defaults to 2.0.
-            phase_convergence (float, optional): An absolute limit for the phase convergence. Defaults to 180.
-            max_tets (int, optional): The maximum number of tets before aborting. Defaults to 1_000_000.
-            order (float, optional): An assumption for the convergence order (minimum 1). Lower values initiates more aggressive tet refinement. Defaults to 2.0.
-            theta (float, optional): Error reduction target. Lower means more reduction between subsequent solves. Defaults to 0.5.
-            growth_clamps (float, optional): Limit to the change in mesh size (shrink/growth). Defaults to (0.1, 2.0).
-            minimum_steps (int, optional): The minimum number of refinement steps. Defaults to 1.
-            frequency (float | list[float] | None, optional): The desired convergence frequency/frequencies. Defaults to None.
-            show_mesh (bool, optional): If the mesh should be shown in between solves. Defaults to False.
+            max_steps: The maximum number of solve passes.
+            min_refined_passes: The number of subsequent passes that must meet the convergence criteria.
+            convergence: The absolute convergence limit for any S-parameter |Sij^(k+1)-Sij^(k)|.
+            magnitude_convergence: Convergence limit for only the magnitude |Sij^(k+1)|-|Sij^k|.
+            phase_convergence: Absolute limit for the phase convergence in degrees.
+            max_tets: The maximum number of tets before aborting.
+            order: Assumed convergence order of the error indicator (minimum 1).
+            theta: Error reduction target used by growth="auto".
+            minimum_steps: The minimum number of refinement steps.
+            frequency: The convergence frequency/frequencies. Defaults to the highest simulation frequency.
+            show_mesh: Show the mesh in between solves.
+            growth: Relative increase of tets per pass: float, per-pass list, "auto" or f(step, info).
+            growth_limits: (min, max) clamp on the growth per pass.
+            max_depth: Maximum number of bisections per pass of a selected tetrahedron.
+            lepp_ratio: Locality of refinement propagation (1.0 = strict longest edge propagation).
+            improve_sweeps: Flip + smoothing sweeps after each refinement (0 disables).
+            improve_layers: Rings of neighbouring old tets around the refined region that are improved too.
+            improve_initial: Run one quality-improvement pass over the whole initial mesh before the first solve.
+            improve_global: Improve the whole mesh after every refinement instead of only the refined region.
+            strip_ratio: Split curve edges along narrow strips (thin traces) until they are at most this many strip
+                widths long, so the strip is not meshed with slivers. 0 disables it.
+            strip_max_growth: Strip regularisation stops once it has grown the tet count by this fraction.
+            strip_gated: Regularise strips in every pass, but only next to high-error tets (default). If False, all
+                narrow strips are regularised once in step 0, before the first solve, regardless of the error.
+            project_boundaries: Project new boundary nodes onto curved geometry.
 
         Returns:
-            SimulationDataset: _description_
+            SimulationDataset: The data set that was stashed before refinement.
         """
+        from .aura import BrepSnapshot
+        from .aura.brep import snapshot_gmsh
+        from .aura.emerge_tools import estimate_growth, growth_for_pass, refine_mesh_step
         from .physics.microwave.adaptive_mesh import compute_convergence
-    
+
         max_freq = np.max(self.mw.frequencies)
         sim_freqs = frequency if frequency is not None else [max_freq]
-        if isinstance(sim_freqs, float):
-            sim_freqs = [sim_freqs]
+        if isinstance(sim_freqs, (float, int)):
+            sim_freqs = [float(sim_freqs)]
         NF = len(sim_freqs)
-    
+
+        if project_boundaries:
+            brep = snapshot_gmsh(scale=1 / self._geo_scale_factor)
+        else:
+            brep = BrepSnapshot.empty()
+        logger.debug(f"Geometry snapshot: {brep.summary()}")
+        periodic = [(bc.face1.tags, bc.face2.tags, np.asarray(bc.dv)) for bc in self.mesher._get_periodic_bcs()]
+
+        initial_strips = strip_ratio > 0 and not strip_gated
+        if improve_initial or initial_strips:
+            # Step 0: global quality pass (+ geometric regularisation of all narrow strips if not gated).
+            logger.info("Step 0: improving the initial mesh...")
+            new_mesh, report = refine_mesh_step(
+                self.mesh,
+                np.zeros(self.mesh.n_tets),
+                brep=brep,
+                growth=0.0,
+                improve_sweeps=max(improve_sweeps, 1),
+                improve_global=improve_initial,
+                strip_ratio=strip_ratio if initial_strips else 0.0,
+                strip_max_growth=strip_max_growth,
+                strip_gated=False,
+                periodic=periodic,
+            )
+            self._install_refined_mesh(new_mesh)
+            logger.info(
+                f"Step 0: {report['n_tets_before']} -> {report['n_tets']} tetrahedra "
+                f"({report['n_strip_splits']} narrow-strip splits, {report['n_surface_flips']} surface flips), "
+                f"quality min {report['q_min_before']:.3f} -> {report['q_min']:.3f}, "
+                f"mean {report['q_mean_before']:.3f} -> {report['q_mean']:.3f}"
+            )
+
         S_matrices: list[list[np.ndarray]] = []
         logger.info(f"Initial mesh has {self.mesh.n_tets} tetrahedra")
         passed = 0
+        last_convergence: float | None = None
         self.state.stash()
-    
-        logger.info("Starting adaptive mesh refinement (full remesh, background field).")
-    
-        self._cleanup_entities()
-    
-        previous_tet_count = self.mesh.n_tets
-        # Tracked across passes to calibrate `order` empirically and to check
-        # whether near-zero growth reflects real convergence or the formula
-        # having gone quiet before the physics actually settled -- see the
-        # debug block below, right after error_current/h_current are computed.
-        previous_rms_error: float | None = None
-        previous_h_repr: float | None = None
-    
+        logger.info(f"Starting adaptive mesh refinement (local refinement, growth={growth!r}).")
+
         for step in range(1, max_steps + 1):
             self.data.sim.new(iter_step=step)
-    
+
             fields, Smats = [], []
-            logger.debug("Running frequency simulation.")
             for sf in sim_freqs:
                 data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
                 fields.append(data.field[-1])
                 Smats.append(data.scalar[-1].Sp)
             S_matrices.append(Smats)
-    
+
             # -------------------------------------------------------------------
             # Convergence check
             # -------------------------------------------------------------------
@@ -1593,142 +1495,78 @@ class Simulation:
                     max_complx = max(max_complx, conv_complex)
                     max_mag = max(max_mag, conv_mag)
                     max_phase = max(max_phase, conv_phase)
-    
                 logger.info(
                     f"Pass {step}: Convergence = {max_complx:.3f}, Mag = {max_mag:.3f}, Phase = {max_phase:.1f} deg"
                 )
-    
+                last_convergence = max_complx
                 if max_complx <= convergence and max_phase < phase_convergence and max_mag < magnitude_convergence:
                     logger.info(f"Pass {step}: Mesh refinement passed!")
                     passed += 1
                 else:
                     passed = 0
-    
+
             if passed >= min_refined_passes and step > minimum_steps:
                 logger.info(f"Adaptive mesh refinement successful with {self.mesh.n_tets} tetrahedra.")
                 break
-    
+
+            if step == max_steps:
+                break
+
             # -------------------------------------------------------------------
-            # Error + current size per tet
+            # Error estimate and local refinement
             # -------------------------------------------------------------------
+            logger.info(f"Pass {step}: computing the a-posteriori error estimate "
+                        f"({self.mesh.n_tets} tetrahedra, {NF} frequency point(s))...")
+            t_est = time.perf_counter()
             errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
-            h_current_per_freq = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
             for i in range(NF):
-                error, h_current = fields[i]._solution_quality(solve_ids)
-                errors[:, i] = error
-                h_current_per_freq[:, i] = h_current
+                errors[:, i], _ = fields[i]._solution_quality(solve_ids)
             error_current = np.max(errors, axis=1)
-            h_current = h_current_per_freq[:, 0]
-    
-            logger.debug(
-                f"h_current: min={h_current.min():.3e}, max={h_current.max():.3e}, "
-                f"NaN={np.isnan(h_current).sum()}, zero={(h_current == 0).sum()}"
+            logger.info(f"Pass {step}: error estimate done in {time.perf_counter() - t_est:.2f} s")
+
+            info = dict(
+                n_tets=self.mesh.n_tets,
+                error=error_current,
+                convergence=last_convergence,
+                auto=estimate_growth(error_current, theta, order),
             )
-            logger.debug(
-                f"error_current: min={error_current.min():.3e}, max={error_current.max():.3e}, "
-                f"NaN={np.isnan(error_current).sum()}, zero={(error_current == 0).sum()}"
+            g = growth_for_pass(growth, step, info, theta, order, growth_limits)
+
+            logger.info(f"Pass {step}: refining the mesh (local refinement, target growth {g:.0%})...")
+            t_ref = time.perf_counter()
+            new_mesh, report = refine_mesh_step(
+                self.mesh,
+                error_current,
+                brep=brep,
+                growth=g,
+                order=order,
+                max_depth=max_depth,
+                lepp_ratio=lepp_ratio,
+                improve_sweeps=improve_sweeps,
+                improve_layers=improve_layers,
+                improve_global=improve_global,
+                strip_ratio=strip_ratio if strip_gated else 0.0,
+                strip_max_growth=strip_max_growth,
+                strip_gated=True,
+                periodic=periodic,
             )
-    
-            # ---------------------------------------------------------------
-            # DEBUG: empirically calibrate `order` from the last two passes'
-            # RMS error and a representative h, and cross-check against
-            # S-parameter convergence -- if growth is collapsing toward zero
-            # WHILE S-params are still moving meaningfully, that's a sign
-            # `order` is set too high (over-damping the size response) rather
-            # than the mesh having genuinely converged.
-            # ---------------------------------------------------------------
-            rms_error = float(np.sqrt(np.mean(error_current**2)))
-            h_repr = float(np.median(h_current))
-    
-            if previous_rms_error is not None and previous_h_repr is not None:
-                log_h_ratio = np.log(previous_h_repr / h_repr)
-                if abs(log_h_ratio) > 1e-12 and previous_rms_error > 0 and rms_error > 0:
-                    order_empirical = np.log(previous_rms_error / rms_error) / log_h_ratio
-                    logger.debug(
-                        f" - empirical order (from passes {step - 1}->{step}): "
-                        f"{order_empirical:.3f}  (currently using order={order})"
-                    )
-                else:
-                    logger.debug(
-                        " - empirical order: undefined this pass (h_repr or rms_error "
-                        "barely changed between passes -- need more spread to calibrate)"
-                    )
-    
-            previous_rms_error = rms_error
-            previous_h_repr = h_repr
-    
-            # -------------------------------------------------------------------
-            # Equidistribution size prediction, per TET.
-            # -------------------------------------------------------------------
-            n_tets = self.mesh.n_tets
-            total_sq_error = np.sum(error_current**2)
-            error_target = np.sqrt(theta * total_sq_error / n_tets)
-    
-            ratio = error_target / np.maximum(error_current, 1e-300)
-            h_new = h_current * ratio ** (1.0 / order)
-    
-            h_new = np.clip(h_new, growth_clamps[0] * h_current, h_current * growth_clamps[1])
-    
-            ratio_applied = h_new / h_current
+            self._install_refined_mesh(new_mesh)
+            logger.info(f"Pass {step}: mesh refinement done in {time.perf_counter() - t_ref:.2f} s")
+
             logger.info(
-                f" - h_new range: min={float(h_new.min())*1000:.4f}mm, "
-                f"max={float(h_new.max())*1000:.4f}mm "
-                f"(theta={theta}, order={order})"
+                f"    Pass {step}: New mesh has {report['n_tets']} tetrahedra "
+                f"(Δ={(report['n_tets'] / report['n_tets_before'] - 1) * 100:.1f}%, target {g:.0%}), "
+                f"quality min {report['q_min']:.3f} mean {report['q_mean']:.3f}"
             )
-            logger.info(
-                f" - applied ratio range: min={float(ratio_applied.min()):.3f}, "
-                f"max={float(ratio_applied.max()):.3f}"
-            )
-    
-            # DEBUG: how many tets are actually pinned at the clamp bounds vs
-            # settled by the formula itself. If this count drops toward zero
-            # at the same time overall growth does, the FORMULA (not the
-            # clamp) has become the limiting factor -- consistent with
-            # `order` being too high rather than genuine convergence.
-            n_at_shrink_clamp = int(np.isclose(ratio_applied, growth_clamps[0], atol=1e-6).sum())
-            n_at_grow_clamp = int(np.isclose(ratio_applied, growth_clamps[1], atol=1e-6).sum())
             logger.debug(
-                f" - clamp hits: {n_at_shrink_clamp}/{n_tets} at shrink bound ({growth_clamps[0]:.1f}x), "
-                f"{n_at_grow_clamp}/{n_tets} at grow bound ({growth_clamps[1]:.1f}x), "
-                f"{n_tets - n_at_shrink_clamp - n_at_grow_clamp}/{n_tets} unclamped"
+                f"    Refinement: {report['n_splits']} edge splits ({report['n_strip_splits']} narrow-strip), "
+                f"{report['n_projected']} projected nodes, "
+                f"flips 2-3/3-2/4-4/5+ {report['n_flip23']}/{report['n_flip32']}/{report['n_flip44']}/{report['n_flip_large']}, "
+                f"{report['n_smoothed']} smoothing moves"
             )
-    
-            # -------------------------------------------------------------------
-            # Scatter per-TET h_new onto NODES (minimum over incident tets) --
-            # set_error_size_field needs per-node data, not per-tet.
-            # -------------------------------------------------------------------
-            nodes = np.asarray(self.mesh.nodes, dtype=np.float64)  # (3, N)
-            tets = np.asarray(self.mesh.tets, dtype=np.int64)      # (4, M)
-    
-            size_at_node = np.full(nodes.shape[1], np.inf, dtype=np.float64)
-            for corner in range(4):
-                np.minimum.at(size_at_node, tets[corner, :], h_new)
-    
-            if np.isinf(size_at_node).any():
-                # Shouldn't happen (every node belongs to at least one tet), but
-                # gmsh needs finite values regardless.
-                size_at_node[np.isinf(size_at_node)] = h_current.max()
-    
-            logger.info(
-                f" - size_at_node range: min={float(size_at_node.min())*1000:.4f}mm, "
-                f"max={float(size_at_node.max())*1000:.4f}mm"
-            )
-    
-            # -------------------------------------------------------------------
-            # Install via the Mesher's own size-field convention, then let the
-            # NORMAL remesh pipeline handle everything else.
-            # -------------------------------------------------------------------
-            self.mesher.clear_error_size_field()
-            self.mesher.set_error_size_field(nodes, tets, size_at_node)
-    
-            self._reset_mesh()
-            self.generate_mesh(regenerate=True)
-    
-            logger.info(f"    Pass {step}: New mesh has {self.mesh.n_tets} tetrahedra (Δ={(self.mesh.n_tets/previous_tet_count-1)*100:.1f}%)")
-            previous_tet_count = self.mesh.n_tets
             if show_mesh:
                 self.view(plot_mesh=True, volume_mesh=True)
-    
+
             if self.mesh.n_tets > max_tets:
                 logger.warning(
                     f"Aborting refinement because the number of tets exceeds the maximum: {self.mesh.n_tets}>{max_tets}"
@@ -1736,395 +1574,67 @@ class Simulation:
                 break
 
         self.mw.reset(_reset_bc=False)
-        self.mesher.clear_error_size_field()
-    
         if passed < min_refined_passes:
             logger.warning("Adaptive mesh refinement did not converge!")
-    
         if show_mesh:
             self.view(plot_mesh=True, volume_mesh=True)
-    
+
         old = self.state.reload()
         self.state.store_geometry_data()
         return old
 
-class SimulationBeta(Simulation):
-    def __post_init__(self):
-        pass
-        # self.mesher.set_algorithm(Algorithm3D.HXT)
-        # logger.debug('Setting mesh algorithm to HXT')
-
-    def __enter__(self) -> SimulationBeta:
-        """This method is depricated with the new atexit system. It still exists for backwards compatibility.
-
-        Returns:
-            SimulationBeta: the SimulationBeta object
-        """
-        return self
-
-    def _reset_mesh(self):
-        gmsh.model.mesh.clear()
+    def _install_refined_mesh(self, mesh: Mesh3D) -> None:
+        """Replace the simulation mesh by a locally refined one and reset mesh-dependent state."""
+        self.state.set_mesh(mesh)
         self.mw.reset(_reset_bc=False)
-        self.state.reset_mesh()
+        if self.settings.safe_mode:
+            self.mesh.diagnose()
+        self.state.store_geometry_data()
 
-    @staticmethod
-    def guess_R(P: float, last_ratio: float = 1.0) -> float:
-        # Coefficients for the refinement ratio calculation.
+    ############################################################
+    #                       SELECTION HELPERS                  #
+    ############################################################
 
-        a0 = 0.5
-        c0 = 0.85
-        x0 = 12
-        q0 = (1 - a0) * 2 / np.pi
-        b0 = np.tan((c0 - a0) / q0) / x0
-        q0 = (0.8 - a0) * 2 / np.pi
-
-        ratio = a0 + np.arctan(b0 * P) * q0
-        if last_ratio > 1.0:
-            ratio = ratio / 0.9
-        if last_ratio < 1.0:
-            ratio = ratio * 0.9
-
-        return ratio
-
-    @staticmethod
-    def compute_ratio(
-        new_point_percentage: float,
-        ratios: np.ndarray,
-        percentages: np.ndarray,
-        P_target: float,
-    ) -> float:
-        """
-        Strategy:
-        - n=0: use guess_R(P_target, throttle=1.0)
-        - n=1: use guess_R with throttle 0.5 if last P < target, else 2.0 if last P > 2*target,
-                else keep the same R (already acceptable)
-        - n=2: fit P = a1*(1/R) + a0 and solve for R; fallback to through-origin model if needed
-
-        Returns R_guess in (0, 1].
-        """
-        ratios = np.asarray(ratios, dtype=float)
-        percentages = np.asarray(percentages, dtype=float)
-
-        # Clean
-        n = ratios.size
-
-        if n == 1:
-            last_R = float(ratios[-1])
-            last_P = float(percentages[-1])
-
-            if P_target <= last_P <= 2.0 * P_target:
-                # Already acceptable
-                return last_R * ((1.5 * P_target) / last_P) ** 0.2
-
-            if last_P > P_target * 2.0:
-                return last_R / 0.8
-            else:
-                return last_R * 0.8
-
-        P_target = P_target * 1.5
-        x = 1.0 / ratios
-        y = percentages
-        dy = y - P_target
-
-        # Indices by side of target
-        idx_lo = np.where(dy < 0)[0]  # below target
-        idx_hi = np.where(dy > 0)[0]  # above target
-        idx_eq = np.where(dy == 0)[0]
-
-        # Exact hit
-        if idx_eq.size > 0:
-            # Return corresponding R (already perfect)
-            R_exact = float(ratios[idx_eq[0]])
-            return float(np.clip(R_exact, 1e-6, 1.0))
-
-        def pick_two(indices, reverse=False):
-            # pick two closest to target among given indices
-            order = np.argsort(np.abs(dy[indices]))
-            if reverse:
-                # when all below, we want the two with largest y (closest from below)
-                order = np.argsort(-y[indices])
-            return indices[order[:2]]
-
-        # Choose two points
-        if idx_lo.size > 0 and idx_hi.size > 0:
-            # Bracket: closest below and closest above
-            i_lo = idx_lo[np.argmin(np.abs(dy[idx_lo]))]
-            i_hi = idx_hi[np.argmin(np.abs(dy[idx_hi]))]
-            i1, i2 = i_lo, i_hi
-        elif idx_lo.size == 0:
-            # All above: take two smallest-above (closest to target)
-            i12 = pick_two(idx_hi)  # by |dy|
-            if i12.size < 2 and idx_hi.size >= 2:
-                i12 = idx_hi[:2]
-            i1, i2 = i12[0], i12[1]
-        elif idx_hi.size == 0:
-            # All below: take two largest-below (closest from below)
-            i12 = pick_two(idx_lo, reverse=True)
-            if i12.size < 2 and idx_lo.size >= 2:
-                i12 = idx_lo[:2]
-            i1, i2 = i12[0], i12[1]
-        else:
-            # Fallback (should not trigger)
-            i1, i2 = 0, 1
-
-        x1, y1 = float(x[i1]), float(y[i1])
-        x2, y2 = float(x[i2]), float(y[i2])
-
-        # Linear solve in y(x): y = y1 + (y2-y1)/(x2-x1) * (x - x1)
-        # Target xt: xt = x1 + (P_target - y1) * (x2 - x1) / (y2 - y1)
-        if abs(y2 - y1) > 1e-16:
-            xt = x1 + (P_target - y1) * (x2 - x1) / (y2 - y1)
-        else:
-            # Degenerate: same y; choose midpoint in x
-            xt = 0.5 * (x1 + x2)
-
-        # Ensure positive xt
-        xt = float(max(xt, 1e-16))
-        R_new = 1.0 / xt
-
-        # Clamp to (0, 1]
-        return float(np.clip(R_new, 1e-6, 1.0))
-
-    def adaptive_mesh_refinement(
-        self,
-        max_steps: int = 6,
-        min_refined_passes: int = 1,
-        convergence: float = 0.02,
-        magnitude_convergence: float = 2.0,
-        phase_convergence: float = 180,
-        max_tets: int = 1e6,
-        refinement_ratio: float = 0.6,
-        growth_rate: float = 1.6,
-        minimum_refinement_percentage: float = 20.0,
-        error_field_inclusion_percentage: float = 50.0,
-        minimum_steps: int = 1,
-        frequency: float | list[float] = None,
-        show_mesh: bool = False,
-    ) -> SimulationDataset:
-        """A beta-version of adaptive mesh refinement.
-
-        Convergence Criteria:
-            (1): max(abs(S[n]-S[n-1]))
-            (2): max(abs(abs(S[n]) - abs(S[n-1])))
-            (3): max(angle(S[n]/S[n-1])) * 180/π
+    def conducting_volumes(self, conductivity_level: float = 1e5) -> DomainSelection:
+        """Returns a selection of all conducting volumes
 
         Args:
-            max_steps (int, optional): The maximum number of refinement steps. Defaults to 6.
-            min_refined_passes (int, optional): The minimum number of refined passes. Defaults to 1.
-            convergence (float, optional): The S-paramerter convergence (1). Defaults to 0.02.
-            magnitude_convergence (float, optional): The S-parameter magnitude convergence (2). Defaults to 2.0.
-            phase_convergence (float, optional): The S-parameter Phase convergence (3). Defaults to 180.
-            refinement_ratio (float, optional): The size reduction of mesh elements by original length. Defaults to 0.75.
-            growth_rate (float, optional): The mesh size growth rate. Defaults to 3.0.
-            minimum_refinement_percentage (float, optional): The minimum mesh size increase . Defaults to 15.0.
-            error_field_inclusion_percentage (float, optional): A percentage of tet elements to be included for refinement. Defaults to 5.0.
-            minimum_steps (int, optional): The minimum number of adaptive steps to execute. Defaults to 1.
-            frequency (float, optional): The refinement frequency. Defaults to None.
-            show_mesh (bool, optional): If the intermediate meshes should be shown (freezes simulation). Defaults to False
+            conductivity_level (float, optional): The conductivity beyond which a domain is considered conducting. Defaults to 1e5.
 
         Returns:
-            SimulationDataset: _description_
+            DomainSelection: The conducting domains
         """
-        from .physics.microwave.adaptive_mesh import (
-            select_refinement_indices,
-            reduce_point_set,
-            compute_convergence,
-            tet_to_node,
-        )
+        tags = []
+        for geo in self.state.all3d:
+            if geo.material.cond >= conductivity_level:
+                tags.extend(geo.tags)
+        
+        return DomainSelection(tags)
 
-        max_freq = np.max(self.mw.frequencies)
+    def conducting_surfaces(self, conductivity_level: float = 1e5) -> FaceSelection:
+        """Returns a face selection for all faces that are considered electrically conducting
 
-        if frequency is not None:
-            sim_freqs = frequency
-            if isinstance(sim_freqs, float):
-                sim_freqs = [sim_freqs]
-        else:
-            sim_freqs = [max_freq]
+        Args:
+            conductivity_level (float, optional): The conductivity beyond which a domain is considered conducting. Defaults to 1e5.
 
-        S_matrices: list[list[np.ndarray]] = []
-
-        last_n_tets: int = self.mesh.n_tets
-        logger.info(f"Initial mesh has {last_n_tets} tetrahedra")
-
-        passed = 0
-
-        self.state.stash()
-
-        NF = len(sim_freqs)
-
-        original_ratio = refinement_ratio
-        logger.info("Stating adaptive mesh refinement process...")
-
-        for step in range(1, max_steps + 1):
-            self.data.sim.new(iter_step=step)
-
-            datas = []
-            fields = []
-            Smats = []
-
-            logger.debug("Running frequency simulation.")
-            for sf in sim_freqs:
-                data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
-                datas.append(data)
-                fields.append(data.field[-1])
-                Smats.append(data.scalar[-1].Sp)
-
-            S_matrices.append(Smats)
-
-            if step > minimum_steps:
-                S0s = S_matrices[-2]
-                S1s = S_matrices[-1]
-
-                max_complx = 0
-                max_mag = 0
-                max_phase = 0
-
-                for i in range(NF):
-                    conv_complex, conv_mag, conv_phase = compute_convergence(
-                        S0s[i], S1s[i]
-                    )
-                    max_complx = max(max_complx, conv_complex)
-                    max_mag = max(max_mag, conv_mag)
-                    max_phase = max(max_phase, conv_phase)
-
-                logger.info(
-                    f"Pass {step}: Convergence = {max_complx:.3f}, Mag = {max_mag:.3f}, Phase = {max_phase:.1f} deg"
-                )
-
-                if (
-                    max_complx <= convergence
-                    and max_phase < phase_convergence
-                    and max_mag < magnitude_convergence
-                ):
-                    logger.info(f"Pass {step}: Mesh refinement passed!")
-                    passed += 1
-                else:
-                    passed = 0
-
-            if passed >= min_refined_passes and step > minimum_steps:
-                logger.info(
-                    f"Adaptive mesh refinement successfull with {self.mesh.n_tets} tetrahedra."
-                )
-                break
-
-            errors = np.empty((self.mesh.n_tets, NF), dtype=np.float64)
-            logger.debug(
-                f"Computing error estimates for {self.mesh.n_tets} tetrahedra."
-            )
-            for i in range(NF):
-                error, lengths = fields[i]._solution_quality(solve_ids)
-                errors[:, i] = error
-            error = np.max(errors, axis=1)
-
-            logger.debug("Selecting refinement indices.")
-            refine_tet_ids = select_refinement_indices(
-                error, error_field_inclusion_percentage / 100
-            )
-            refine_tet_ids = refine_tet_ids[::-1]
-
-            n_refine_points = refine_tet_ids.shape[0]
-            rine_points_percentage = n_refine_points / self.mesh.n_tets * 100
-            original_ratio = 0.75 * original_ratio + 0.25 * refinement_ratio
-            refinement_ratio = original_ratio
-
-            Ratios = []
-            Percentages = []
-
-            included = np.zeros((self.mesh.n_tets,), dtype=np.bool_)
-            included[refine_tet_ids] = True
-
-            coords, sizes = tet_to_node(
-                self.mesh.nodes, self.mesh.tets, lengths, included
-            )
-            self.mesher._amrobj.add_refinement_points(
-                coords, sizes, refinement_ratio * np.ones_like(sizes)
-            )
-
-            new_ids = reduce_point_set(
-                self.mesher._amrobj._amr_coords,
-                growth_rate,
-                self.mesher._amrobj._amr_sizes,
-                refinement_ratio,
-                0.20,
-            )
-
-            nremoved = self.mesher._amrobj.npts - len(new_ids)
-
-            logger.info(
-                f"    Pass {step}: Added {len(sizes) - nremoved} new refinement points with ratio {refinement_ratio}."
-            )
-
-            self.mesher._amrobj.reduce_set(new_ids)
-
-            logger.debug(f"    Initial refinement ratio: {refinement_ratio}")
-
-            # Mesh refinement loop. Only escapes if the mesh refined a certain set percentage.
-            counter = 0
-            while True:
-                counter += 1
-                if counter == 10:
-                    logger.warning(
-                        "    More than 10 attempts at reaching the target refinement. Continuing with current."
-                    )
-                    break
-                counter += 1
-                self._reset_mesh()
-                self.mesher._amrobj.set_refinement_function(growth_rate, 2.0)
-                self.generate_mesh(True)
-                percentage = (self.mesh.n_tets / last_n_tets - 1) * 100
-                logger.info(
-                    f"    Pass {step}: New mesh has {self.mesh.n_tets} (+{percentage:.1f}%) tetrahedra."
-                )
-
-                Ratios.append(refinement_ratio)
-                Percentages.append(percentage)
-
-                if len(Percentages) >= 2:
-                    if abs(Percentages[-2] - Percentages[-1]) == 0.0:
-                        logger.warning(
-                            f"No refinement realized, decreasing refinment ratio."
-                        )
-                        refinement_ratio = refinement_ratio * 0.5
-                        self.mesher._amrobj.set_ratio(refinement_ratio)
-                        continue
-
-                if percentage < minimum_refinement_percentage or percentage > (
-                    minimum_refinement_percentage * 2
-                ):
-                    refinement_ratio = self.compute_ratio(
-                        rine_points_percentage,
-                        Ratios,
-                        Percentages,
-                        minimum_refinement_percentage,
-                    )
-                    logger.info(
-                        f"    Refinement target not reached! New ratio = {refinement_ratio:.3f}"
-                    )
-                    self.mesher._amrobj.set_ratio(refinement_ratio)
-                    if refinement_ratio >= 1.0:
-                        logger.warning(
-                            f"Refinement ratio pushed above 1.0... continuing with current percentage."
-                        )
-                        break
-                    continue
-
-                break
-
-            last_n_tets = self.mesh.n_tets
-            if show_mesh:
-                self.view(plot_mesh=True, volume_mesh=True)
-
-            if last_n_tets > max_tets:
-                logger.warning(
-                    f"Aborting refinement because the number of tets exceeds the maximum: {last_n_tets}>{max_tets}"
-                )
-                break
-        if passed < min_refined_passes:
-            logger.warning("Adaptive mesh refinement did not converge!")
-
-        if show_mesh:
-            self.view(plot_mesh=True, volume_mesh=True)
-        old = self.state.reload()
-        self.state.store_geometry_data()
-
-        return old
+        Returns:
+            FaceSelection: The boundary faces of all conducting (or metal coated) domains
+        """
+        from .attributes import MetalCoating
+        tags = []
+        for geo in self.state.all3d:
+            if ((geo.material.cond.value >= conductivity_level) or
+               (geo.properties.get(MetalCoating) is not None)):
+                
+                tags.extend(geo.boundary().tags)
+            
+        for geo in self.state.all2d:
+            if geo.properties.get(MetalCoating) is not None:
+                tags.extend(geo.tags)
+                continue
+            if geo.material is not None:
+                if geo.material.cond.value > conductivity_level:
+                    tags.extend(geo.tags)
+            
+        return FaceSelection(tags)
+                

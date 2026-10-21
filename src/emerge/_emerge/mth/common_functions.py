@@ -53,7 +53,7 @@ def coax_rin(rout: float,
     """Computes the inner radius given a dielectric constant, outer radius and characteristic impedance
 
     Args:
-        rin (float): The outer radius
+        rout (float): The outer radius
         eps_r (float, optional): The dielectric permittivity. Defaults to 1.
         Z0 (float, optional): The impedance. Defaults to 50.
 
@@ -98,6 +98,10 @@ def dot(A, B):
       - (3, N)      : 3-by-N, treated as N vectors of length 3
       - (N, 3)      : N-by-3, treated as N vectors of length 3
 
+    Args:
+        A (np.ndarray): The first vector(s), shape (3,), (3, N) or (N, 3)
+        B (np.ndarray): The second vector(s), same shape as A
+
     Returns:
       - scalar for (3,)·(3,)
       - (N,) for pairwise dot of N vectors.
@@ -119,6 +123,10 @@ def cross(A, B):
       - (3,)
       - (3, N)
       - (N, 3)
+
+    Args:
+        A (np.ndarray): The first vector(s), shape (3,), (3, N) or (N, 3)
+        B (np.ndarray): The second vector(s), same shape as A
 
     Returns:
       - (3,) for single cross product
@@ -206,3 +214,17 @@ def lumped_element_material(material_name: str,
     
     erf = FreqDependent(matrix=_fer)
     return Material(er=erf, color=color, opacity=opacity, name=material_name)
+
+def uniaxial_tensor(axis: np.ndarray | tuple | Axis, ax_value: complex, plane_value: complex) -> np.ndarray:
+    """Generate a uniaxial tensor for a given axis and an along-axis value and in plane value (normal to the axis)
+
+    Args:
+        axis (np.ndarray | tuple | Axis): The the uniaxial axis
+        ax_value (complex): The value along the axis
+        plane_value (complex): The value normal to the axis
+
+    Returns:
+        np.ndarray: The resultant 3x3 tensor
+    """
+    axis = _parse_axis(axis)
+    return axis.tensor(ax_value, plane_value)

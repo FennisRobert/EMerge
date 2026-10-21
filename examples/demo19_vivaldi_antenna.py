@@ -11,6 +11,9 @@ Additionally, the narrow regions are a perfect opportunity to demonstrate the ef
 
 Due to the wind band nature of this simulation, it might take a while to simulate. 
 
+Additionally, the absorbing boundaries of this model are too close to the model. The reason is
+to constrain RAM consumption on user devices.
+
 The current version will consume up to 9GB of RAM with non SuperLU Solvers.
 
 For ARM MacOS users it is reccommended to install the Accelerate solver using:
@@ -19,7 +22,7 @@ For ARM MacOS users it is reccommended to install the Accelerate solver using:
 """
 
 model = em.Simulation("Vivaldi")
-model.check_version("2.8.9")
+model.check_version("3.0.0")
 
 mm = 0.001  # Millimeter
 g = 0.3 * mm  # Narrow exponential taper slot gap size
@@ -129,18 +132,18 @@ rx, ry = pcbl.load(
 ).xy  # Here we take the X,Y coordinates at the end of our feed line
 
 # Finally we place our stub. We lower is by 0.2mm to make it sit flush with the line due to the rotation.
-pcbl.radial_stub((rx, ry - 0.2), Lstub, stub_ang, (dx, dy), w0=w0)
+pcbl.radial_stub((rx, ry - 0.3), Lstub, stub_ang, (dx, dy), w0=w0)
 
 # Finallly we compile all the polygons into a single metal trace.
 polies = pcbl.compile_paths(merge=True)
 
 # We also create a rectangular region for our lumped port.
-port = pcbl.lumped_port(pcbl.load("pin"))
+port = pcbl.lumped_port(pcbl.load("pin"), 1)
 
 # We manually define the X,Y bounds of the PCB because the vivaldi taper is not part of our PCB itself.
 pcbl.set_bounds(xmin=-25, xmax=70, ymin=-30, ymax=30)
 pcb = pcbl.generate_pcb()  # we generate the PCB delectricum
-ground = pcbl.plane(-th)  # And ground
+ground = pcbl.plane(0)  # And ground
 
 model.view(use_gmsh=True)
 
@@ -161,10 +164,7 @@ abc = airbox.outside()
 
 # The lumped port is defined on the port rectangular region. All the dimensions are automatically stored inside
 # the port geometry object when you create it with the .lumped_port() function so you don't have to pass them!
-model.mw.bc.LumpedPort(port, 1, Z0=50)
 model.mw.bc.AbsorbingBoundary(abc)
-model.mesher.set_pec_face(polies)
-model.mesher.set_pec_face(ground)
 
 model.generate_mesh()
 
@@ -175,7 +175,7 @@ model.adaptive_mesh_refinement(frequency=7e9)
 model.view(plot_mesh=True, volume_mesh=False)  # and view the resultant mesh
 
 # Finally we start our sweep
-data = model.mw.run_sweep(False)
+data = model.mw.run_adaptive_sweep()
 
 # We extract the object that contains all our gritted global parameter simulation data such as the S-parameters
 g = data.scalar.grid
@@ -192,17 +192,18 @@ S_non_reflected = np.sqrt(
 plot_sp(fd, [g.model_S(1, 1, fd), S_non_reflected], labels=["S₁₁", "√(1-|S₁₁|²)"])
 
 # We compute the farfield at 6Ghz
-ff_data = data.field.find(freq=6e9).farfield_2d((1, 0, 0), (0, 0, 1), abc)
+field = data.field.find(freq=6e9)
+ff_data = field.farfield_2d((1, 0, 0), (0, 0, 1), abc)
 plot_ff_polar(
     ff_data.ang, ff_data.normE / em.EISO, dB=True, title="Farfield E-plane @ 6GHz"
 )
 
 # Finally we create a simple field plot.
-ff_data = data.field.find(freq=6e9).farfield_3d(abc)
+ff_data = field.farfield_3d(abc)
 model.display.add_objects(*model.all_geos())
-model.display.add_field(
-    data.field[1].cutplane(0.8 * mm, z=-th * mm / 2).scalar("Ey", "real"),
-    symmetrize=True,
+model.display.animate().add_field(
+    field.current_boundary(model.mw.conducting_surfaces()).scalar("Jsmag", "complex"),
+    cmap='classic', clim_crop_factor=0.2
 )
 model.display.add_farfield3d(
     ff_data, "normE", dB=True, dBfloor=-20, offset=(90 * mm, 0, 0), rmax=40 * mm

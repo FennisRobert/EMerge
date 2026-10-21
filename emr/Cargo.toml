@@ -1,0 +1,27 @@
+[package]
+name = "emr"
+version = "0.1.0"
+edition = "2021"
+description = "EMerge Rust kernels: FEM assembly, interpolation and mesh processing for the EMerge solver"
+license = "GPL-2.0-or-later"
+publish = false
+
+[lib]
+name = "emr"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py310", "num-complex"] }
+numpy = "0.22"
+ndarray = { version = "0.16", features = ["rayon"] }
+num-complex = "0.4"
+rayon = "1.10"
+nalgebra = "0.33"
+
+[build-dependencies]
+pyo3-build-config = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

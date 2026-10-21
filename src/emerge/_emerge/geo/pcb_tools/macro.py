@@ -27,6 +27,13 @@ def rotation_angle(a: tuple[float, float], b: tuple[float, float]) -> float:
     to align with vector b. Positive = CCW, Negative = CW.
     
     a, b: (vx, vy) tuples in the plane.
+
+    Args:
+        a (tuple[float, float]): The (vx, vy) start vector
+        b (tuple[float, float]): The (vx, vy) target vector
+
+    Returns:
+        float: The signed rotation angle in degrees
     """
     ax, ay = a
     bx, by = b
@@ -42,6 +49,13 @@ def rotation_angle(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 @dataclass
 class Instruction:
+    """A single StripPath method call produced by parse_macro.
+
+    Args:
+        instr (str): The StripPath method name
+        args (tuple[int | float, ...]): The positional arguments
+        kwargs (dict[str,float] | None, optional): The keyword arguments. Defaults to None.
+    """
     instr: str
     args: tuple[int | float, ...]
     kwargs: dict[str,float] | None = None
@@ -56,6 +70,16 @@ char_class = ''.join(re.escape(c) for c in symbols)
 pattern = re.compile(rf'([{char_class}])([\d\,\.\-]+)')
 
 def parse_macro(pathstring: str, width: int | float, direction: tuple[float, float]) -> list[Instruction]:
+    """Parse an EMerge macro command string into StripPath instructions (see StripPath.macro for the language).
+
+    Args:
+        pathstring (str): The macro command string
+        width (int | float): The start trace width
+        direction (tuple[float, float]): The start direction
+
+    Returns:
+        list[Instruction]: The StripPath method calls to execute
+    """
     instructions = pattern.findall(pathstring.replace(' ',''))
     
     oi = []

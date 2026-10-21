@@ -18,8 +18,9 @@
 
 # Last Cleanup: 2025-01-01
 from scipy.optimize import minimize
+from scipy.optimize import direct as _direct
 import numpy as np
-from typing import Generator, Callable
+from typing import Generator, Callable, Literal
 from loguru import logger
 
 class _StopMinimize(Exception):
@@ -31,14 +32,40 @@ class OptimizationError(Exception):
 def _null_callback(*args, **kwargs):
     return
 
+# All scipy.optimize.minimize methods are deterministic given identical
+# starting points, bounds and cached function values, so they replay
+# correctly under this optimizer's "raise-and-resume" trick.
+# 'direct' (scipy.optimize.direct - the DIRECT global search algorithm) is
+# also fully deterministic and is supported as a distinct code path below,
+# since it does not take an x0 and is not a valid `method=` for minimize().
+OptimizerMethod = Literal[
+    'Nelder-Mead',
+    'Powell',
+    'CG',
+    'BFGS',
+    'Newton-CG',
+    'L-BFGS-B',
+    'TNC',
+    'COBYLA',
+    'COBYQA',
+    'SLSQP',
+    'trust-constr',
+    'dogleg',
+    'trust-ncg',
+    'trust-exact',
+    'trust-krylov',
+    'direct',
+]
+
 class Optimizer:
     
     def __init__(self):
+        """Create an optimizer without parameters."""
         self.clear_mesh: bool = True
         self.value_cache: dict[np.ndarray, float] = dict()
         self._param_data: list[tuple[str, tuple[float, float, float]]] = []
         self.last_iter: np.ndarray = None
-        self.method: str = 'Powell'
+        self.method: OptimizerMethod = 'Powell'
         self._stop: bool = False
         self.callback: Callable = _null_callback
         self._updated: bool = False
@@ -47,28 +74,56 @@ class Optimizer:
         
     @property
     def bounds(self) -> list[tuple[float, float]]:
+        """The (lower, upper) bounds of all parameters."""
         return [(p[1][1], p[1][2]) for p in self. _param_data]
     
     @property
     def x0(self) -> np.ndarray:
+        """The initial values of all parameters."""
         return np.array([p[1][0] for p in self._param_data])
     
     @property
     def last(self) -> tuple[float, ...]:
+        """The parameter values of the last iteration."""
         return tuple([x for x in self.last_iter])
-    
+
     @property
     def params(self) -> dict[str, float]:
+        """The parameter values of the last iteration by name."""
         return {p[0]: value for p, value in zip(self._param_data, self.last_iter)}
     
-    
+    def print_python(self) -> None:
+        """Print the best parameter values as Python assignments."""
+        for param,value in self.best[0].items():
+            print(f'{param} = {value}')
+
     @property
     def N(self):
+        """The number of evaluated iterations."""
         return len(self.value_cache)
     
     def maximize(self) -> None:
         """ Sets the optimizer to a maximization instead of minimization. """
         self._maximize = True
+
+    def set_method(self, method: OptimizerMethod) -> None:
+        """Set the optimization method used on the next call to .run().
+
+        Accepts any scipy.optimize.minimize method string, or 'direct' for
+        scipy.optimize.direct (the DIRECT global search algorithm).
+
+        Note: 'direct' requires every parameter to have finite lower and
+        upper bounds - it will not accept the open bounds that the local
+        minimize() methods tolerate.
+
+        Args:
+            method: One of 'Nelder-Mead', 'Powell', 'CG', 'BFGS',
+                'Newton-CG', 'L-BFGS-B', 'TNC', 'COBYLA', 'COBYQA', 'SLSQP',
+                'trust-constr', 'dogleg', 'trust-ncg', 'trust-exact',
+                'trust-krylov', or 'direct'.
+        """
+        logger.debug(f'Setting optimization method to {method}')
+        self.method = method
 
     def reset(self):
         """Reset the optimizer state
@@ -87,12 +142,27 @@ class Optimizer:
         """Add a new optimization parameter to the optimizer
 
         Args:
-            name (str): _description_
-            x0 (float): _description_
-            bounds (tuple[float, float], optional): _description_. Defaults to (None, None).
+            name (str): The parameter name
+            x0 (float): The initial value
+            bounds (tuple[float, float], optional): The (lower, upper) bounds. Defaults to (None, None).
         """
         logger.debug(f'Adding {name}={x0} ∈ ({bounds[0]},{bounds[1]})')
         self._param_data.append((name, (x0, bounds[0], bounds[1])))
+
+    def _check_finite_bounds(self) -> None:
+        """Raise a clear error if 'direct' is selected but a bound is open.
+
+        scipy.optimize.direct requires a fully finite bounded box; unlike
+        the local minimize() methods it will not accept None on either side.
+        """
+        for name, (_, lo, hi) in self._param_data:
+            if lo is None or hi is None:
+                raise OptimizationError(
+                    f"Parameter '{name}' has an open bound ({lo}, {hi}). "
+                    "The 'direct' method requires finite lower and upper "
+                    "bounds on every parameter - please supply both when "
+                    "calling add_param()."
+                )
     
     def run(self, max_iter: int = 1_000, clear_mesh: bool = True) -> Generator[tuple[float,...], None, None]:
         """Run an optimization sweep
@@ -114,6 +184,9 @@ class Optimizer:
         Q = 1.0
         if self._maximize:
             Q = -1.0
+
+        if self.method == 'direct':
+            self._check_finite_bounds()
             
         while not self._stop:
             
@@ -127,7 +200,6 @@ class Optimizer:
                 if not self._updated:
                     raise OptimizationError('You must call .update() after each optimization step with the new optimization value.')
                 self._updated = False
-            options = {'maxiter': max_iter,}
             
             success = True
             def f(x):
@@ -138,14 +210,26 @@ class Optimizer:
                 raise _StopMinimize
 
             try:
-                minimize(
-                    f,
-                    self.x0,
-                    method=self.method,
-                    bounds=self.bounds,
-                    options=options,
-                    tol=self.tolerance,
-                )
+                if self.method == 'direct':
+                    # scipy.optimize.direct has no x0 - it deterministically
+                    # partitions the full bounded box, so it is called
+                    # identically on every restart, exactly like minimize()
+                    # is below.
+                    _direct(
+                        f,
+                        bounds=self.bounds,
+                        maxiter=max_iter,
+                    )
+                else:
+                    options = {'maxiter': max_iter,}
+                    minimize(
+                        f,
+                        self.x0,
+                        method=self.method,
+                        bounds=self.bounds,
+                        options=options,
+                        tol=self.tolerance,
+                    )
             except _StopMinimize:
                 success = False
                 pass
@@ -167,20 +251,21 @@ class Optimizer:
         """Call this function to inform the optimizer of the latest result
 
         Args:
-            value (float): _description_
+            value (float): The metric value of the latest iteration
         """
         logger.info(f'Latest iteration metric: {value}')
         self.value_cache[tuple(self.last_iter)] = value
         self._updated = True
 
     def stop(self) -> None:
+        """Stop the optimization after the current iteration."""
         self._stop = True
         
     @property
     def best(self) -> tuple[dict[str, float], float]:
+        """The best parameter values (by name) and the corresponding metric value."""
         if not self._maximize:
             smallest_key = sorted(self.value_cache.keys(), key=lambda x: self.value_cache[x])[0]
         else:
             smallest_key = sorted(self.value_cache.keys(), key=lambda x: self.value_cache[x])[-1]
         return {p[0]: value for p, value in zip(self._param_data, smallest_key)}, self.value_cache[smallest_key]
-    

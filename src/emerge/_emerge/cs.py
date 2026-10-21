@@ -30,6 +30,9 @@ class Axis(Saveable):
     An Axis object always has length 1 and points in some 3D direction.
     By default XAX, YAX, and ZAX are constructed and defined in the global namespace of the
     FEM module.
+
+    Args:
+        vector (np.ndarray): The axis direction (normalized automatically)
     """
 
     vector: np.ndarray
@@ -50,14 +53,17 @@ class Axis(Saveable):
 
     @property
     def tuple(self) -> tuple[float, float, float]:
+        """The axis vector as an (x, y, z) tuple."""
         return (self.x, self.y, self.z)
 
     @property
     def xy(self) -> tuple[float, float]:
+        """The (x, y) components of the axis vector."""
         return (self.x, self.y)
 
     @property
     def neg(self) -> Axis:
+        """The axis pointing in the opposite direction."""
         return Axis(-self.vector)
 
     def __iter__(self):
@@ -115,6 +121,9 @@ class Axis(Saveable):
         """Constructs a coordinate system where this vector is the Z-axis
         and the X and Y axis are normal to this axis but with an arbitrary rotation.
 
+        Args:
+            origin (tuple[float, float, float], optional): The origin of the coordinate system. Defaults to (0.0, 0.0, 0.0).
+
         Returns:
             CoordinateSystem: The resultant coordinate system
         """
@@ -125,6 +134,21 @@ class Axis(Saveable):
         ax2 = self.cross(ax1).neg
         return CoordinateSystem(ax2, ax1, self, np.array(origin))
 
+    def tensor(self, axis_value: complex, plane_value: complex) -> np.ndarray:
+        """Generates a uniaxial (3x3) tensor with an axis value and orthogonal value
+
+        Args:
+            axis_value (complex): _description_
+            plane_value (complex): _description_
+
+        Returns:
+            np.ndarray: _description_
+
+        Yields:
+            Iterator[np.ndarray]: _description_
+        """
+        n = self.np
+        return plane_value*np.eye(3) + (axis_value-plane_value)*np.outer(n,n)
 
 ############################################################
 #                         CONSTANTS                        #
@@ -183,9 +207,12 @@ def argparse_xyz(
     as single arrays, tuples, lists, Axis or Point objects or as separate
     x,y,z float values.
     Args:
-        x (float | np.ndarray | tuple | list | Axis | Point): The x value or entire coordinate
+        x (float | np.ndarray | tuple[float, float, float] | list[float] | Axis | Anchor): The x value or entire coordinate
         y (float | None, optional): The y value. Defaults to None.
         z (float | None, optional): The z value. Defaults to None.
+
+    Returns:
+        tuple[float, float, float]: The (x, y, z) coordinate
     """
     if y is None and z is None:
         if isinstance(x, (float, int, np.floating, np.integer)):
@@ -208,7 +235,12 @@ def argparse_xyz(
 
 @dataclass
 class Plane(Saveable):
-    """A generalization of any plane of inifinite size spanned by two Axis objects."""
+    """A generalization of any plane of inifinite size spanned by two Axis objects.
+
+    Args:
+        uax (Axis): The first in-plane axis
+        vax (Axis): The second in-plane axis (orthogonal to uax)
+    """
 
     uax: Axis
     vax: Axis
@@ -350,6 +382,12 @@ class CoordinateSystem(Saveable):
         yax = (0,1,0)
         zax = (0,0,1)
         origin = (0., 0., 0.) meters
+
+    Args:
+        xax (Axis): The x-axis
+        yax (Axis): The y-axis
+        zax (Axis): The z-axis
+        origin (np.ndarray, optional): The origin. Defaults to (0, 0, 0).
     """
 
     xax: Axis
@@ -371,7 +409,11 @@ class CoordinateSystem(Saveable):
         return f"CS({self.xax}, {self.yax}, {self.zax}, {self.origin})"
 
     def copy(self) -> CoordinateSystem:
-        """Creates a copy of this coordinate system."""
+        """Creates a copy of this coordinate system.
+
+        Returns:
+            CoordinateSystem: A copy of this coordinate system
+        """
         return CoordinateSystem(self.xax, self.yax, self.zax, self.origin)
 
     def flip_z(self) -> None:
@@ -410,7 +452,7 @@ class CoordinateSystem(Saveable):
             axis (tuple | list | np.ndarray | Axis): The rotation axis
             angle (float): The rotation angle (in degrees if degrees = True)
             degrees (bool, optional): Whether to use degrees. Defaults to True.
-            origin (bool, np.array, optional): Whether to rotate the origin as well. Defaults to False.
+            origin (bool | np.ndarray, optional): Whether to rotate the origin as well. Defaults to False.
 
         Returns:
             CoordinateSystem: The new rotated coordinate system
@@ -680,6 +722,8 @@ class Anchor(Saveable):
     that require coordinates. Additionally, they can be used in the .stick()
     method to move anchors of objects aligned with other ancors.
 
+    Args:
+        c0 (np.ndarray): The anchor coordinate
     """
 
     c0: np.ndarray
@@ -759,6 +803,11 @@ class Anchor(Saveable):
         yield self.c0[2]
 
     def as_homogeneous(self) -> np.ndarray:
+        """The anchor as a 4x4 homogeneous transformation matrix.
+
+        Returns:
+            np.ndarray: The matrix with the anchor axes as rotation and its position as translation
+        """
         R = np.column_stack((self._x, self._y, self._z))
         T = np.eye(4)
         T[:3, :3] = R
@@ -766,10 +815,7 @@ class Anchor(Saveable):
         return T
 
     def cs(self) -> CoordinateSystem:
-        """Creates a CoordinateSystem object at this anchor with the given axis as Z-axis.
-
-        Args:
-            axis (tuple | np.ndarray | Axis): The Z-axis direction
+        """Creates a CoordinateSystem object at this anchor.
 
         Returns:
             CoordinateSystem: The resultant CoordinateSystem object.
@@ -777,26 +823,25 @@ class Anchor(Saveable):
         return CoordinateSystem(self._x, self._y, self._z, self.c0)
 
     def compute_affine(self, other: Anchor) -> np.ndarray:
-        """
-        Compute affine transform mapping this anchor to `other`.
-        Returns a 4x4 homogeneous transformation matrix.
+        """Compute affine transform mapping this anchor to `other`.
+
+        Args:
+            other (Anchor): The target anchor
+
+        Returns:
+            np.ndarray: The 4x4 affine transformation matrix that maps this anchor onto `other`
         """
         T_self = self.as_homogeneous()
         T_other = other.as_homogeneous()
         return T_other @ np.linalg.inv(T_self)
 
     def rotate(self, c0, ax, angle):
-        """
-        Rotate self.point and self.axis about axis `ax`, centered at `c0`, by `angle` radians.
+        """Rotate self.point and self.axis about axis `ax`, centered at `c0`, by `angle` radians.
 
-        Parameters
-        ----------
-        c0 : np.ndarray
-            The center of rotation, shape (3,).
-        ax : np.ndarray
-            The axis to rotate around, shape (3,). Need not be unit length.
-        angle : float
-            Rotation angle in radians.
+        Args:
+            c0 (np.ndarray): The center of rotation, shape (3,).
+            ax (np.ndarray): The axis to rotate around, shape (3,). Need not be unit length.
+            angle (float): Rotation angle in radians.
         """
 
         angle = -angle
@@ -840,16 +885,11 @@ class Anchor(Saveable):
         self.c0 = self.c0 + np.array([dx, dy, dz])
 
     def mirror(self, c0: np.ndarray, pln: np.ndarray) -> None:
-        """
-        Reflect self.o and self.n across the plane passing through c0
-        with normal pln.
+        """Reflect self.o and self.n across the plane passing through c0 with normal pln.
 
-        Parameters
-        ----------
-        c0 : np.ndarray
-            A point on the mirror plane, shape (3,).
-        pln : np.ndarray
-            The normal of the mirror plane, shape (3,). Need not be unit length.
+        Args:
+            c0 (np.ndarray): A point on the mirror plane, shape (3,).
+            pln (np.ndarray): The normal of the mirror plane, shape (3,). Need not be unit length.
         """
         # Normalize the plane normal
         k = pln / np.linalg.norm(pln)
@@ -871,15 +911,11 @@ class Anchor(Saveable):
         self._z = self._z - 2 * dist_z * k
 
     def affine_transform(self, M: np.ndarray):
-        """
-        Apply a 4×4 affine transformation matrix to both self.o and self.n.
+        """Apply a 4×4 affine transformation matrix to both self.o and self.n.
 
-        Parameters
-        ----------
-        M : np.ndarray
-            The 4×4 affine transformation matrix.
-            - When applied to a point, use homogeneous w=1.
-            - When applied to a direction/vector, use homogeneous w=0.
+        Args:
+            M (np.ndarray): The 4×4 affine transformation matrix. Points are transformed with homogeneous w=1,
+                directions with w=0.
         """
         # Validate shape
         if M.shape != (4, 4):

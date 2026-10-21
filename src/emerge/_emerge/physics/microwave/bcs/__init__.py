@@ -8,6 +8,7 @@ from .boundary_conditions import (
     SurfaceImpedance,
     ScatteredField,
     BoundaryCondition,
+    Void,
 )
 from .port_bcs import (
     RectangularWaveguide,

@@ -25,16 +25,16 @@ from ...selection import (
     DomainSelection,
     EdgeSelection,
     Selection,
-    encode_data,
 )
 from .... import __version__
 from ...physics.microwave.bcs import PortBC, ModalPort
+from ...physics.microwave.bcs.background_field import BackgroundField
 from ...cs import Anchor
 from ...coord import Line
 from pathlib import Path
 from importlib.resources import files
 
-from emsutil.pyvista import EMergeDisplay, setdefault, cmap_names, _AnimObject
+from emsutil.pyvista import EMergeDisplay, cmap_names, plot_item
 from emsutil import themes
 from emsutil.emdata import EHFieldFF
 
@@ -95,6 +95,16 @@ def _merge(lst: Iterable[GeoObject | Selection]) -> Selection:
         return Selection(all_tags)
 
 
+def _compact_grid(conn: np.ndarray, celltype, nodes: np.ndarray, z_boost: float = 0.0) -> pv.UnstructuredGrid:
+    """Builds a grid from (ncells, nverts) global node indices, keeping only the referenced nodes."""
+    used, local = np.unique(conn, return_inverse=True)
+    local = local.reshape(conn.shape)
+    cells = np.hstack([np.full((conn.shape[0], 1), conn.shape[1]), local])
+    points = nodes[:, used].T.copy()
+    points[:, 2] += z_boost
+    celltypes = np.full(conn.shape[0], celltype, dtype=np.uint8)
+    return pv.UnstructuredGrid(cells, celltypes, points)
+
 def _print_coords(x1, y1, x2, y2, z):
     # ALLOWED PRINT
     print(f"lp = pcb.lumped_port_pts(({x1:.6f},{y1:.6f}),({x2:.6f},{y2:.6f}),{z:.6f})")
@@ -103,7 +113,6 @@ def _print_coords(x1, y1, x2, y2, z):
 class PVDisplay(EMergeDisplay):
     def __post_init__(self, state: SimState):
         self._state: SimState = state
-        self._selector._set_encoder_function(encode_data)
         self._plot.add_key_event("l", self.activate_line_selector)
         self._plot.add_key_event("n", self.activate_point_selector)
         self._selectable_edges = []
@@ -168,20 +177,33 @@ class PVDisplay(EMergeDisplay):
             str: _description_
         """
         return str(Path(files("emerge")) / "_emerge" / "plot" / "pyvista" / filename)
+    
+    def show(self, screenshot: str | None = None, off_screen: bool = False, zoom: float = 1.0):
+        """Shows the Pyvista display.
 
-    def show(self, screenshot: str | None = None, off_screen: bool = False):
-        """Shows the Pyvista display."""
-        logo_path = self._get_emerge_path("EMS_small.png")
-        self._plot.add_logo_widget(
-            logo_path, position=(0.87, 0.87), size=(0.10, 0.10), opacity=1.0
-        )
+        Args:
+            screenshot (str | None, optional): Save a screenshot to this file. Defaults to None.
+            off_screen (bool, optional): Render off screen (no window). Defaults to False.
+            zoom (float, optional): The camera zoom factor. Defaults to 1.0.
+        """
+        
+        """ Set default EMerge logo as logo if none is provided by the theme. """
+        if self.set.theme.logo_path is None:
+            self.set.theme.logo_path = self._get_emerge_path("EMS_small.png")
+        
+        logo_path = self._get_logo_path()
+        if logo_path is not None:
+            self._plot.add_logo_widget(
+                logo_path, position=(0.87, 0.87), size=(0.10, 0.10), opacity=1.0
+            )
+        
         text_actor = self._plot.add_text(
             f"EMerge Version: {__version__}",
-            color="white",
+            color=self.set.theme.text_color,
             font_size=12,
             position="lower_right",
         )
-        super().show(screenshot, off_screen)
+        super().show(screenshot, off_screen, zoom=zoom)
 
     def _add_selectable_points(self) -> None:
         self._clear_selectable_objects()
@@ -212,11 +234,13 @@ class PVDisplay(EMergeDisplay):
             self._plot.remove_actor(obj)
 
     def activate_point_selector(self):
+        """Make the mesh points selectable and turn on the ruler widget."""
         self._add_selectable_points()
         self._ruler.turn_on()
 
     def activate_line_selector(self):
 
+        """Make the edges selectable; clicking an edge prints its tag, vertices, direction and center."""
         def callback(obj):
             if "_seldata" in obj.__dict__:
                 n1, n2, edge_id, center = obj._seldata
@@ -241,6 +265,7 @@ class PVDisplay(EMergeDisplay):
         # self._plot.enable_element_picking(callback, mode='edge', show=True, tolerance=0.02, left_clicking=True, picker='cell')
 
     def clean(self) -> None:
+        """Clear the display state."""
         del self._state
         self._state = None
 
@@ -250,6 +275,7 @@ class PVDisplay(EMergeDisplay):
     ############################################################
     #                       SPECIFIC METHODS                  #
     ############################################################
+
 
     def _register_printer(self):
         self._ruler._call_coords = _print_coords
@@ -267,26 +293,31 @@ class PVDisplay(EMergeDisplay):
         if len(edge_ids) == 0:
             raise ValueError(f"Cannot plot {obj}")
             return None
-        nedges = edge_ids.shape[0]
-        cells = np.zeros((nedges, 3), dtype=np.int64)
-        cells[:, 1:] = self._mesh.edges[:, edge_ids].T
-        cells[:, 0] = 2
-        celltypes = np.full(nedges, fill_value=pv.CellType.CUBIC_LINE, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
-        return pv.UnstructuredGrid(cells, celltypes, points)
+        return _compact_grid(self._mesh.edges[:, edge_ids].T, pv.CellType.CUBIC_LINE, self._mesh.nodes)
 
-    def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid:
+    def mesh_surface(self, surface: FaceSelection) -> pv.UnstructuredGrid | None:
+        """The surface mesh of a face selection as a PyVista grid.
+
+        Args:
+            surface (FaceSelection): The faces
+
+        Returns:
+            pv.UnstructuredGrid | None: The triangle grid, None if the faces have no triangles
+        """
         tris = self._mesh.get_triangles(surface.tags)
-        ntris = tris.shape[0]
-        cells = np.zeros((ntris, 4), dtype=np.int64)
-        cells[:, 1:] = self._mesh.tris[:, tris].T
-        cells[:, 0] = 3
-        celltypes = np.full(ntris, fill_value=pv.CellType.TRIANGLE, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
-        points[:, 2] += self.set.z_boost
-        return pv.UnstructuredGrid(cells, celltypes, points)
+        if tris.shape[0] == 0:
+            return None
+        return _compact_grid(self._mesh.tris[:, tris].T, pv.CellType.TRIANGLE, self._mesh.nodes, self.set.z_boost)
 
     def mesh(self, obj: GeoObject | Selection | Iterable) -> pv.UnstructuredGrid | None:
+        """The mesh of an object as a PyVista grid.
+
+        Args:
+            obj (GeoObject | Selection | Iterable): The object(s) or selection(s)
+
+        Returns:
+            pv.UnstructuredGrid | None: The tetrahedron grid for domains, the triangle grid for faces, otherwise None
+        """
         if isinstance(obj, Iterable):
             obj = _merge(obj)
         else:
@@ -303,8 +334,14 @@ class PVDisplay(EMergeDisplay):
     #                        EMERGE METHODS                    #
     ############################################################
 
+    @plot_item
     def add_anchors(self, anchors: list[Anchor], size: float = 1.0) -> None:
-        """Adds a list of anchors to display in the current view"""
+        """Adds a list of anchors to display in the current view
+
+        Args:
+            anchors (list[Anchor]): The anchors
+            size (float, optional): The length of the drawn anchor axes. Defaults to 1.0.
+        """
         xaxs = [f._x for f in anchors]
         yaxs = [f._y for f in anchors]
         zaxs = [f._z for f in anchors]
@@ -328,19 +365,22 @@ class PVDisplay(EMergeDisplay):
         )
 
     def mesh_volume(self, volume: DomainSelection) -> pv.UnstructuredGrid:
+        """The volume mesh of a domain selection as a PyVista grid.
+
+        Args:
+            volume (DomainSelection): The domains
+
+        Returns:
+            pv.UnstructuredGrid: The tetrahedron grid
+        """
         tets = self._mesh.get_tetrahedra(volume.tags)
-        ntets = tets.shape[0]
-        cells = np.zeros((ntets, 5), dtype=np.int64)
-        cells[:, 1:] = self._mesh.tets[:, tets].T
-        cells[:, 0] = 4
-        celltypes = np.full(ntets, fill_value=pv.CellType.TETRA, dtype=np.uint8)
-        points = self._mesh.nodes.copy().T
-        return pv.UnstructuredGrid(cells, celltypes, points)
+        return _compact_grid(self._mesh.tets[:, tets].T, pv.CellType.TETRA, self._mesh.nodes)
 
     @property
     def _mesh(self) -> Mesh3D:
         return self._state.mesh
 
+    @plot_item
     def add_object(
         self,
         obj: GeoObject | Selection,
@@ -354,22 +394,40 @@ class PVDisplay(EMergeDisplay):
         pbr: bool = True,
         smooth_shading: bool = False,
         selectable_as: str | None = None,
+        minimize_opacity: bool = False,
         *args,
         **kwargs,
     ):
+        """Adds an EMerge object or selection to the plot
 
+        Args:
+            obj (GeoObject | Selection): The object or object selection
+            mesh (bool, optional): If the mesh should be plotted. Defaults to False.
+            volume_mesh (bool, optional): If the mesh (in case mesh=True) should be plotted as a volume mesh (As opposed to surface). Defaults to True.
+            label (bool, optional): If object name labels should be added. Defaults to False.
+            label_text (str | None, optional): Specify a custom label text. Defaults to None.
+            texture (str | None, optional): Selects a surface texture name for rendering. Defaults to None.
+            opacity (float | None, optional): The objects plot opacity. Defaults to None.
+            draw_line (bool, optional): Draw a perimiter line of the geometry edges. Defaults to True.
+            pbr (bool, optional): Turns on physics based rendering in PyVista. Defaults to True.
+            smooth_shading (bool, optional): Turns on Smooth shading of geometries (smoothes out surfaces). Defaults to False.
+            selectable_as (str | None, optional): Make the geometry selectable under a given name. Defaults to None.
+            minimize_opacity (bool, optional): Minimize the provided opacity with the material opacity. Defaults to False.
+        """
         if isinstance(obj, GeoObject):
             if obj._hidden or obj.dim in (0,1):
                 return
 
         mesh_obj = self.mesh(obj)
+        if mesh_obj is None:
+            return
         actor = self._add_obj(
             mesh_obj,
             obj.dim,
             plot_mesh=mesh,
             volume_mesh=volume_mesh,
             metal=obj._metal,
-            opacity=self.parse_opacity(opacity, obj.opacity, minimize=True),
+            opacity=self.parse_opacity(opacity, obj.opacity, minimize=minimize_opacity),
             color=obj.color_str,
             texture=texture,
             allow_pbr=pbr,
@@ -390,8 +448,6 @@ class PVDisplay(EMergeDisplay):
                     pickable=False,
                     show_edges=True,
                 )
-            else:
-                return
 
         if label:
             points = []
@@ -403,7 +459,6 @@ class PVDisplay(EMergeDisplay):
                 else:
                     points.append(self._mesh.dimtag_to_center[(dim, tag)])
                 labels.append(label_text)
-
             self._plot.add_point_labels(
                 points,
                 labels,
@@ -411,20 +466,33 @@ class PVDisplay(EMergeDisplay):
                 shape_color=self.set.theme.label_color,
             )
 
-    def add_objects(self, *objects, opacity: float = None, **kwargs) -> None:
-        """Add a series of objects provided as a list of arguments"""
-        for obj in objects:
-            self.add_object(obj, opacity=opacity, **kwargs)
+    def add_objects(self, *objects, opacity: float | None = None, minimize_opacity: bool = True, **kwargs) -> None:
+        """Add a series of objects provided as a list of arguments
 
-    def populate(self, opacity: float = None, **kwargs) -> None:
+        Args:
+            *objects (GeoObject | Selection): The objects to add
+            opacity (float | None, optional): The objects plot opacity. Defaults to None.
+            minimize_opacity (bool, optional): Minimize the provided opacity with the material opacity. Defaults to True.
+            **kwargs: Passed on to add_object
+        """
+        for obj in objects:
+            self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
+
+    def populate(self, opacity: float | None = None, minimize_opacity: bool = True, skip_air: bool = False, **kwargs) -> None:
         """Populate the view with all objects in your simulation model
 
         Args:
             opacity (float, optional): The max opacity to use for all geometries. Defaults to 1.0.
+            minimize_opacity (bool, optional): If the minimum of the objects natural opacity and true opacity should be chosen. Defaults to True.
+            skip_air: (bool, optional): Do not include air objects in the visualization (skips materials whose name lowercase equals "air")
         """
         for obj in self._state.current_geo_state:
-            self.add_object(obj, opacity=opacity, **kwargs)
+            if obj.material is not None:
+                if obj.material.name.lower() == 'air' and skip_air:
+                    continue
+            self.add_object(obj, opacity=opacity, minimize_opacity=minimize_opacity, **kwargs)
 
+    @plot_item
     def add_scatter(self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
         """Adds a scatter point cloud
 
@@ -434,9 +502,9 @@ class PVDisplay(EMergeDisplay):
             zs (np.ndarray): The Z-coordinate
         """
         cloud = pv.PolyData(np.array([xs, ys, zs]).T)
-        self._data_sets.append(cloud)
         self._plot.add_points(cloud)
 
+    @plot_item
     def add_line(self, line: Line, width: float = 3.0, color: str = "EMERGE-RED"):
         """Adds a Line object to the plot
 
@@ -457,6 +525,7 @@ class PVDisplay(EMergeDisplay):
             line_width=width,
         )
 
+    @plot_item
     def add_portmode(
         self,
         port: PortBC,
@@ -475,7 +544,7 @@ class PVDisplay(EMergeDisplay):
             port (PortBC): The port boundary condition
             dv (tuple[float, float, float], optional): Slight offset to give to the port mode plot. Defaults to (0, 0, 0).
             XYZ (tuple[np.ndarray, np.ndarray, np.ndarray] | None, optional): A set of grid points where to evaluate the modal field vectors. Defaults to None.
-            field ("E","H","gradE","Ez", optional): The field component to plot. Defaults to "E".
+            field (Literal["E", "H", "gradE", "Ez"], optional): The field component to plot. Defaults to "E".
             k0 (float | None, optional): The k0 valow for which to evaluate the mode. Defaults to None.
             cmap (str | None, optional): The colormap to use. Defaults to None.
             mode_number (int | None, optional): The mode number to plot. Defaults to None.
@@ -571,15 +640,59 @@ class PVDisplay(EMergeDisplay):
             self._wrap_plot(grid, scalars=Fnorm.T, opacity=0.8, pickable=False)
 
         Emag = F / np.max(Fnorm.flatten()) * d * 3
-        actor = self._plot.add_arrows(
+        self._plot.add_arrows(
             np.array([xf, yf, zf]).T,
             Emag,
             cmap=cmap,
             color=self.set.theme.parse_color(color),
             show_scalar_bar=False,
         )
-        self._data_sets.append(actor.mapper.dataset)
 
+    @plot_item
+    def add_backgroundfields(self, fields: list[BackgroundField], radius: float) -> None:
+        """Draw the propagation direction and the E and H polarization of background (plane wave) fields.
+
+        Args:
+            fields (list[BackgroundField]): The background fields
+            radius (float): The distance from the origin at which the arrows are drawn
+        """
+        coords = []
+        ks = []
+        Es = []
+        Hs = []
+        for field in fields:
+            E, H, K = field.EHK(0,0,0)
+            R = K/np.linalg.norm(K)
+            p0 = -R*radius
+            coords.append(p0)
+            ks.append(R*radius/10)
+            Es.append(E/np.linalg.norm(E)*radius*0.1)
+            Hs.append(H/np.linalg.norm(H)*radius*0.1)
+
+        xs,ys,zs = zip(*coords)
+        kx,ky,kz = zip(*ks)
+        Ex,Ey,Ez = zip(*Es)
+        Hx,Hy,Hz = zip(*Hs)
+
+        xs = np.array(xs).real
+        ys = np.array(ys).real
+        zs = np.array(zs).real
+        kx = np.array(kx).real
+        ky = np.array(ky).real
+        kz = np.array(kz).real
+        Ex = np.array(Ex).real
+        Ey = np.array(Ey).real
+        Ez = np.array(Ez).real
+        Hx = np.array(Hx).real
+        Hy = np.array(Hy).real
+        Hz = np.array(Hz).real
+        
+        self.add_quiver(xs,ys,zs,kx,ky,kz, color='green')#, color='EMERGE-RED')
+        self.add_quiver(xs,ys,zs,Ex,Ey,Ez, color='red')#, color='EMERGE-BLUE')
+        self.add_quiver(xs,ys,zs,Hx,Hy,Hz, color='blue')#, color='EMERGE-GREEN')
+        
+
+    @plot_item
     def add_farfield3d(
         self,
         farfield_obj: EHFieldFF,
@@ -592,7 +705,21 @@ class PVDisplay(EMergeDisplay):
         rmax: float | None = None,
         offset: tuple[float, float, float] = (0, 0, 0),
         opacity: float | None = None,
+        cmap: cmap_names | None = None,
     ):
+        """Add a 3D farfield surface plot.
+
+        Args:
+            farfield_obj (EHFieldFF): The farfield data (from MWField.farfield_3d)
+            component (Literal["Ex", "Ey", "Ez", "Etheta", "Ephi", "normE", "Erhcp", "Elhcp", "AR"], optional): The field component to plot. Defaults to "normE".
+            quantity (Literal["abs", "real", "imag", "angle"], optional): The quantity of the component to plot. Defaults to "abs".
+            dB (bool, optional): Plot in dB. Defaults to False.
+            dBfloor (float, optional): The dB value that maps to radius 0. Defaults to -30.
+            rmax (float | None, optional): The radius of the maximum value. Defaults to None.
+            offset (tuple[float, float, float], optional): The center of the farfield surface. Defaults to (0, 0, 0).
+            opacity (float | None, optional): The surface opacity. Defaults to None.
+            cmap (cmap_names | None, optional): The colormap. Defaults to None.
+        """
         surfobj = farfield_obj.surfplot(
             component,
             quantity=quantity,
@@ -607,5 +734,249 @@ class PVDisplay(EMergeDisplay):
             clim=surfobj.clim,
             opacity=self.parse_opacity(opacity, "EMERGE-FFSURF"),
             _fieldname=surfobj.name,
+            cmap=cmap,
             **self.set.theme.farfield_3d_kwarg,
         )
+
+    @plot_item
+    def add_particle_lines(
+        self, 
+        lines: list[np.ndarray] | np.ndarray, 
+        tube_radius: float = 0.0001, 
+        cmap: str = 'coolwarm',
+        add_arrows: bool = True,
+        num_arrows: int = 8,
+        arrow_scale: float = 0.003,
+        show_scalar_bar: bool = False
+    ) -> None:
+        """Adds particle trajectories as smooth tubes with gradient coloring and directional arrows.
+
+        Supports (3, N) arrays for arc-length coloring or (4, N) arrays where the 4th row
+        defines custom scalar values (e.g., velocity, Poynting magnitude, time).
+
+        Args:
+            lines (list[np.ndarray] | np.ndarray): The trajectories, e.g. from MWField.trace_poynting_lines
+            tube_radius (float, optional): The tube radius. Defaults to 0.0001.
+            cmap (str, optional): The colormap. Defaults to 'coolwarm'.
+            add_arrows (bool, optional): Add direction arrows along the lines. Defaults to True.
+            num_arrows (int, optional): The number of arrows per line. Defaults to 8.
+            arrow_scale (float, optional): The arrow size. Defaults to 0.003.
+            show_scalar_bar (bool, optional): Show the scalar bar. Defaults to False.
+        """
+        if isinstance(lines, np.ndarray) and lines.ndim == 2:
+            lines = [lines]
+
+        for traj in lines:
+            # Standardize orientation to N rows
+            data = traj.T if traj.shape[0] in (3, 4) else traj
+            n_pts, n_cols = data.shape
+            
+            if n_pts < 2:
+                continue
+
+            # Extract 3D spatial points
+            pts = data[:, :3]
+
+            # Determine scalar values: 4th axis if present, otherwise default to normalized arc length [0, 1]
+            if n_cols >= 4:
+                point_scalars = data[:, 3]
+                point_scalars = np.log10(point_scalars/376)
+                maxval = np.max(np.abs(point_scalars))
+                clim = (-maxval, +maxval)
+            else:
+                point_scalars = np.linspace(0, 1, n_pts)
+                clim = (0,1)
+            # 1. Create base PolyData with attached scalars
+            poly = pv.PolyData(pts)
+            poly.point_data['line_scalars'] = point_scalars
+
+            # Construct smooth spline; PyVista automatically interpolates point_data onto the spline
+            spline_mesh = pv.Spline(pts)
+            spline_mesh.point_data['line_scalars'] = point_scalars
+
+            # Tube filter interpolates point scalars smoothly onto the output surface mesh
+            tube = spline_mesh.tube(radius=tube_radius)
+
+            self._plot.add_mesh(
+                tube, 
+                scalars='line_scalars', 
+                cmap=cmap, 
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+                smooth_shading=True
+            )
+
+            # 2. Add directional glyph arrows along the path
+            if add_arrows and n_pts >= 4:
+                # Subsample points for arrow placement
+                indices = np.linspace(0, n_pts - 2, min(num_arrows, n_pts - 1), dtype=int)
+                arrow_positions = pts[indices]
+
+                # Calculate forward tangent vectors
+                tangents = pts[indices + 1] - arrow_positions
+                norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+                tangents = np.divide(tangents, norms, out=np.zeros_like(tangents), where=norms != 0)
+
+                # Map corresponding custom scalar values to arrows
+                arrow_scalars = point_scalars[indices]
+
+                # Build PolyData & apply vector glyph filter
+                arrow_pd = pv.PolyData(arrow_positions)
+                arrow_pd['tangents'] = tangents
+                arrow_pd['colors'] = arrow_scalars
+
+                glyphs = arrow_pd.glyph(
+                    orient='tangents',
+                    scale=False,
+                    factor=arrow_scale,
+                    geom=pv.Cone(radius=0.4, height=1.0)
+                )
+
+                self._plot.add_mesh(
+                    glyphs, 
+                    scalars='colors', 
+                    cmap=cmap, 
+                    show_scalar_bar=False,
+                    ambient=0.3
+                )
+
+    @plot_item
+    def add_solution_error(
+        self,
+        error_value: np.ndarray,
+        tet_ids: np.ndarray | None = None,
+        mode: Literal["volume", "points", "surface"] = "volume",
+        cmap: str | None = None,
+        log_scale: bool = True,
+        opacity: float | str = "linear",
+        show_scalar_bar: bool = True,
+        clim: tuple[float, float] | None = None,
+        scalar_name: str = "Error",
+        point_size_range: tuple[float, float] | None = None,
+    ) -> None:
+        """Displays a per-tetrahedron error indicator.
+ 
+        Intended for visualizing the output of the adaptive mesh refinement
+        error estimator (compute_error_estimate) -- either the full-domain
+        error field, or just the tets that got flagged for refinement.
+ 
+        Args:
+            error_value (np.ndarray): Error values, one per tetrahedron. If
+                tet_ids is None, this must have length self._mesh.n_tets and
+                is assumed to be given in the same order as self._mesh.tets.
+                If tet_ids is provided, error_value must have the same
+                length as tet_ids, and only those tetrahedra are used.
+            tet_ids (np.ndarray | None, optional): The tetrahedron indices
+                to plot (e.g. the tets with the largest error).
+                Defaults to None (use all tetrahedra).
+            mode (Literal["volume", "points", "surface"], optional): How to render.
+                "volume" does true volumetric rendering with transparency,
+                so interior tets are actually visible through the exterior
+                -- this is almost always what you want for an error plot,
+                since a plain opaque solid ("surface") only ever shows you
+                the outer boundary tets. "points" instead draws one sphere
+                per tet at its centroid, sized AND colored by error, which
+                avoids any transparency/occlusion ambiguity at the cost of
+                losing the continuous solid shape. Defaults to "volume".
+            cmap (str | None, optional): Colormap name. Defaults to the
+                theme's default amplitude colormap.
+            log_scale (bool, optional): If True, colors on a log scale --
+                error estimates commonly span many orders of magnitude and
+                a linear scale usually washes out everything except the
+                single worst tet. Defaults to True.
+            opacity (float | str, optional): For mode="volume", this is
+                pyvista's opacity TRANSFER FUNCTION (e.g. "linear",
+                "sigmoid", or an array), not a single alpha value -- it
+                controls how strongly each error magnitude is allowed to
+                occlude what's behind it. For "points"/"surface" this is a
+                plain 0-1 opacity. Defaults to "linear".
+            show_scalar_bar (bool, optional): Whether to show the color
+                legend. Defaults to True.
+            clim (tuple[float, float] | None, optional): Manual color
+                limits. Defaults to the data's own min/max.
+            scalar_name (str, optional): Label used for the scalar bar.
+                Defaults to "Error".
+            point_size_range (tuple[float, float] | None, optional): Only
+                used for mode="points". Min/max sphere RADIUS in your
+                model's own length units (not fixed on-screen pixels) --
+                the lowest-error tet gets the smaller sphere, the highest
+                gets the larger. Defaults to roughly 2%/8% of the mesh's
+                overall bounding-box diagonal, so it scales sensibly with
+                model size instead of needing manual tuning per model.
+        """
+        error_value = np.asarray(error_value)
+ 
+        if tet_ids is None:
+            tet_ids = np.arange(self._mesh.n_tets)
+        else:
+            tet_ids = np.asarray(tet_ids)
+ 
+        if error_value.shape[0] != tet_ids.shape[0]:
+            raise ValueError(
+                f"error_value length ({error_value.shape[0]}) must match the "
+                f"number of tetrahedra being plotted ({tet_ids.shape[0]}). "
+                "Pass tet_ids explicitly if error_value only covers a subset "
+                "(e.g. only the tets with the largest error)."
+            )
+ 
+        if cmap is None:
+            cmap = self.set.theme.default_amplitude_cmap
+        else:
+            cmap = self.set.theme.parse_cmap_name(cmap)
+ 
+        if mode == "points":
+            centers = self._mesh.centers[:, tet_ids].T  # (ntets, 3)
+            cloud = pv.PolyData(centers)
+            cloud.point_data[scalar_name] = error_value
+ 
+            if point_size_range is None:
+                bbox = self._mesh.nodes.max(axis=1) - self._mesh.nodes.min(axis=1)
+                diag = float(np.linalg.norm(bbox))
+                point_size_range = (0.02 * diag, 0.08 * diag)
+ 
+            plot_values = (
+                np.log10(error_value + np.finfo(float).eps) if log_scale else error_value
+            )
+            norm = (plot_values - plot_values.min()) / (np.ptp(plot_values) + 1e-30)
+            cloud.point_data["_size"] = (
+                point_size_range[0] + norm * (point_size_range[1] - point_size_range[0])
+            )
+ 
+            glyphs = cloud.glyph(scale="_size", geom=pv.Sphere(radius=1.0), orient=False)
+            actor = self._plot.add_mesh(
+                glyphs,
+                scalars=scalar_name,
+                cmap=cmap,
+                opacity=opacity if isinstance(opacity, (int, float)) else 1.0,
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+            )
+            return
+ 
+        # volume / surface modes both need the tet UnstructuredGrid
+        grid = _compact_grid(self._mesh.tets[:, tet_ids].T, pv.CellType.TETRA, self._mesh.nodes)
+        grid.cell_data[scalar_name] = error_value
+ 
+        if mode == "volume":
+            actor = self._plot.add_volume(
+                grid,
+                scalars=scalar_name,
+                cmap=cmap,
+                opacity=opacity,
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+                log_scale=log_scale,  # pyvista's own log-scale handling
+            )
+        else:  # "surface"
+            plot_values = (
+                np.log10(error_value + np.finfo(float).eps) if log_scale else error_value
+            )
+            grid.cell_data[scalar_name] = plot_values
+            actor = self._plot.add_mesh(
+                grid,
+                scalars=scalar_name,
+                cmap=cmap,
+                opacity=opacity if isinstance(opacity, (int, float)) else 1.0,
+                clim=clim,
+                show_scalar_bar=show_scalar_bar,
+            )

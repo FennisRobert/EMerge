@@ -21,6 +21,7 @@ from typing import Literal
 
 class Settings:
     def __init__(self):
+        """The simulation settings with their default values (see the comment under each attribute)."""
         self.mw_2dbc: bool = True
         # Automatically assign 2D boundary conditions based on material properties.
 
@@ -71,7 +72,7 @@ class Settings:
         self.safe_mode: bool = False
         # Executes extra diagnosis checks to ensure a proper matrix problem
 
-        self.qtem_limit: float = 0.05
+        self.qtem_limit: float = 0.1
 
 
 DEFAULT_SETTINGS = Settings()

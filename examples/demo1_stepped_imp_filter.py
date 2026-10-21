@@ -29,20 +29,20 @@ pcbmat = em.Material(er=er, color="#217627", opacity=0.2)
 # We start by creating our simulation object.
 
 model = em.Simulation("SteppedImpedanceFilter")
-model.check_version("2.8.9")  # Checks version compatibility.
+model.check_version("3.0.0")  # Checks version compatibility.
 
 # To accomodate PCB routing we make use of the PCBLayouter class. To use it we need to
 # supply it with a thickness, the desired air-box height, the units at which we supply
 # the dimensions and the PCB material.
 
-layouter = em.geo.PCBNew(th, unit=mil, material=pcbmat, layers=3)
+layouter = em.geo.PCB(th, unit=mil, material=pcbmat, layers=3)
 
 # We will route our PCB using the "method chaining" syntax. First we call the .new() method
 # to start a new trace. This will returna StripPath object on which we may call methods that
 # sequentially constructs our stripline trace. In this case, it is sipmly a sequence of straight
 # sections.
 
-layouter.new(0, 0, W0, (1, 0), z=layouter.z(1)).store("p1").straight(L0, W0).straight(
+layouter.new(0, 0, W0, (1, 0), trace_layer=1).store("p1").straight(L0, W0).straight(
     L1, W1
 ).straight(L2, W2).straight(L3, W3).straight(L2, W2).straight(L1, W1).straight(
     L0, W0
@@ -51,8 +51,8 @@ layouter.new(0, 0, W0, (1, 0), z=layouter.z(1)).store("p1").straight(L0, W0).str
 # Next we generate a wave port surface to use for our simulation. A wave port can be automatically
 # generated for a given stripoline section. To easily reference it we use the .ref() method to
 # recall the sections we created earlier.
-p1 = layouter.modal_port(layouter.load("p1"), height=0)
-p2 = layouter.modal_port(layouter.load("p2"), height=0)
+p1 = layouter.modal_port(layouter.load("p1"), 1, height=0)
+p2 = layouter.modal_port(layouter.load("p2"), 2, height=0)
 
 # Finally we compile the stirpline into a polygon. The compile_paths function will return
 # GeoSurface objects that form the polygon. Additionally, we may turn on the Merge feature
@@ -85,21 +85,15 @@ model.mw.set_frequency_range(0.2e9, 8e9, 41)
 # The growth_rate setting allows us to change how fast the mesh size will recover to the original size.
 
 model.mesher.set_boundary_size(polies, 1.5 * mm)
-model.mesher.set_face_size(p1, 1 * mm)
-model.mesher.set_face_size(p2, 1 * mm)
+model.mesher.set_face_size(p1, 1.0 * mm)
+model.mesher.set_face_size(p2, 1.0 * mm)
 
 # Finally we generate our mesh and view it
-
 model.generate_mesh()
-model.view()
-
-
-# We can now define the modal ports for the in and outputs and set the conductor to PEC.
-port1 = model.mw.bc.ModalPort(p1, 1, modetype="TEM")
-port2 = model.mw.bc.ModalPort(p2, 2, modetype="TEM")
+model.view(bc=True)
 
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
-sol = model.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8)
+sol = model.mw.run_adaptive_sweep()
 
 # Our "sol" variable is of type MWData (Microwave Data). This contains a set of scalar data
 # like S-parameters and field data like the E/H field. The scalar data is in sol.scalar and the
@@ -132,13 +126,16 @@ S21 = gritted_data.model_S(2, 1)
 smith(S11, labels="S11", f=f)
 
 plot_sp(f, [S11, S21], labels=["S11", "S21"], dblim=[-40, 6], logx=True)
-
-field = sol.field.find(freq=5.5e9)
+port1, port2 = model.mw.bc.get_port(1), model.mw.bc.get_port(2)
+field = sol.field.find(freq=5e9)
 model.display.add_object(pcb, opacity=0.1)
 model.display.add_object(polies, opacity=0.5)
 model.display.animate().add_field(
     field.cutplane(0.5 * mm, z=-0.75 * th * mil).scalar("Ez", "complex"),
     symmetrize=True,
+)
+model.display.animate().add_field(
+    field.current_boundary(polies).vector('Js','complex'), cmap='classic', scale='log'
 )
 model.display.add_portmode(port1, k0=field.k0)
 model.display.add_portmode(port2, k0=field.k0)

@@ -43,7 +43,7 @@ lfeed = 100 * mil
 
 # A usual we start our simulation file
 model = em.Simulation("ComblineFilter")
-model.check_version("2.8.9")  # Checks version compatibility.
+model.check_version("3.0.0")  # Checks version compatibility.
 
 # The filter consists of quarter lamba cylindrical pins inside an airbox.
 # First we create the airbox
@@ -107,22 +107,20 @@ model.mw.set_frequency_range(6e9, 8e9, 31)
 model.mw.set_resolution(0.1)
 # To improve simulation quality we refine the faces at the top of the cylinders.
 for stub in stubs:
-    model.mesher.set_boundary_size(box.face("back", tool=stub), 0.25 * mm)
+    model.mesher.set_boundary_size(box.face("back", tool=stub), 0.5 * mm)
 
 
 # We define our modal ports, assign the boundary condition and execute a modal analysis to solve for the
 # coaxial field mode.
 port1 = model.mw.bc.ModalPort(model.select.face.near(-lfeed, 0, h), 1, modetype="TEM")
-port2 = model.mw.bc.ModalPort(
-    model.select.face.near(Lbox + lfeed, 0, h), 2, modetype="TEM"
-)
+port2 = model.mw.bc.ModalPort(model.select.face.near(Lbox + lfeed, 0, h), 2, modetype="TEM")
 
 # Finally we may create our mesh.
 model.generate_mesh()
 model.view()
 
 # At last we can compute the frequency domain study
-data = model.mw.run_sweep(parallel=True)
+data = model.mw.run_adaptive_sweep()
 
 # Next we will use the Vector Fitting algorithm to model our S-parameters with a Rational function
 
@@ -141,10 +139,14 @@ model.display.add_object(feed1out, opacity=0.1)
 model.display.add_portmode(port1)
 model.display.add_portmode(port2)
 outside = box.boundary()
-model.display.add_field(field.boundary(outside).scalar("normE"), opacity=0.4)
-model.display.animate().add_field(
-    field.grid(N=50_000).scalar("Ez", "complex"),
-    symmetrize=True,
-    clim_crop_factor=0.5,
+model.display.animate(72).add_field(
+    field.current_boundary(model.mw.conducting_surfaces()\
+        .below(0.99*b, complete=False)\
+        .behind(-0.48*a)
+    ).scalar("Jsmag","complex"))
+model.display.animate(72).add_field(
+    field.grid(N=100_000).vector("H", "complex"),
+    symmetrize=False, vector_type='cloud'
 )
+
 model.display.show()

@@ -90,7 +90,7 @@ Ks = []
 hphis = []
 
 with em.Simulation("IrisSim") as model_iris:
-    model_iris.check_version("2.8.9")  # Checks version compatibility.
+    model_iris.check_version("3.0.0")  # Checks version compatibility.
 
     for wgap in model_iris.parameter_sweep(True, wgap=wgaps):
         # Define two short waveguide sections separated by iris plate
@@ -145,6 +145,7 @@ cavity_lengths = (
 
 # --- Build and simulate full filter -------------------------------------
 with em.Simulation("FullFilter") as model_final:
+    
     # Input feed section
     feed1 = em.geo.Box(wga, Lfeed, wgb, (-wga / 2, -Lfeed, 0))
     # Create cavities and irises sequentially
@@ -180,7 +181,7 @@ with em.Simulation("FullFilter") as model_final:
     p2 = model_final.mw.bc.RectangularWaveguide(feed2.back, 2)
 
     # Run frequency-domain sweep and extract S-parameters
-    data = model_final.mw.run_sweep(parallel=True, n_workers=3, frequency_groups=9)
+    data = model_final.mw.run_adaptive_sweep()
     grid = data.scalar.grid
     freqs = grid.freq
     fdense = np.linspace(freqs[0], freqs[-1], 2001)
@@ -193,15 +194,18 @@ with em.Simulation("FullFilter") as model_final:
     plot_sp(fdense, [S11, S21], labels=["S11", "S21"])
 
     # Visualize geometry and mode shapes
-    model_final.display.add_object(feed1, opacity=0.1)
-    model_final.display.add_object(feed2, opacity=0.1)
+    model_final.display.add_object(feed1)
+    model_final.display.add_object(feed2)
     for obj in irises + cavities:
-        model_final.display.add_object(obj, opacity=0.1)
+        model_final.display.add_object(obj)
     # Show electric field cut-plane at center frequency
-    cut = data.field.find(freq=f0).cutplane(1 * mm, z=wgb / 2)
+    field = data.field.find(freq=f0)
+    cut = field.grid(N=100_000)
     model_final.display.animate().add_field(
         cut.scalar("Ez", "complex"), symmetrize=True
     )
+    model_final.display.animate(72).add_field(
+        field.current_boundary(model_final.mw.conducting_surfaces().below(wgb/2*0.9, complete=False)).scalar('Jsmag','complex'), cmap='classic')
     model_final.display.add_portmode(p1, k0=data.field.find(freq=f0).k0)
     model_final.display.add_portmode(p2, k0=data.field.find(freq=f0).k0)
-    model_final.display.show()
+    model_final.display.show(zoom=1.6)

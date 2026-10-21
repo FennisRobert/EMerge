@@ -24,10 +24,11 @@ import numpy as np
 from typing import Literal, Callable
 from loguru import logger
 from .adaptive_freq import SparamModel
+from .adaptive_sweep import RationalModel
 from ...cs import Axis, _parse_axis
 from ...selection import FaceSelection, DomainSelection
 from ...geometry import GeoSurface
-from ...mesh3d import Mesh3D
+from ...mesh3d import Mesh3D, SurfaceMesh
 from ...const import MU0
 from ...coord import Line
 from emsutil.emdata import EHField, EHFieldFF, DataStructure
@@ -56,6 +57,10 @@ EMField = Literal[
 ]
 
 
+def _validate_selection(selection: FaceSelection | DomainSelection):
+    if not selection.tags:
+        raise ValueError(f'Selection {selection} has no tags.')
+    
 def arc_on_plane(ref_dir, normal, angle_range_deg, num_points=100):
     """
     Generate theta/phi coordinates of an arc on a plane.
@@ -342,6 +347,17 @@ class Sparam:
 
 @dataclass
 class PortProperties(Saveable):
+    """The properties of a port mode at one frequency.
+
+    Args:
+        port_number (int, optional): The port number. Defaults to -1.
+        k0 (float | None, optional): The free space propagation constant. Defaults to None.
+        beta (float | None, optional): The propagation constant of the port mode. Defaults to None.
+        Z0 (float | complex | None, optional): The port impedance. Defaults to None.
+        Pout (float | None, optional): The port mode power. Defaults to None.
+        mode_number (int, optional): The mode number. Defaults to 1.
+        smat_index (int | float, optional): The S-matrix index of the port mode. Defaults to 1.
+    """
     port_number: int = -1
     k0: float | None = None
     beta: float | None = None
@@ -356,6 +372,7 @@ class MWData(Saveable):
     field: BaseDataset[MWField, None]
 
     def __init__(self):
+        """Container for all microwave simulation results (scalar data, field data and solver reports)."""
         self.scalar = BaseDataset[MWScalar, MWScalarNdim](MWScalar, MWScalarNdim, True)
         self.field = BaseDataset[MWField, None](MWField, None, False)
         self.sim: DataContainer = DataContainer()
@@ -372,7 +389,13 @@ class MWData(Saveable):
         return self
 
     def setreport(self, report, **vars):
-        self.sim.new(**vars)["report"] = report
+        """Store the solver reports for a set of simulation parameters.
+
+        Args:
+            report (list[SolveReport]): The solver reports
+            **vars: The simulation parameter values the reports belong to
+        """
+        self.sim.new(**vars).set_reports(report)
 
     def export_farfields(
         self,
@@ -396,7 +419,7 @@ class MWData(Saveable):
             origin (tuple[float, float, float] | None, optional): An optional array for a radiation origin 
                 used to determine the normal vectors of farfield boundaries if inside vs. outside 
                 is not well defined. Defaults to None.
-            syms ("Ex","Ey","Ez","Hx","Hy","Hz" | None), optional): Optional simulation domain symmetries. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
             precision (int, optional): The number of decimals for the output file. Defaults to 4.
             frequencies (list[float] | None, optional): The frequencies to pick for the output. Defaults to None.
         """
@@ -474,8 +497,38 @@ class _EHSign(Saveable):
         )
 
 
+def _symmetry_factor(syms: list[str]) -> float:
+    """The field scale factor of a model mirrored in len(syms) symmetry planes (normalizes the total input power)."""
+    return (0.5 ** len(syms)) ** 0.5
+
+
+def _mirrored_sources(surface: SurfaceMesh, ehfield: EHField, syms: list[str]):
+    """Yield the (surface, E, H) of every mirror image of the integration surface for the given symmetry planes."""
+    if len(syms) == 1:
+        flip_sets = ((syms[0],),)
+    elif len(syms) == 2:
+        s1, s2 = syms
+        flip_sets = ((s1,), (s2,), (s1, s2))
+    elif len(syms) == 3:
+        s1, s2, s3 = syms
+        flip_sets = ((s1,), (s2,), (s3,), (s1, s2), (s1, s3), (s2, s3), (s1, s2, s3))
+    else:
+        flip_sets = ()
+
+    for flips in flip_sets:
+        surf = surface.copy()
+        ehf = _EHSign()
+        Ef, Hf = ehfield.E.copy(), ehfield.H.copy()
+        for flip in flips:
+            ehf.apply(flip)
+            surf.flip(flip[1])
+        Ef, Hf = ehf.flip_field(Ef, Hf)
+        yield surf, np.array(Ef), np.array(Hf)
+
+
 class MWField(Saveable):
     def __init__(self):
+        """The field solution of a single frequency (and parameter) point."""
         self._der: np.ndarray = None
         self._dur: np.ndarray = None
         self._dsig: np.ndarray = None
@@ -497,9 +550,23 @@ class MWField(Saveable):
         self.er: np.ndarray = None
         self.ur: np.ndarray = None
         self.sig: np.ndarray = None
-        self._rel: bool = False
 
+        self._rel: bool = False
+        self._Sp: np.ndarray | None = None
         self._Texcite: np.ndarray = 1.0
+        self._silent: bool = False
+        self.vars: dict[str, float | complex] = dict()
+
+        # Ports embedded via embed_external_component are marked inactive
+        # here rather than removed -- the port list, _Sp, and _Texcite
+        # always keep their original full size, so port labels are
+        # permanent and never need renumbering or remapping.
+        self._active_ports: set[int | float] | None = None
+        self._cache_surface = None
+        self._cache_mapping: bool = False
+        self._mapping: np.ndarray | None = None
+        self._bstags = None
+        self._bssurf = None
 
     def add_port_properties(
         self,
@@ -511,6 +578,17 @@ class MWField(Saveable):
         Z0: float | complex | None,
         Pout: float,
     ) -> None:
+        """Store the properties of a port mode of this solution.
+
+        Args:
+            port_number (int): The port number
+            mode_number (int): The mode number
+            smat_index (int | float): The S-matrix index of the port mode
+            k0 (float): The free space propagation constant
+            beta (float): The propagation constant of the port mode
+            Z0 (float | complex | None): The port impedance
+            Pout (float): The port mode power
+        """
         self.port_modes.append(
             PortProperties(
                 port_number=port_number,
@@ -524,14 +602,27 @@ class MWField(Saveable):
         )
 
     def add_field_properties(self, field: bf.BackgroundField):
+        """Store a background field used in this solution.
+
+        Args:
+            field (bf.BackgroundField): The background field
+        """
         self.background_fields.append(field)
 
     @property
     def mesh(self) -> Mesh3D:
+        """The mesh of this solution."""
         return self.basis.mesh
 
     @property
+    def cache(self) -> MWField:
+        """This field, with the interpolation point mapping cached for the next evaluations."""
+        self._cache_mapping = True
+        return self
+    
+    @property
     def k0(self) -> float:
+        """The free space propagation constant of this solution."""
         return self.freq * 2 * np.pi / 299792458
 
     @property
@@ -555,7 +646,7 @@ class MWField(Saveable):
             return sum(
                 [
                     self.excitation[mode] * self._fields[mode]
-                    for mode in self.background_fields
+                    for mode in self.background_fields if self.excitation[mode] != 0.0
                 ]
             )
 
@@ -568,22 +659,17 @@ class MWField(Saveable):
         self._rel = True
         return self
 
-    def set_backgroundfield(self, bf) -> None:
-        """ Activate a specific background field"""
-        self.excitations = {key: 0.0 for key in self._fields.keys()}
-        self.excitation[bf] = 1.0
-    
     def backE(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Compute the background E-field at the provided coordinates.
 
         Args:
             x (np.ndarray): An array of X-coordinates
-            y (np.ndarray): An array of X-coordinates
-            z (np.ndarray): An array of X-coordinates
+            y (np.ndarray): An array of Y-coordinates
+            z (np.ndarray): An array of Z-coordinates
             mask (np.ndarray): A binary mask array that tells this funtion on which coordinates to evaluate the field.
 
         Returns:
-            np.ndarray: _description_
+            np.ndarray: The (3, N) background E-field, NaN outside the mask
         """
         out = np.zeros((3, x.shape[0]), dtype=np.complex128)
         out[:, ~mask] = np.nan
@@ -596,12 +682,12 @@ class MWField(Saveable):
 
         Args:
             x (np.ndarray): An array of X-coordinates
-            y (np.ndarray): An array of X-coordinates
-            z (np.ndarray): An array of X-coordinates
+            y (np.ndarray): An array of Y-coordinates
+            z (np.ndarray): An array of Z-coordinates
             mask (np.ndarray): A binary mask array that tells this funtion on which coordinates to evaluate the field.
 
         Returns:
-            np.ndarray: _description_
+            np.ndarray: The (3, N) background H-field, NaN outside the mask
         """
         out = np.zeros((3, x.shape[0]), dtype=np.complex128)
         out[:, ~mask] = np.nan
@@ -611,13 +697,11 @@ class MWField(Saveable):
 
     def set_field_vector(self) -> None:
         """Defines the default excitation coefficients for the current dataset as an excitation of only port 1."""
-        self.excitation = {key: 0.0 for key in self._fields.keys()}
-
         # Freq sweep with ports
         if len(self.port_modes) > 0:
-            self.excitation[self.port_modes[0].smat_index] = 1.0 + 0.0j
+            self.excite_port(self.port_modes[0].port_number)
         elif len(self.background_fields) > 0:
-            self.excitation[self.background_fields[0]] = 1.0 + 0.0j
+            self.set_backgroundfield(self.background_fields[0])
 
     def excite_port(
         self, number: int | float, excitation: complex = 1.0 + 0.0j
@@ -625,24 +709,39 @@ class MWField(Saveable):
         """Excite a single port provided by a given port number
 
         Args:
-            number (int): The port number to excite
-            coefficient (complex): The port excitation. Defaults to 1.0 + 0.0j
+            number (int | float): The port number to excite
+            excitation (complex, optional): The port excitation. Defaults to 1.0 + 0.0j
         """
+        if self._active_ports is not None and number not in self._active_ports:
+            raise KeyError(
+                f"Port {number} has been embedded via embed_external_component "
+                f"and can no longer be excited directly. Active ports: "
+                f"{sorted(self._active_ports)}."
+            )
         self.excitation = {key: 0.0 for key in self._fields.keys()}
         self.excitation[number] = excitation
 
     def set_excitations(self, *excitations: complex) -> None:
         """Set bulk port excitations by an ordered array of excitation coefficients.
 
-        Returns:
-            *complex: A sequence of complex numbers
+        Args:
+            *excitations (complex): The excitation coefficient of each port, in port order.
         """
         self.excitation = {key: 0.0 for key in self._fields.keys()}
         for imode, coeff in enumerate(excitations):
             self.excitation[self.port_modes[imode].smat_index] = coeff
 
+    def set_backgroundfield(self, bf) -> None:
+        """Activate a specific background field
+
+        Args:
+            bf (BackgroundField): The background field to excite (all others are switched off)
+        """
+        self.excitation = {key: 0.0 for key in self._fields.keys()}
+        self.excitation[bf] = 1.0
+
     def combine_ports(self, p1: int, p2: int) -> MWField:
-        """Combines ports p1 and p2 into a cifferential and common mode port respectively.
+        """Combines ports p1 and p2 into a differential and common mode port respectively.
 
         The p1 index becomes the differential mode port
         The p2 index becomes the common mode port
@@ -652,7 +751,7 @@ class MWField(Saveable):
             p2 (int): The second port number
 
         Returns:
-            MWField: _description_
+            MWField: This field object (for method chaining)
         """
 
         fp1 = self._fields[p1]
@@ -663,9 +762,20 @@ class MWField(Saveable):
         return self
 
     def interpolate(
-        self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, usenan: bool = True
+        self, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray, usenan: bool = True, mapping: np.ndarray | None = None
     ) -> EHField:
-        """Interpolate the dataset in the provided xs, ys, zs values"""
+        """Interpolate the dataset in the provided xs, ys, zs values
+
+        Args:
+            xs (np.ndarray): The X-coordinates
+            ys (np.ndarray): The Y-coordinates
+            zs (np.ndarray): The Z-coordinates
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+            mapping (np.ndarray | None, optional): A precomputed point to tetrahedron mapping. Defaults to None.
+
+        Returns:
+            EHField: The field at the provided coordinates
+        """
         # fmt: off
         if isinstance(xs, (float, int, complex)):
             xs = np.array([xs,])
@@ -679,12 +789,22 @@ class MWField(Saveable):
 
         constants = 1 / (-1j * 2 * np.pi * self.freq * (self._dur * MU0))
 
-        logger.info(f"Interpolating {xf.shape[0]} field points")
+        if not self._silent:
+            logger.info(f"Interpolating {xf.shape[0]} field points")
         logger.debug('Finding tet_mapping')
 
-        mapping = self.basis.interpolate_index(
-            xf, yf, zf, usenan=usenan
-        )
+        if mapping is None:
+            if self._cache_mapping:
+                if self._mapping is None:
+                    self._mapping = self.basis.interpolate_index(
+                        xf, yf, zf, usenan=usenan
+                    )
+                mapping = self._mapping
+            else:
+                mapping = self.basis.interpolate_index(
+                        xf, yf, zf, usenan=usenan
+                    )
+                
         logger.debug("Index Interpolation complete")
         Ex, Ey, Ez = self.basis.interpolate(
             self._field, xf, yf, zf, mapping, usenan=usenan
@@ -746,7 +866,16 @@ class MWField(Saveable):
         return error_tet, max_elem_size
 
     def integrate(self, surface: FaceSelection, gqo: int = 4) -> EHField:
-        from ...mth.optimized import generate_int_data_tri
+        """Interpolate the field at the Gauss quadrature points of a surface (deprecated, use int_surf).
+
+        Args:
+            surface (FaceSelection): The integration surface
+            gqo (int, optional): The Gauss quadrature order. Defaults to 4.
+
+        Returns:
+            EHField: The field at the quadrature points, with the areas and weights in its aux data
+        """
+        from emr.mth import generate_int_data_tri
         from ...mth.integrals import gaus_quad_tri
 
         logger.warning("Use int_surf instead!")
@@ -765,18 +894,18 @@ class MWField(Saveable):
 
     def int_surf(
         self, surface: FaceSelection, argument: Callable, gqo: int = 4
-    ) -> EHField:
-        """Performs a surface integral on the provided surface object.
+    ) -> complex | np.ndarray:
+        """Performs a surface integral of a quantity computed from the EM field.
 
         Args:
             surface (FaceSelection): The surface to integrate
-            quantity (Callable): A function that takes an EH field as argument
+            argument (Callable): A function that takes the interpolated EHField and returns the integrand (scalar (N,) or vector (3, N))
             gqo (int, optional): Gauss Quadrature order. Defaults to 4.
 
         Returns:
-            EHField: _description_
+            complex | np.ndarray: The integral, a scalar or a vector (3,) for a vector integrand
         """
-        from ...mth.optimized import generate_int_data_tri
+        from emr.mth import generate_int_data_tri
         from ...mth.integrals import gaus_quad_tri
 
         DPTS = gaus_quad_tri(gqo)
@@ -799,18 +928,19 @@ class MWField(Saveable):
 
     def int_vol(
         self, domain: DomainSelection, argument: Callable, gqo: int = 4
-    ) -> EHField:
-        """Performs a surface integral on the provided surface object.
+    ) -> complex | np.ndarray:
+        """Performs a volume integral of a quantity computed from the EM field.
 
         Args:
-            domain (DomainSelection): The surface to integrate
-            quantity (Callable): A function that takes an EH field as argument
+            domain (DomainSelection): The domain to integrate
+            argument (Callable): A function that takes the interpolated EHField and returns the integrand (scalar (N,) or vector (3, N))
             gqo (int, optional): Gauss Quadrature order. Defaults to 4.
 
         Returns:
-            EHField: _description_
+            complex | np.ndarray: The integral, a scalar or a vector (3,) for a vector integrand
         """
-        from ...mth.optimized import gaus_quad_tet, generate_int_data_tet
+        from ...mth.optimized import gaus_quad_tet
+        from emr.mth import generate_int_data_tet
         # from ...mth.integrals import gaus_quad_tet
 
         DPTS = gaus_quad_tet(gqo)
@@ -833,7 +963,7 @@ class MWField(Saveable):
 
     def int_line(
         self, line: Line | list[tuple[float, float, float]], argument: Callable
-    ) -> EHField:
+    ) -> complex:
         """Performs a line integral on the provided line with the an integral argument.
 
         Args:
@@ -841,7 +971,7 @@ class MWField(Saveable):
             argument (Callable): a function that takes an EMfield and returns a scalar argument. Example lambda x: x.Ex
 
         Returns:
-            EHField: _description_
+            complex: The line integral
         """
         if not isinstance(line, Line):
             x, y, z = zip(*line)
@@ -863,16 +993,17 @@ class MWField(Saveable):
         lumped_element: LumpedElement,
         axis: Axis | tuple[float, float, float] | np.ndarray,
         quantity: Literal["E", "H", "S"] = "E",
-    ) -> float:
+    ) -> complex:
         """Performs a voltage integration of a lumped element.
         It needs an integration direction axis to work.
 
         Args:
             lumped_element (LumpedElement): The lumped element object.
-            axis (Axis | tuple[float,float,float]): The integration axis direction
+            axis (Axis | tuple[float, float, float] | np.ndarray): The integration axis direction
+            quantity (Literal["E", "H", "S"], optional): The field quantity to integrate along the axis. Defaults to "E".
 
         Returns:
-            float: _description_
+            complex: The integral (voltage for "E") averaged over all integration lines
         """
         logger.debug(" - Finding Lumped Element integration points")
         field_axis = _parse_axis(axis).np
@@ -909,7 +1040,14 @@ class MWField(Saveable):
         return sum(voltages) / len(voltages)
 
     def boundary(self, selection: FaceSelection) -> EHField:
-        """Interpolate the field on the node coordinates of the surface."""
+        """Interpolate the field on the node coordinates of the surface.
+
+        Args:
+            selection (FaceSelection): The surface
+
+        Returns:
+            EHField: The field on the surface nodes
+        """
         boundary = self.mesh.boundary_surface(selection.tags)
         x = boundary.nodes[0, :]
         y = boundary.nodes[1, :]
@@ -920,59 +1058,171 @@ class MWField(Saveable):
         ehfield.structure = DataStructure.TRISURF
         return ehfield
 
-    def current_boundary(self, selection: FaceSelection) -> EHField:
-        """Interpolate the field on the node coordinates of the surface."""
+    def current_boundary(
+        self,
+        selection: FaceSelection,
+        eps: float = 1e-6,
+        n_samples: int = 3,
+    ) -> EHField:
+        """Estimate surface current density on a boundary.
+
+        Uses:
+            Js = n x (H_plus - H_minus)
+
+        evaluated at triangle centers using small offsets along the face normal.
+        Triangle currents are projected onto the tangent plane and transferred
+        to nodes using area-weighted averaging.
+
+        Args:
+            selection (FaceSelection): The boundary surface
+            eps (float, optional): The offset distance along the face normal at which H is sampled on both sides. Defaults to 1e-6.
+            n_samples (int, optional): The number of offsets (between 0.75 and 1.25 eps) averaged per side. Defaults to 3.
+
+        Returns:
+            EHField: The field with the estimated surface current density
+        """
+        _validate_selection(selection)
         boundary = self.mesh.boundary_surface(selection.tags)
-        ns = boundary.normals
-        cs = (
-            boundary.nodes[:, boundary.tris[0, :]]
-            + boundary.nodes[:, boundary.tris[1, :]]
-            + boundary.nodes[:, boundary.tris[2, :]]
-        ) / 3
 
-        nx = ns[0, :]
-        ny = ns[1, :]
-        nz = ns[2, :]
-        cx = cs[0, :]
-        cy = cs[1, :]
-        cz = cs[2, :]
+        tris = boundary.tris
+        nodes = boundary.nodes
+        ns = boundary.normals.astype(float, copy=False)
 
-        eps = 1e-6
+        # Normalize face normals.
+        nmag = np.linalg.norm(ns, axis=0)
+        nmag[nmag == 0.0] = 1.0
+        ns = ns / nmag[None, :]
 
-        ehfield_1 = self.interpolate(cx - nx * eps, cy - ny * eps, cz - nz * eps, False)
-        ehfield_2 = self.interpolate(cx + nx * eps, cy + ny * eps, cz + nz * eps, False)
+        # Triangle vertices.
+        p0 = nodes[:, tris[0, :]]
+        p1 = nodes[:, tris[1, :]]
+        p2 = nodes[:, tris[2, :]]
 
-        dHx = ehfield_2.Hx - ehfield_1.Hx
-        dHy = ehfield_2.Hy - ehfield_1.Hy
-        dHz = ehfield_2.Hz - ehfield_1.Hz
+        # Triangle centers.
+        cs = (p0 + p1 + p2) / 3.0
 
-        Jsx = ny * dHz - nz * dHy
-        Jsy = nz * dHx - nx * dHz
-        Jsz = nx * dHy - ny * dHx
+        # Triangle areas.
+        cross = np.cross((p1 - p0).T, (p2 - p0).T).T
+        areas = 0.5 * np.linalg.norm(cross, axis=0)
 
-        Jst = np.array([Jsx, Jsy, Jsz])
+        # Estimate H jump. Averaging over several offsets usually gives
+        # less noisy results than relying on one exact epsilon.
+        dH = np.zeros((3, boundary.n_tris), dtype=np.complex128)
 
-        Js = np.zeros_like(boundary.nodes, dtype=np.complex128)
-        Js_counter = np.zeros((boundary.n_nodes,), dtype=np.int8)
+        offsets = eps * np.linspace(0.75, 1.25, n_samples)
 
-        ehfield = self.interpolate(
-            boundary.nodes[0, :], boundary.nodes[1, :], boundary.nodes[2, :], False
-        )
+        for offset in offsets:
+            p_minus = cs - ns * offset
+            p_plus = cs + ns * offset
+
+            h_minus = self.interpolate(
+                p_minus[0],
+                p_minus[1],
+                p_minus[2],
+                False,
+            )
+
+            h_plus = self.interpolate(
+                p_plus[0],
+                p_plus[1],
+                p_plus[2],
+                False,
+            )
+
+            dH += np.vstack(
+                (
+                    h_plus.Hx - h_minus.Hx,
+                    h_plus.Hy - h_minus.Hy,
+                    h_plus.Hz - h_minus.Hz,
+                )
+            )
+
+        dH /= len(offsets)
+
+        # Js = n x ΔH
+        Jst = np.cross(ns.T, dH.T).T
+
+        # Numerical cleanup: Js should be purely tangential.
+        normal_component = np.sum(Jst * ns, axis=0)
+        Jst -= ns * normal_component[None, :]
+
+        # Transfer triangle values to nodes using area-weighted averaging.
+        Js = np.zeros_like(nodes, dtype=np.complex128)
+        weights = np.zeros(boundary.n_nodes, dtype=float)
 
         for i in range(boundary.n_tris):
-            nids = boundary.tris[:, i]
-            Js[:, nids] += Jst[:, i]
-            Js_counter[nids] += 1
+            nids = tris[:, i]
+            w = areas[i]
 
-        Js_counter[Js_counter == 0] = 1
+            Js[:, nids] += Jst[:, i, None] * w
+            weights[nids] += w
 
-        Js = Js / Js_counter
+        valid = weights > 0.0
+        Js[:, valid] /= weights[None, valid]
+
+        # Interpolate remaining E/H data at boundary nodes.
+        ehfield = self.interpolate(
+            nodes[0, :],
+            nodes[1, :],
+            nodes[2, :],
+            False,
+        )
 
         ehfield._Js = Js
-        ehfield.aux["tris"] = boundary.tris
+        ehfield.aux["tris"] = tris
         ehfield.aux["boundary"] = True
+
+        # Useful for debugging / plotting the unsmoothed result.
+        ehfield.aux["Js_faces"] = Jst
+        ehfield.aux["face_centers"] = cs
+        ehfield.aux["face_areas"] = areas
+
         ehfield.structure = DataStructure.TRISURF
+
         return ehfield
+
+    def in_domain(self,
+                  selection: DomainSelection,
+                  nodes: bool = True,
+                  edges: bool = False,
+                  tris: bool = False,
+                  tets: bool = False) -> EHField:
+        """Create an unstructured dataset inside some domain. Can only be used with vector plots
+
+        Args:
+            selection (DomainSelection): The domain(s) in which to sample the field.
+            nodes (bool, optional): If the nodes should be included. Defaults to True.
+            edges (bool, optional): If edge centers should be included. Defaults to False.
+            tris (bool, optional): If triangle centers should be included. Defaults to False.
+            tets (bool, optional): If tet centroids should be included. Defaults to False.
+
+        Returns:
+            EHField: The field sampled at the requested points.
+        """
+        _validate_selection(selection)
+        if not (nodes or edges or tris or tets):
+            raise ValueError('At least one of nodes, edges, tris or tets must be True.')
+
+        mesh = self.mesh
+        tet_ids = mesh.get_tetrahedra(selection.tags)
+        if tet_ids.size == 0:
+            raise ValueError(f'Selection {selection} contains no tetrahedra.')
+
+        points = []
+        if nodes:
+            points.append(mesh.nodes[:, np.unique(mesh.tets[:, tet_ids])])
+        if edges:
+            points.append(mesh.edge_centers[:, np.unique(mesh.tet_to_edge[:, tet_ids])])
+        if tris:
+            points.append(mesh.tri_centers[:, np.unique(mesh.tet_to_tri[:, tet_ids])])
+        if tets:
+            points.append(mesh.centers[:, tet_ids])
+
+        xyz = np.hstack(points)
+        field = self.interpolate(xyz[0, :], xyz[1, :], xyz[2, :], False)
+        field.structure = DataStructure.UNSTRUCTURED
+        return field
+
 
     def cutplane(
         self,
@@ -991,6 +1241,7 @@ class MWField(Saveable):
             x (float | None, optional): The X-coordinate in case of a YZ-plane. Defaults to None.
             y (float | None, optional): The Y-coordinate in case of an XZ-plane. Defaults to None.
             z (float | None, optional): The Z-coordinate in case of an XY-plane. Defaults to None.
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
 
         Returns:
             EHField: The resultant EHField object
@@ -1026,6 +1277,10 @@ class MWField(Saveable):
             point: (x0,y0,z0), a point on the plane
             normal: (nx,ny,nz), plane normal vector
             npoints: number of grid points per axis
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+
+        Returns:
+            EHField: The field on the cut plane
         """
 
         n = np.array(normal, dtype=float)
@@ -1081,6 +1336,10 @@ class MWField(Saveable):
         Args:
             ds (float, optional): the sampling grid size. Defaults to None (uses N)
             N (int, optional): The approximate total number of sample points. Defaults to 10,000
+            usenan (bool, optional): Return NaN for points outside the mesh (otherwise zero). Defaults to True.
+            x_range (tuple[float, float] | None, optional): The x-range of the grid. Defaults to None (the mesh bounds).
+            y_range (tuple[float, float] | None, optional): The y-range of the grid. Defaults to None (the mesh bounds).
+            z_range (tuple[float, float] | None, optional): The z-range of the grid. Defaults to None (the mesh bounds).
 
         Returns:
             EHField: Storage container for data
@@ -1117,11 +1376,11 @@ class MWField(Saveable):
         For animations, make sure to always use the complex metric.
 
         Args:
-            field ('E','H'): The field to return
-            metric ([]'real','imag','complex'], optional): the metric to impose on the field. Defaults to 'real'.
+            field (Literal["E", "H"]): The field to return
+            metric (Literal["real", "imag", "complex"], optional): the metric to impose on the field. Defaults to 'real'.
 
         Returns:
-            tuple[np.ndarray,...]: The X,Y,Z,Fx,Fy,Fz arrays
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The X,Y,Z,Fx,Fy,Fz arrays
         """
         if field == "E":
             Fx, Fy, Fz = self.Ex, self.Ey, self.Ez
@@ -1145,11 +1404,11 @@ class MWField(Saveable):
         For animations, make sure to select the complex metric.
 
         Args:
-            field (str): The field to plot
-            metric (str, optional): The metric to impose on the plot. Defaults to 'real'.
+            field (Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz", "normE", "normH"]): The field to plot
+            metric (Literal["abs", "real", "imag", "complex"], optional): The metric to impose on the plot. Defaults to 'real'.
 
         Returns:
-            (X,Y,Z,Field): The coordinates plus field scalar
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The X, Y, Z coordinates plus the field scalar
         """
         field = getattr(self, field)
         if metric == "abs":
@@ -1180,16 +1439,16 @@ class MWField(Saveable):
             faces (FaceSelection | GeoSurface): The faces to integrate over
             ang_range (tuple[float, float], optional): The angular rage limits. Defaults to (-180, 180).
             Npoints (int, optional): The number of angular points. Defaults to 201.
-            origin (tuple[float, float, float], optional): The farfield origin. Defaults to (0,0,0).
-            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+            origin (tuple[float, float, float], optional): The farfield origin. Defaults to None.
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
 
         Returns:
-            tuple[np.ndarray, np.ndarray, np.ndarray]: Angles (N,), E(3,N), H(3,N)
+            EHFieldFF: The farfield E and H fields (3,N) at the N sampled angles
         """
         refdir = _parse_axis(ref_direction).np
         plane_normal_parsed = _parse_axis(plane_normal).np
         theta, phi = arc_on_plane(refdir, plane_normal_parsed, ang_range, Npoints)
-        E, H, Ptot = self.farfield(theta, phi, faces, origin, syms=syms)
+        E, H, Ptot = self._farfield(theta, phi, faces, origin, syms=syms)
         angs = np.linspace(*ang_range, Npoints) * np.pi / 180
         return EHFieldFF(
             _E=E, _H=H, theta=theta, phi=phi, Ptot=Ptot, ang=angs, freq=self.freq
@@ -1212,18 +1471,18 @@ class MWField(Saveable):
             thetas (np.ndarray, optional): The 1D array of theta values. Defaults to None.
             phis (np.ndarray, optional): A 1D array of phi values. Defaults to None.
             origin (tuple[float, float, float], optional): The boundary normal alignment origin. Defaults to (0,0,0).
-            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
         Returns:
-            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The 2D theta, phi, E and H matrices.
+            EHFieldFF: The 2D theta, phi, E and H matrices.
         """
         if thetas is None:
             thetas = np.linspace(0, np.pi, 91)
         if phis is None:
             phis = np.linspace(-np.pi, np.pi, 181)
 
-        T, P = np.meshgrid(thetas, phis)
+        T, P = np.meshgrid(thetas, phis, indexing='ij')
 
-        E, H, Ptot = self.farfield(
+        E, H, Ptot = self._farfield(
             T.flatten(), P.flatten(), faces, origin=origin, syms=syms
         )
         E = E.reshape((3,) + T.shape)
@@ -1231,40 +1490,112 @@ class MWField(Saveable):
 
         return EHFieldFF(E, H, T, P, Ptot, freq=self.freq)
 
-    def embed_external_component(self, touchstone_file: str, port_indices: list[int], Smat: np.ndarray) -> MWScalarNdim:
-        # 1. Load the external component
+    def embed_external_component(
+        self, touchstone_file: str, port_indices: list[int | float]
+    ) -> None:
+        """Embed an external N-port network (given as a Touchstone file) onto a
+        subset of this field's ports.
+
+        This does NOT remove ports -- all port_modes/fields remain present
+        at their original size forever. Ports are marked inactive in
+        `_active_ports` instead of removed, and both `_Sp` and `_Texcite`
+        keep their original full shape. This means port numbers never
+        change and never need to be remembered/remapped -- calling this
+        multiple times with different, still-active port numbers just
+        works, and each call correctly folds in the effect of any prior
+        embedding.
+
+        Args:
+            touchstone_file (str): The filename of the touchstone file to import
+            port_indices (list[int | float]): The port numbers (smat_index) of
+                this field to connect the touchstone file to. Must all
+                currently be active (not already embedded by a previous call).
+        """
         from ....read import TouchstoneData
 
+        Nports_total = len(self.port_modes)
+        portmap = {p.smat_index: i for i, p in enumerate(self.port_modes)}
+
+        if self._active_ports is None:
+            self._active_ports = set(portmap.keys())
+        if not isinstance(self._Texcite, np.ndarray):
+            self._Texcite = np.eye(Nports_total, dtype=np.complex128)
+
+        missing = [p for p in port_indices if p not in self._active_ports]
+        if missing:
+            raise KeyError(
+                f"Port(s) {missing} are not available (already embedded, or "
+                f"don't exist). Active ports: {sorted(self._active_ports)}"
+            )
+        if len(set(port_indices)) != len(port_indices):
+            raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
+
         td = TouchstoneData(touchstone_file)
-        fem_s_matrix = Smat
-        S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
-        port_indices = [ind-1 for ind in port_indices]
-        all_ports = np.arange(fem_s_matrix.shape[1])
-        n_ports = np.setdiff1d(all_ports, port_indices)
-        
-        # 2. Partition the block matrix
-        # S_nn, S_nm, S_mn, S_mm
-        S_nn = fem_s_matrix[n_ports][:, n_ports]
-        S_nm = fem_s_matrix[n_ports][:, port_indices]
-        S_mn = fem_s_matrix[port_indices][:, n_ports]
-        S_mm = fem_s_matrix[port_indices][:, port_indices]
-        
-        # 3. Compute the reduction: S_red = S_nn + S_nm @ S_ext @ inv(I - S_mm @ S_ext) @ S_mn
-        # Use np.linalg.solve for stability instead of direct inv
-        N = len(n_ports)
-        M = len(port_indices)
-        I_n = np.eye(N)
-        I_m = np.eye(M)
-        # Pre-compute the coupling term: S_ext * (I - S_mm * S_ext)^-1 * S_mn
-        coupling = S_ext @ np.linalg.inv(I_m - S_mm @ S_ext) @ S_mn
-        zero_nm = np.zeros((N, M))
-        zero_mn = np.zeros((M, N))
-        self._Texcite = np.block([
-            [I_n,      zero_nm],
-            [coupling, zero_mn]
-        ]).squeeze()
-    
+        S_ext = td.interp_S(self.freq)  # (M, M) at this field's single frequency
+
+        m_pos = [portmap[p] for p in port_indices]
+        n_labels = sorted(self._active_ports - set(port_indices), key=lambda l: portmap[l])
+        n_pos = [portmap[l] for l in n_labels]
+
+        S_nn = self._Sp[np.ix_(n_pos, n_pos)]
+        S_nm = self._Sp[np.ix_(n_pos, m_pos)]
+        S_mn = self._Sp[np.ix_(m_pos, n_pos)]
+        S_mm = self._Sp[np.ix_(m_pos, m_pos)]
+
+        I_m = np.eye(len(m_pos), dtype=np.complex128)
+        term = np.linalg.inv(I_m - S_mm @ S_ext)
+        coupling = S_ext @ term @ S_mn  # (M, N)
+
+        # Fold the embedding into the effective S among still-active ports,
+        # so a SUBSEQUENT embedding call sees the correct effective network.
+        self._Sp[np.ix_(n_pos, n_pos)] = S_nn + S_nm @ coupling
+        # Mark embedded ports as no longer meaningful.
+        self._Sp[m_pos, :] = np.nan
+        self._Sp[:, m_pos] = np.nan
+
+        # Excitation transform stays a fixed NxN throughout -- no resizing
+        # needed since dimensions never change.
+        local_T = np.zeros((Nports_total, Nports_total), dtype=np.complex128)
+        local_T[np.ix_(n_pos, n_pos)] = np.eye(len(n_pos))
+        local_T[np.ix_(m_pos, n_pos)] = coupling
+        self._Texcite = self._Texcite @ local_T
+
+        self._active_ports -= set(port_indices)
+
+        logger.info(
+            f"Embedded {touchstone_file!r} on ports {port_indices}. "
+            f"Active ports remaining: {sorted(self._active_ports)}"
+        )
+
     def farfield(
+        self,
+        theta: np.ndarray,
+        phi: np.ndarray,
+        faces: FaceSelection | GeoSurface,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+    ) -> EHFieldFF:
+        """Compute the farfield at the provided theta and phi angles.
+
+        Args:
+            theta (np.ndarray): The theta angles (any shape)
+            phi (np.ndarray): The phi angles (same shape as theta)
+            faces (FaceSelection | GeoSurface): The integration faces
+            origin (tuple[float, float, float] | None, optional): The boundary normal alignment origin. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+
+        Returns:
+            EHFieldFF: The farfield E and H fields with shape (3,) + theta.shape
+        """
+        E, H, Ptot = self._farfield(
+            theta.flatten(), phi.flatten(), faces, origin=origin, syms=syms
+        )
+        E = E.reshape((3,) + theta.shape)
+        H = H.reshape((3,) + theta.shape)
+
+        return EHFieldFF(E, H, theta, phi, Ptot, freq=self.freq)
+        
+    def _farfield(
         self,
         theta: np.ndarray,
         phi: np.ndarray,
@@ -1279,7 +1610,7 @@ class MWField(Saveable):
             phi (np.ndarray): The Phi coordinates as (N,) 1D Array
             faces (FaceSelection | GeoSurface): the faces to use as integration boundary
             origin (tuple[float, float, float], optional): A normal alignment origin. Optional use in cases where the "inside" is not clear.
-            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to []
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
 
         Returns:
             tuple[np.ndarray, np.ndarray, float]: The E and H field as (3,N) arrays and the total radiated power
@@ -1289,9 +1620,7 @@ class MWField(Saveable):
 
         from .sc import stratton_chu
 
-        surface = self.basis.mesh.boundary_surface(
-            faces.tags, inward_normal=False, origin=origin
-        )
+        surface = self._integration_surface(faces, origin)
         ehfield = self.interpolate(*surface.exyz)
 
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
@@ -1303,54 +1632,134 @@ class MWField(Saveable):
         if len(syms) == 0:
             return Eff, Hff, Ptot
 
-        # fmt: off
-        factor = 1.0
-        if len(syms) == 1:
-            factor = (0.5) ** 0.5
-            flip_sets = ((syms[0], ),)
-
-        elif len(syms) == 2:
-            factor = (0.25) ** 0.5
-            s1, s2 = syms
-            flip_sets = ((s1,), (s2,), (s1, s2, ))
-
-        elif len(syms) == 3:
-            factor = (0.125) ** 0.5
-            s1, s2, s3 = syms
-            flip_sets = (
-                (s1, ),
-                (s2, ),
-                (s3, ),
-                (s1, s2,),
-                (s1, s3,),
-                (s2, s3,),
-                (s1, s2, s3),
-            )
-
-        for flips in flip_sets:
-            surf = surface.copy()
-            ehf = _EHSign()
-            Ef, Hf = ehfield.E.copy(), ehfield.H.copy()
-            for flip in flips:
-                ehf.apply(flip)
-                surf.flip(flip[1])
-            Ef, Hf = ehf.flip_field(Ef, Hf)
-
+        factor = _symmetry_factor(syms)
+        for surf, Ef, Hf in _mirrored_sources(surface, ehfield, syms):
             E2, H2, wns = stratton_chu(Ef, Hf, surf, theta, phi, self.k0)
             Eff = Eff + E2
             Hff = Hff + H2
 
-        # fmt: on
         return Eff * factor, Hff * factor, Ptot * (factor**2)
+
+    def _integration_surface(
+        self, faces: FaceSelection | GeoSurface, origin: tuple[float, float, float] | None
+    ) -> SurfaceMesh:
+        """The boundary surface mesh with outward normals used by the Stratton-Chu integrals (cached if enabled)."""
+        if self._cache_mapping:
+            if self._cache_surface is None:
+                self._cache_surface = self.basis.mesh.boundary_surface(
+                    faces.tags, inward_normal=False, origin=origin
+                )
+            return self._cache_surface
+        return self.basis.mesh.boundary_surface(
+            faces.tags, inward_normal=False, origin=origin
+        )
+
+    def nearfield(
+        self,
+        x: np.ndarray | float,
+        y: np.ndarray | float,
+        z: np.ndarray | float,
+        faces: FaceSelection | GeoSurface,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+        structure: Literal["none", "grid1d", "grid2d", "grid3d", "trisurf", "unstructured"] | DataStructure = "none",
+    ) -> EHField:
+        """Compute the E and H-field at arbitrary points in space from the fields on a closed surface (Stratton-Chu).
+
+        This is the near-field counterpart of farfield(): the fields on the faces are radiated to the provided
+        coordinates through the free space Green's function, so the points do not have to be inside the mesh.
+        The result is only valid for points outside the closed integration surface (in free space); points
+        inside it ideally give zero field. A point exactly on a surface sample point is singular.
+
+        The coordinates may have any (broadcastable) shape. They are flattened for the computation and the
+        fields are reshaped back to (3,) + shape, just like interpolate().
+
+        Args:
+            x (np.ndarray | float): The X-coordinates
+            y (np.ndarray | float): The Y-coordinates
+            z (np.ndarray | float): The Z-coordinates
+            faces (FaceSelection | GeoSurface): The integration faces
+            origin (tuple[float, float, float] | None, optional): The boundary normal alignment origin. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+            structure (str | DataStructure, optional): The data structure of the coordinates, stored in the EHField for plotting
+                ("grid1d", "grid2d", "grid3d", "trisurf" or "unstructured"). Defaults to "none".
+
+        Returns:
+            EHField: The E and H fields with shape (3,) + x.shape
+        """
+        xs, ys, zs = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64),
+            np.asarray(y, dtype=np.float64),
+            np.asarray(z, dtype=np.float64),
+        )
+        shp = xs.shape
+        xyz = np.array([xs.flatten(), ys.flatten(), zs.flatten()])
+
+        E, H = self._nearfield(xyz, faces, origin=origin, syms=syms)
+
+        if isinstance(structure, str):
+            structure = DataStructure[structure.upper()]
+
+        return EHField(
+            _E=E.reshape((3,) + shp),
+            _H=H.reshape((3,) + shp),
+            x=xs.copy(),
+            y=ys.copy(),
+            z=zs.copy(),
+            freq=self.freq,
+            structure=structure,
+            er=np.ones(shp, dtype=np.complex128),
+            ur=np.ones(shp, dtype=np.complex128),
+            sig=np.zeros(shp, dtype=np.float64),
+        )
+
+    def _nearfield(
+        self,
+        xyz: np.ndarray,
+        faces: FaceSelection | GeoSurface,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the near field at the provided (3, N) coordinates.
+
+        Args:
+            xyz (np.ndarray): The (3, N) target coordinates
+            faces (FaceSelection | GeoSurface): the faces to use as integration boundary
+            origin (tuple[float, float, float], optional): A normal alignment origin. Optional use in cases where the "inside" is not clear.
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: The E and H field as (3,N) arrays
+        """
+        if syms is None:
+            syms = []
+
+        from .sc import stratton_chu_near
+
+        surface = self._integration_surface(faces, origin)
+        ehfield = self.interpolate(*surface.exyz)
+
+        Enf, Hnf = stratton_chu_near(ehfield.E, ehfield.H, surface, xyz, self.k0)
+
+        if len(syms) == 0:
+            return Enf, Hnf
+
+        factor = _symmetry_factor(syms)
+        for surf, Ef, Hf in _mirrored_sources(surface, ehfield, syms):
+            E2, H2 = stratton_chu_near(Ef, Hf, surf, xyz, self.k0)
+            Enf = Enf + E2
+            Hnf = Hnf + H2
+
+        return Enf * factor, Hnf * factor
 
     def optycal_surface(self, faces: FaceSelection | GeoSurface | None = None) -> tuple:
         """Export this models exterior to an Optical acceptable dataset
 
         Args:
-            faces (FaceSelection | GeoSurface): The faces to export. Defaults to None
+            faces (FaceSelection | GeoSurface | None, optional): The faces to export. Defaults to None (the exterior faces).
 
         Returns:
-            tuple: _description_
+            tuple: The vertices, triangles, edges, normals, E-field, H-field and k0
         """
         if faces is None:
             tags = self.mesh.exterior_face_tags
@@ -1358,15 +1767,15 @@ class MWField(Saveable):
             tags = faces.tags
 
         center = np.mean(self.mesh.nodes, axis=1).squeeze()
-        surface = self.basis.mesh.boundary_surface(tags, center)
+        surface = self.basis.mesh.boundary_surface(tags, False, center)
         field = self.interpolate(*surface.exyz)
         vertices = surface.nodes
         triangles = surface.tris
-        origin = surface._origin
+        edges = surface.edges
         E = field.E
         H = field.H
         k0 = self.k0
-        return vertices, triangles, E, H, origin, k0
+        return vertices, triangles, edges, surface.normals, E, H, k0
 
     def optycal_antenna(
         self,
@@ -1378,24 +1787,389 @@ class MWField(Saveable):
 
         Args:
             faces (FaceSelection | GeoSurface): The faces to export. Defaults to None
+            origin (tuple[float, float, float] | None, optional): The radiation origin used to orient the farfield surface normals. Defaults to None.
+            syms (list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None, optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
 
         Returns:
-            tuple: _description_
+            dict: The frequency and the farfield function f(theta, phi, k0) -> Ex, Ey, Ez, Hx, Hy, Hz
         """
         freq = self.freq
 
         def function(theta: np.ndarray, phi: np.ndarray, k0: float):
-            E, H, _ = self.farfield(theta, phi, faces, origin, syms)
+            E, H, _ = self._farfield(theta, phi, faces, origin, syms)
             return E[0, :], E[1, :], E[2, :], H[0, :], H[1, :], H[2, :]
 
         return dict(freq=freq, ff_function=function)
 
+    def _field_weight(self, ehfield, weight_by: str) -> np.ndarray:
+        """Evaluate a scalar 'energy density' proxy from an interpolated EHField,
+        used to importance-weight seed-point sampling.
+
+        Args:
+            ehfield: An EHField (e.g. from self.interpolate(...)).
+            weight_by: 'E' -> |E|, 'H' -> |H|, 'EH' -> |E|*|H|.
+
+        Returns:
+            np.ndarray: weight per sample point.
+        """
+        if weight_by == "E":
+            return np.sqrt(np.abs(ehfield.Ex)**2 + np.abs(ehfield.Ey)**2 + np.abs(ehfield.Ez)**2)
+        if weight_by == "H":
+            return np.sqrt(np.abs(ehfield.Hx)**2 + np.abs(ehfield.Hy)**2 + np.abs(ehfield.Hz)**2)
+        if weight_by == "EH":
+            Emag = np.sqrt(np.abs(ehfield.Ex)**2 + np.abs(ehfield.Ey)**2 + np.abs(ehfield.Ez)**2)
+            Hmag = np.sqrt(np.abs(ehfield.Hx)**2 + np.abs(ehfield.Hy)**2 + np.abs(ehfield.Hz)**2)
+            return Emag * Hmag
+        raise ValueError(f"weight_by must be 'E', 'H', or 'EH', got {weight_by!r}")
+
+
+    def _normalize_weights(self, w: np.ndarray) -> np.ndarray:
+        """Turn a nonnegative weight array into a probability distribution,
+        falling back to uniform if the total weight is degenerate."""
+        w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+        w = np.clip(w, 0.0, None)
+        total = w.sum()
+        if not np.isfinite(total) or total <= 0:
+            return np.full(w.shape, 1.0 / w.shape[0])
+        return w / total
+
+
+    def _weighted_seed_points_surface(self, surface, n_particles: int, weight_by: str, quad_order: int = 4):
+        """Importance-sample seed points on a FaceSelection, concentrated on
+        triangles (and sub-triangle locations) with high |E|, |H|, or |E|*|H|.
+        Uses the same Gauss-quadrature machinery as int_surf."""
+        from emr.mth import generate_int_data_tri
+        from ...mth.integrals import gaus_quad_tri
+
+        DPTS = gaus_quad_tri(quad_order)
+        tris = self.mesh.get_triangles(surface.tags)
+        X, Y, Z, W, A, shape = generate_int_data_tri(self.mesh.nodes, self.mesh.tris[:, tris], DPTS)
+
+        ehfield = self.interpolate(X, Y, Z, usenan=True)
+        w = self._field_weight(ehfield, weight_by) * np.abs(W) * np.abs(A)
+        probs = self._normalize_weights(w)
+
+        M = X.shape[0]
+        replace = n_particles > M
+        sel = np.random.choice(M, size=n_particles, replace=replace, p=probs)
+        return X[sel].copy(), Y[sel].copy(), Z[sel].copy()
+
+
+    def _weighted_seed_points_domain(self, domain, n_particles: int, weight_by: str, quad_order: int = 4):
+        """Importance-sample seed points in a DomainSelection, concentrated on
+        tets (and sub-tet locations) with high |E|, |H|, or |E|*|H|.
+        Uses the same Gauss-quadrature machinery as int_vol."""
+        from ...mth.optimized import gaus_quad_tet
+        from emr.mth import generate_int_data_tet
+
+        DPTS = gaus_quad_tet(quad_order)
+        tets = self.mesh.get_tetrahedra(domain.tags)
+        X, Y, Z, W, A, shape = generate_int_data_tet(self.mesh.nodes, self.mesh.tets[:, tets], DPTS)
+
+        ehfield = self.interpolate(X, Y, Z, usenan=True)
+        w = self._field_weight(ehfield, weight_by) * np.abs(W) * np.abs(A)
+        probs = self._normalize_weights(w)
+
+        M = X.shape[0]
+        replace = n_particles > M
+        sel = np.random.choice(M, size=n_particles, replace=replace, p=probs)
+        return X[sel].copy(), Y[sel].copy(), Z[sel].copy()
+
+
+    def _seed_candidates(self, selection, is_domain: bool, density: str) -> np.ndarray:
+        """Build a (3, M) candidate seed-point cloud from a FaceSelection or
+        DomainSelection at a given density level, by progressively unioning
+        mesh entity centers:
+
+            'sparse' -> nodes only
+            'medium' -> nodes + edge centers
+            'dense'  -> nodes + edge centers + triangle centers
+                        (or + tet centroids, for a DomainSelection)
+
+        Args:
+            selection: FaceSelection or DomainSelection to seed from.
+            is_domain: True if `selection` is a DomainSelection (uses tet
+                centroids at 'dense'), False if it's a FaceSelection (uses
+                triangle centers at 'dense').
+            density: 'sparse' | 'medium' | 'dense'.
+
+        Returns:
+            np.ndarray: (3, M) candidate seed points.
+        """
+        if density not in ("sparse", "medium", "dense"):
+            raise ValueError(f"density must be 'sparse', 'medium', or 'dense', got {density!r}")
+
+        tags = selection.tags
+        node_ids = self.mesh.get_nodes(tags)
+        parts = [self.mesh.nodes[:, node_ids]]
+
+        if density in ("medium", "dense"):
+            edge_ids = self.mesh.get_edges(tags)
+            parts.append(self.mesh.edge_centers[:, edge_ids])
+
+        if density == "dense":
+            if is_domain:
+                tet_ids = self.mesh.get_tetrahedra(tags)
+                parts.append(self.mesh.centroids[:, tet_ids])
+            else:
+                tri_ids = self.mesh.get_triangles(tags)
+                parts.append(self.mesh.tri_centers[:, tri_ids])
+
+        return np.hstack(parts)
+
+
+    def trace_poynting_lines(
+        self,
+        seed_points=None,          # (3,N) array or (xs, ys, zs) tuple of user coordinates
+        seed_surface=None,         # FaceSelection -> seeds from nodes/edges/tris
+        seed_domain=None,          # DomainSelection -> seeds from nodes/edges/tets
+        density: str = "medium",   # 'sparse' | 'medium' | 'dense' -- unweighted seeding only
+        weight_by: Literal['E','H','EH'] | None = None,   # None | 'E' | 'H' | 'EH' -- importance-weighted seeding
+        quad_order: int = 4,       # Gauss quadrature order used when weight_by is set
+        n_particles: int | None = None,   # cap on seed count; required if weight_by is set
+        max_steps: int = 5000,
+        ds_init: float | None = None,
+        ds_min: float | None = None,
+        ds_max: float | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-9,
+        normalize: bool = True,
+        direction: int = 1,        # +1 along S, -1 against S
+        stagnation_eps: float = 1e-12,
+        safety: float = 0.9,
+        verbose: bool = False,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        dz: float = 0.0,
+    ) -> list[np.ndarray]:
+        """Trace particle/field-line trajectories through the time-averaged Poynting
+        vector field using an adaptive-step embedded RK4(5) (Dormand-Prince) integrator.
+
+        Each returned trajectory is a (4, n_i) array: rows 0-2 are x,y,z and row 3
+        is the local wave impedance Z = |E|/|H| at that point.
+
+        Args:
+            seed_points (np.ndarray | tuple | None, optional): Explicit start coordinates, either shape (3,N) or a tuple
+                (xs, ys, zs) of 1D arrays. Takes priority over everything else. Defaults to None.
+            seed_surface (FaceSelection | None, optional): FaceSelection to seed particles from. Defaults to None.
+            seed_domain (DomainSelection | None, optional): DomainSelection to seed particles from. Defaults to None.
+            density (str, optional): 'sparse' (just nodes), 'medium' (+ edge centers), or
+                'dense' (+ triangle centers / tet centroids -- everything).
+                Only used for *unweighted* seeding (weight_by is None), with
+                seed_surface or seed_domain. Defaults to 'medium'.
+            weight_by (Literal['E','H','EH'] | None, optional): If set to 'E', 'H', or 'EH', seed points are instead
+                importance-sampled from Gauss-quadrature points across the
+                surface/domain, weighted by |E|, |H|, or |E|*|H| (times the
+                local area/volume element) -- i.e. more seeds land on
+                triangles/tets with higher local field energy, with
+                sub-triangle/sub-tet placement precision. Requires
+                seed_surface or seed_domain, and an explicit n_particles. Defaults to None.
+            quad_order (int, optional): Gauss quadrature order used to generate the candidate
+                points when weight_by is set (higher = more candidate points
+                per triangle/tet = finer sub-element resolution, at the cost
+                of more field evaluations). Defaults to 4, matching int_surf/int_vol.
+            n_particles (int | None, optional): Cap on the number of seed points. Default None means
+                "use every candidate point at the chosen density" for
+                unweighted seeding -- only when a limit is given does it
+                randomly subsample down to that many points. Required
+                (must not be None) when weight_by is set, since importance
+                sampling needs an explicit target count. For the fallback
+                random-bounding-box seeding (no seed source given at all),
+                None falls back to 200 points.
+            max_steps (int, optional): Hard cap on integrator iterations (safety stop). Defaults to 5000.
+            ds_init (float | None, optional): The initial arc-length step size. Defaults to None (derived from the model's bounding-box diagonal).
+            ds_min (float | None, optional): The minimum arc-length step size. Defaults to None (derived from the model's bounding-box diagonal).
+            ds_max (float | None, optional): The maximum arc-length step size. Defaults to None (derived from the model's bounding-box diagonal).
+            rtol (float, optional): Relative local error tolerance for step control. Defaults to 1e-4.
+            atol (float, optional): Absolute local error tolerance for step control. Defaults to 1e-9.
+            normalize (bool, optional): If True (recommended), integrate the unit tangent dr/ds =
+                S/|S| (stable arc-length parameterization). If False, integrates
+                the raw field as a literal velocity field (dr/dt = S). Defaults to True.
+            direction (int, optional): +1 to trace along the Poynting vector, -1 to trace against it. Defaults to 1.
+            stagnation_eps (float, optional): |S| below this is treated as a stagnation point (terminate). Defaults to 1e-12.
+            safety (float, optional): Safety factor (<1) applied to the adaptive step-size update. Defaults to 0.9.
+            verbose (bool, optional): Print periodic progress. Defaults to False.
+            dx (float, optional): Constant x-offset applied to all generated seed points. Defaults to 0.0.
+            dy (float, optional): Constant y-offset applied to all generated seed points. Defaults to 0.0.
+            dz (float, optional): Constant z-offset applied to all generated seed points. Defaults to 0.0.
+
+        Returns:
+            list[np.ndarray]: one (4, n_i) array per particle: [x, y, z, Z_local].
+        """
+        self._silent = True
+        # -----------------------------------------------------------------
+        # 1. Generate the initial particle coordinates (seed points)
+        # -----------------------------------------------------------------
+        if seed_points is not None:
+            pts = np.asarray(seed_points, dtype=float)
+            if pts.shape[0] != 3:
+                pts = pts.T
+            x0, y0, z0 = pts[0].copy(), pts[1].copy(), pts[2].copy()
+
+        elif weight_by is not None:
+            if n_particles is None:
+                raise ValueError("weight_by requires an explicit n_particles (target seed count).")
+            if seed_surface is not None:
+                x0, y0, z0 = self._weighted_seed_points_surface(seed_surface, n_particles, weight_by, quad_order)
+            elif seed_domain is not None:
+                x0, y0, z0 = self._weighted_seed_points_domain(seed_domain, n_particles, weight_by, quad_order)
+            else:
+                raise ValueError("weight_by requires seed_surface or seed_domain to sample from.")
+
+        elif seed_surface is not None:
+            candidates = self._seed_candidates(seed_surface, is_domain=False, density=density)
+            if n_particles is not None and candidates.shape[1] > n_particles:
+                sel = np.random.choice(candidates.shape[1], n_particles, replace=False)
+                candidates = candidates[:, sel]
+            x0, y0, z0 = candidates[0], candidates[1], candidates[2]
+
+        elif seed_domain is not None:
+            candidates = self._seed_candidates(seed_domain, is_domain=True, density=density)
+            if n_particles is not None and candidates.shape[1] > n_particles:
+                sel = np.random.choice(candidates.shape[1], n_particles, replace=False)
+                candidates = candidates[:, sel]
+            x0, y0, z0 = candidates[0], candidates[1], candidates[2]
+
+        else:
+            # --- placeholder: default seeding strategy ---
+            n_fallback = n_particles if n_particles is not None else 200
+            xb, yb, zb = self.basis.bounds
+            x0 = np.random.uniform(xb[0], xb[1], n_fallback)
+            y0 = np.random.uniform(yb[0], yb[1], n_fallback)
+            z0 = np.random.uniform(zb[0], zb[1], n_fallback)
+
+        x0 = x0 + dx
+        y0 = y0 + dy
+        z0 = z0 + dz
+        N = x0.shape[0]
+        pos = np.vstack([x0, y0, z0]).astype(float)          # (3, N) current positions
+
+        # -----------------------------------------------------------------
+        # 2. Step-size bounds, derived from the model's bounding-box diagonal
+        # -----------------------------------------------------------------
+        xb, yb, zb = self.basis.bounds
+        diag = np.sqrt((xb[1] - xb[0])**2 + (yb[1] - yb[0])**2 + (zb[1] - zb[0])**2)
+        if ds_init is None:
+            ds_init = diag / 500
+        if ds_min is None:
+            ds_min = diag / 1e6
+        if ds_max is None:
+            ds_max = diag / 20
+
+        h = np.full(N, ds_init, dtype=float)     # per-particle current step size
+        active = np.ones(N, dtype=bool)          # per-particle still-running mask
+
+        # --- Dormand-Prince RK45 tableau ---
+        a21 = 1 / 5
+        a31, a32 = 3 / 40, 9 / 40
+        a41, a42, a43 = 44 / 45, -56 / 15, 32 / 9
+        a51, a52, a53, a54 = 19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729
+        a61, a62, a63, a64, a65 = 9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656
+        a71, a72, a73, a74, a75, a76 = 35 / 384, 0.0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84
+        b5 = np.array([35 / 384, 0.0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0.0])
+        b4 = np.array([5179 / 57600, 0.0, 7571 / 16695, 393 / 640, -92097 / 339200, 187 / 2100, 1 / 40])
+
+        imp_eps = 1e-30  # guards |E|/|H| against division by ~0
+
+        def field(p: np.ndarray) -> np.ndarray:
+            """Evaluate the (optionally normalized) time-averaged Poynting vector
+            at positions p, shape (3, M). NaN in -> NaN out (outside domain)."""
+            ehfield = self.interpolate(p[0], p[1], p[2], usenan=True)
+            S = np.vstack([ehfield.Smx, ehfield.Smy, ehfield.Smz]).real
+            if normalize:
+                mag = np.linalg.norm(S, axis=0)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    S = np.where(mag > stagnation_eps, S / mag, np.nan)
+            return direction * S
+
+        def field_with_impedance(p: np.ndarray):
+            """Same as field(), but also returns the local wave impedance
+            Z = |E|/|H| at p (shape (M,)). Reuses the same interpolate() call,
+            so this costs nothing extra beyond a normal field evaluation."""
+            ehfield = self.interpolate(p[0], p[1], p[2], usenan=True)
+            S = np.vstack([ehfield.Smx, ehfield.Smy, ehfield.Smz]).real
+            Emag = np.sqrt(np.abs(ehfield.Ex)**2 + np.abs(ehfield.Ey)**2 + np.abs(ehfield.Ez)**2)
+            Hmag = np.sqrt(np.abs(ehfield.Hx)**2 + np.abs(ehfield.Hy)**2 + np.abs(ehfield.Hz)**2)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                Z = np.where(Hmag > imp_eps, Emag / Hmag, np.nan)
+            if normalize:
+                mag = np.linalg.norm(S, axis=0)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    S = np.where(mag > stagnation_eps, S / mag, np.nan)
+            return direction * S, Z
+
+        # Initial impedance sample at each seed point
+        _, Z0 = field_with_impedance(pos)
+        paths = [[np.array([pos[0, i], pos[1, i], pos[2, i], Z0[i]])] for i in range(N)]
+
+        # -----------------------------------------------------------------
+        # 3. Main adaptive integration loop
+        # -----------------------------------------------------------------
+        step_count = 0
+        while active.any() and step_count < max_steps:
+            step_count += 1
+            idx = np.where(active)[0]
+            p0 = pos[:, idx]
+            hs = h[idx]
+
+            k1 = field(p0)
+            k2 = field(p0 + hs * a21 * k1)
+            k3 = field(p0 + hs * (a31 * k1 + a32 * k2))
+            k4 = field(p0 + hs * (a41 * k1 + a42 * k2 + a43 * k3))
+            k5 = field(p0 + hs * (a51 * k1 + a52 * k2 + a53 * k3 + a54 * k4))
+            k6 = field(p0 + hs * (a61 * k1 + a62 * k2 + a63 * k3 + a64 * k4 + a65 * k5))
+            p5 = p0 + hs * (a71 * k1 + a72 * k2 + a73 * k3 + a74 * k4 + a75 * k5 + a76 * k6)
+            # k7 is evaluated at p5, which (by the FSAL property of Dormand-Prince)
+            # is exactly the accepted 5th-order next position -- so we grab the
+            # local impedance there for free.
+            k7, Z_next = field_with_impedance(p5)
+
+            ks = np.stack([k1, k2, k3, k4, k5, k6, k7], axis=0)     # (7, 3, M)
+            sol5 = p0 + hs * np.einsum('i,ijk->jk', b5, ks)
+            sol4 = p0 + hs * np.einsum('i,ijk->jk', b4, ks)
+
+            stage_invalid = np.any(np.isnan(ks), axis=(0, 1)) | np.any(np.isnan(sol5), axis=0)
+
+            err = np.linalg.norm(np.nan_to_num(sol5 - sol4, nan=np.inf), axis=0)
+            scale = atol + rtol * np.maximum(np.linalg.norm(p0, axis=0), np.linalg.norm(sol5, axis=0))
+            err_ratio = err / np.maximum(scale, 1e-300)
+
+            accept = (~stage_invalid) & (err_ratio <= 1.0)
+
+            # PI-style step-size update (standard RK45 exponent)
+            factor = safety * np.power(np.maximum(err_ratio, 1e-12), -0.2)
+            factor = np.clip(factor, 0.2, 5.0)
+            new_h = np.clip(hs * factor, ds_min, ds_max)
+
+            for j, i in enumerate(idx):
+                if stage_invalid[j]:
+                    # A trial stage (or the final point) left the domain, or the
+                    # field vanished. Shrink and retry; terminate only once we
+                    # can't shrink any further.
+                    if hs[j] <= ds_min * 1.0001:
+                        active[i] = False
+                    else:
+                        h[i] = max(hs[j] * 0.25, ds_min)
+                    continue
+
+                if accept[j]:
+                    pos[:, i] = sol5[:, j]
+                    paths[i].append(np.array([pos[0, i], pos[1, i], pos[2, i], Z_next[j]]))
+                    h[i] = new_h[j]
+                else:
+                    h[i] = new_h[j]   # rejected step: same position, smaller h next try
+
+            if verbose and step_count % 100 == 0:
+                print(f"step {step_count}: {active.sum()} / {N} particles still active")
+
+        self._silent = False
+        return [np.array(p).T for p in paths]   # each entry: (4, n_i) -> x, y, z, Z_local
 
 class MWScalar(Saveable):
     """The MWDataSet class stores solution data of FEM Time Harmonic simulations."""
 
     _fields: list[str] = ["freq", "k0", "Sp", "beta", "Pout", "Z0"]
-    _copy: list[str] = ["_portmap", "_portnumbers", "port_modes"]
+    _copy: list[str] = ["_portmap", "_portnumbers", "port_modes", "_aaa_tol"]
 
     def __init__(self):
         self.freq: float = None
@@ -1408,9 +2182,16 @@ class MWScalar(Saveable):
         self._portmap: dict[int | float, int] = dict()
         self._portnumbers: list[int | float] = []
         self.port_modes: list[PortProperties] = []
-
+        self.vars: dict[str, float | complex] = dict()
+        # AAA fit tolerance if sampled by run_adaptive_sweep, else None
+        self._aaa_tol: float | None = None
+        
     def init_sp(self, portnumbers: list[int | float]) -> None:
-        """Initialize the S-parameter dataset with the given number of ports."""
+        """Initialize the S-parameter dataset with the given port numbers.
+
+        Args:
+            portnumbers (list[int | float]): The port (mode) numbers
+        """
         self._portnumbers = portnumbers
         i = 0
         for n in portnumbers:
@@ -1423,6 +2204,13 @@ class MWScalar(Saveable):
         self.beta = np.zeros((i,), dtype=np.complex128)
 
     def write_S(self, i: int | float, j: int | float, value: complex) -> None:
+        """Write an S-parameter.
+
+        Args:
+            i (int | float): The receiving port number
+            j (int | float): The excited port number
+            value (complex): The S-parameter value
+        """
         self.Sp[self._portmap[i], self._portmap[j]] = value
 
     def S(self, i: int | float, j: int | float) -> complex:
@@ -1449,6 +2237,17 @@ class MWScalar(Saveable):
         Z0: float | complex,
         Pout: float,
     ) -> None:
+        """Store the properties of a port mode.
+
+        Args:
+            port_number (int): The port number
+            mode_number (int): The mode number
+            smat_index (int | float): The S-matrix index of the port mode
+            k0 (float): The free space propagation constant
+            beta (float): The propagation constant of the port mode
+            Z0 (float | complex): The port impedance
+            Pout (float): The port mode power
+        """
         i = self._portmap[smat_index]
         self.beta[i] = beta
         self.Z0[i] = Z0
@@ -1457,9 +2256,10 @@ class MWScalar(Saveable):
 
 class MWScalarNdim(Saveable):
     _fields: list[str] = ["freq", "k0", "Sp", "beta", "Pout", "Z0"]
-    _copy: list[str] = ["_portmap", "_portnumbers"]
+    _copy: list[str] = ["_portmap", "_portnumbers", "_aaa_tol"]
 
     def __init__(self):
+        """The scalar (S-parameter) results of a sweep as N-dimensional arrays."""
         self.freq: np.ndarray = None
         self.k0: np.ndarray = None
         self.Sp: np.ndarray = None
@@ -1470,8 +2270,23 @@ class MWScalarNdim(Saveable):
         self._portmap: dict[int | float, int] = dict()
         self._portnumbers: list[int | float] = []
         self._dense_frequencies: np.ndarray = None
+        self._aaa_tol: float | None = None
+
+        # Ports embedded via embed_external_component are marked inactive
+        # here rather than removed -- Sp, _portmap and _portnumbers always
+        # keep their original full size, so port labels/positions are
+        # permanent and never need renumbering or remapping.
+        self._active_ports: set[int | float] | None = None
 
     def renormalize(self, Z0ref: np.ndarray | float | complex) -> MWScalarNdim:
+        """Renormalize the S-parameters to a new reference impedance.
+
+        Args:
+            Z0ref (np.ndarray | float | complex): The new reference impedance (per port or a single value)
+
+        Returns:
+            MWScalarNdim: A new dataset with the renormalized S-parameters
+        """
         if isinstance(Z0ref, (float, complex, int)):
             Z0ref = np.ones_like(self.Z0) * Z0ref
 
@@ -1496,6 +2311,10 @@ class MWScalarNdim(Saveable):
         newndim._portmap = self._portmap
         newndim._portnumbers = self._portnumbers
         newndim._dense_frequencies = self._dense_frequencies
+        newndim._aaa_tol = self._aaa_tol
+        newndim._active_ports = (
+            set(self._active_ports) if self._active_ports is not None else None
+        )
         return newndim
 
     def dense_f(
@@ -1539,42 +2358,64 @@ class MWScalarNdim(Saveable):
         The p1 index becomes the differential mode port
         The p2 index becomes the common mode port
 
+        The mixed-mode conversion is only exact if both single-ended ports share the same
+        reference impedance Z. The differential port is then referenced to 2·Z and the common
+        mode port to Z/2. For ports whose reference impedance differs per port or is complex
+        (e.g. modal ports, whose Z0 is the computed mode impedance), provide Z0renorm to first
+        renormalize all ports to a common reference.
+
+        The stored Z0 of the two combined ports remains the single-ended reference Z, so
+        S(p1, p1) is the differential mode reflection referenced to 2·Z and S(p2, p2) the common
+        mode reflection referenced to Z/2. Keep this in mind when renormalizing or exporting
+        the result afterwards.
+
         Args:
-            p1 (int): The first port number
-            p2 (int): The second port number
+            p1 (int): The first port number (becomes the differential mode port)
+            p2 (int): The second port number (becomes the common mode port)
+            Z0renorm (np.ndarray | float | complex | None, optional): If given, first renormalize
+                all ports to this reference impedance (and store it as the new Z0). Defaults to None
+                (use the S-parameters as they are, referenced to the current port impedances).
 
         Returns:
-            MWScalarNdim: _description_
+            MWScalarNdim: This dataset with the combined ports
         """
         if p1 == p2:
             raise ValueError("p1 and p2 must be different port numbers")
+        if p1 not in self._portmap or p2 not in self._portmap:
+            raise KeyError(
+                f"Port(s) {p1}, {p2} not found. Available ports: "
+                f"{sorted(self._portmap)}"
+            )
 
         F, N, _ = self.Sp.shape
-        p1 = p1 - 1
-        p2 = p2 - 1
+        # Resolve via the port map instead of assuming array position == port
+        # number - 1, so this stays correct even after embed_external_component
+        # has marked some ports inactive.
+        ii = self._portmap[p1]
+        jj = self._portmap[p2]
 
-        if not (0 <= p1 < N and 0 <= p2 < N):
-            raise IndexError(f"Ports {p1 + 1} or {p2 + 1} are out of range {N}")
-
-        Sout = self.Sp.copy()
+        S = self.Sp
         if Z0renorm is not None:
-            Sout = renormalise_s(Sout, Z0renorm, self.Z0)
+            S = renormalise_s(S, self.Z0, Z0renorm)
+            self.Z0 = np.broadcast_to(
+                np.asarray(Z0renorm, dtype=np.complex128), self.Z0.shape
+            ).copy()
+        Sout = S.copy()
 
-        ii, jj = p1, p2
         idx = np.ones(N, dtype=np.bool)
         idx[[ii, jj]] = False
         others = np.nonzero(idx)[0]
         isqrt2 = 1.0 / np.sqrt(2.0)
 
-        Sout[:, others, ii] = (self.Sp[:, others, ii] - self.Sp[:, others, jj]) * isqrt2
-        Sout[:, others, jj] = (self.Sp[:, others, ii] + self.Sp[:, others, jj]) * isqrt2
-        Sout[:, ii, others] = (self.Sp[:, ii, others] - self.Sp[:, jj, others]) * isqrt2
-        Sout[:, jj, others] = (self.Sp[:, ii, others] + self.Sp[:, jj, others]) * isqrt2
+        Sout[:, others, ii] = (S[:, others, ii] - S[:, others, jj]) * isqrt2
+        Sout[:, others, jj] = (S[:, others, ii] + S[:, others, jj]) * isqrt2
+        Sout[:, ii, others] = (S[:, ii, others] - S[:, jj, others]) * isqrt2
+        Sout[:, jj, others] = (S[:, ii, others] + S[:, jj, others]) * isqrt2
 
-        Sii = self.Sp[:, ii, ii]
-        Sij = self.Sp[:, ii, jj]
-        Sji = self.Sp[:, jj, ii]
-        Sjj = self.Sp[:, jj, jj]
+        Sii = S[:, ii, ii]
+        Sij = S[:, ii, jj]
+        Sji = S[:, jj, ii]
+        Sjj = S[:, jj, jj]
 
         Sout[:, ii, ii] = 0.5 * (Sii - Sij - Sji + Sjj)
         Sout[:, ii, jj] = 0.5 * (Sii + Sij - Sji - Sjj)
@@ -1585,68 +2426,97 @@ class MWScalarNdim(Saveable):
 
         return self
 
-    def embed_external_component(self, touchstone_file: str, port_indices: list[int]) -> MWScalarNdim:
-        # 1. Load the external component
+    def embed_external_component(
+        self, touchstone_file: str, port_indices: list[int]
+    ) -> "MWScalarNdim":
+        """Embed an external N-port network (given as a Touchstone file) onto
+        a subset of this dataset's ports.
+
+        This does NOT remove ports -- `Sp`, `_portmap`, and `_portnumbers`
+        keep their original full size forever. Eliminated ports are marked
+        inactive (their rows/cols in `Sp` become NaN) instead of being
+        deleted. This means port labels and array positions are permanent
+        for the lifetime of the object: calling this repeatedly with
+        different, still-active port numbers just works, with no
+        renumbering, remapping, or caller-side bookkeeping required, and
+        each call correctly folds in the effect of any prior embedding.
+
+        Args:
+            touchstone_file (str): The filename of the touchstone file to import
+            port_indices (list[int]): The port numbers of this dataset to
+                connect the touchstone file to.
+
+        Returns:
+            MWScalarNdim: self, with the embedded ports marked inactive.
+        """
         from ....read import TouchstoneData
 
+        if self._active_ports is None:
+            self._active_ports = set(self._portnumbers)
+
+        missing = [p for p in port_indices if p not in self._active_ports]
+        if missing:
+            raise KeyError(
+                f"Port(s) {missing} are not available (already embedded, or "
+                f"don't exist). Active ports: {sorted(self._active_ports)}"
+            )
+        if len(set(port_indices)) != len(port_indices):
+            raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
+
         td = TouchstoneData(touchstone_file)
-        fem_s_matrix = self.Smat
         S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
-        port_indices = [ind-1 for ind in port_indices]
-        n_freq = fem_s_matrix.shape[0]
-        all_ports = np.arange(fem_s_matrix.shape[1])
-        n_ports = np.setdiff1d(all_ports, port_indices)
-        
-        # 2. Partition the block matrix
-        # S_nn, S_nm, S_mn, S_mm
-        S_nn = fem_s_matrix[:, n_ports][:, :, n_ports]
-        S_nm = fem_s_matrix[:, n_ports][:, :, port_indices]
-        S_mn = fem_s_matrix[:, port_indices][:, :, n_ports]
-        S_mm = fem_s_matrix[:, port_indices][:, :, port_indices]
-        
-        # 3. Compute the reduction: S_red = S_nn + S_nm @ S_ext @ inv(I - S_mm @ S_ext) @ S_mn
-        # Use np.linalg.solve for stability instead of direct inv
-        I = np.eye(len(port_indices))
-        
+
+        m_pos = [self._portmap[p] for p in port_indices]
+        n_labels = sorted(
+            self._active_ports - set(port_indices), key=lambda l: self._portmap[l]
+        )
+        n_pos = [self._portmap[l] for l in n_labels]
+
+        S_nn = self.Sp[:, n_pos][:, :, n_pos]
+        S_nm = self.Sp[:, n_pos][:, :, m_pos]
+        S_mn = self.Sp[:, m_pos][:, :, n_pos]
+        S_mm = self.Sp[:, m_pos][:, :, m_pos]
+
+        n_freq = self.Sp.shape[0]
+        I = np.eye(len(m_pos))
         S_red = np.zeros_like(S_nn)
         for i in range(n_freq):
-            # Term = (I - S_mm * S_ext)^-1
             term = np.linalg.inv(I - S_mm[i] @ S_ext[i])
             S_red[i] = S_nn[i] + S_nm[i] @ S_ext[i] @ term @ S_mn[i]
 
-        new_ndim = MWScalarNdim()
-        new_ndim.freq = self.freq
-        new_ndim.k0 = self.k0
-        new_ndim.Sp  = S_red
-        new_ndim.Q = None
-        new_ndim.beta = self.beta[:,n_ports]
-        new_ndim.Z0 = self.Z0[:,n_ports]
-        new_ndim._portmap = self._portmap
-        new_ndim._portnumbers = self._portnumbers
-        return new_ndim
-        
+        # Fold the embedding into the effective S among still-active ports,
+        # so a SUBSEQUENT embedding call sees the correct effective network.
+        self.Sp[np.ix_(range(n_freq), n_pos, n_pos)] = S_red
+        # Mark eliminated ports as no longer meaningful.
+        self.Sp[:, m_pos, :] = np.nan
+        self.Sp[:, :, m_pos] = np.nan
+
+        self._active_ports -= set(port_indices)
+
+        logger.info(
+            f"Embedded {touchstone_file!r} on ports {port_indices}. "
+            f"Active ports remaining: {sorted(self._active_ports)}"
+        )
+        return self
+
     @property
     def Smat(self) -> np.ndarray:
         """Returns the full S-matrix
 
         Returns:
-            np.ndarray: The S-matrix with shape (nF, nP, nP)
+            np.ndarray: The S-matrix with shape (nF, nP, nP). Includes all
+                original ports; ports eliminated by embed_external_component
+                are NaN.
         """
-        Nports = len(self._portmap)
-        nfreq = self.freq.shape[0]
-
-        Smat = np.zeros((nfreq, Nports, Nports), dtype=np.complex128)
-
-        for i in self._portnumbers:
-            for j in self._portnumbers:
-                Smat[:, i - 1, j - 1] = self.S(i, j)
-
-        return Smat
+        return self.Sp
 
     def emmodel(
         self, f_sample: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Returns the required date for a Heavi S-parameter component
+
+        Args:
+            f_sample (np.ndarray | None, optional): The frequencies at which to evaluate the S-parameter model. Defaults to None (the simulated frequencies).
 
         Returns:
             tuple[np.ndarray, np.ndarray]: Heavi data
@@ -1663,6 +2533,24 @@ class MWScalarNdim(Saveable):
         S = renormalise_s(S, Z0s, 50.0)
         return f, S
 
+    def _aaa_Smat(self, freq: np.ndarray, tol: float | None) -> np.ndarray:
+        """Joint AAA model of all active ports evaluated at freq.
+
+        Returns an array of shape (*dims, len(freq), P, P); inactive ports are NaN.
+        """
+        if tol is None:
+            tol = self._aaa_tol if self._aaa_tol is not None else 5e-4
+        active = self._active_ports if self._active_ports is not None else self._portnumbers
+        rows, cols = np.ix_(*[[self._portmap[p] for p in active]] * 2)
+
+        dims = self.freq.shape[:-1]
+        P = len(self._portmap)
+        Smat = np.full(dims + (len(freq), P, P), np.nan, dtype=np.complex128)
+        for ids in np.ndindex(*dims):
+            model = RationalModel(self.freq[ids], self.Sp[ids][:, rows, cols], tol)
+            Smat[ids][:, rows, cols] = model(freq)
+        return Smat
+
     def model_S(
         self,
         i: int,
@@ -1672,21 +2560,31 @@ class MWScalarNdim(Saveable):
         inc_real: bool = True,
         maxpoles: int = 30,
         minpoles: int = 1,
+        method: Literal["auto", "aaa", "vf"] = "auto",
+        tol: float | None = None,
         _warn: bool = True,
     ) -> np.ndarray:
         """Returns an S-parameter model object at a dense frequency range.
-        This method uses vector fitting inside the datasets frequency points to determine a model for the linear system.
+        This method fits a rational model through the datasets frequency points to determine a model for the linear system.
         If no frequency array is provided the .dense_f(NF) method should have been called.
+
+        Two methods are available: 'vf' (Vector Fitting) and 'aaa' (AAA rational approximation of all
+        ports jointly). 'auto' uses 'aaa' for data from run_adaptive_sweep, which is the model the
+        adaptive sweep was converged on, and 'vf' otherwise.
 
         Args:
             i (int): The first S-parameter index
             j (int): The second S-parameter index
-            freq (np.ndarray | optional): The frequency sample points. Defaults to None
-            Npoles (int | 'auto', optional): The number of poles to use (approx 2x divice order). Defaults to 10.
-            inc_real (bool, optional): Wether to allow for a real-pole. Defaults to False.
+            freq (np.ndarray | None, optional): The frequency sample points. Defaults to None
+            Npoles (int | Literal["auto"], optional): VF only: The number of poles to use (approx 2x divice order). Defaults to 'auto'.
+            inc_real (bool, optional): VF only: Wether to allow for a real-pole. Defaults to True.
+            maxpoles (int, optional): VF only: the maximum number of poles. Defaults to 30.
+            minpoles (int, optional): VF only: the minimum number of poles. Defaults to 1.
+            method (Literal["auto", "aaa", "vf"], optional): The fitting method. Defaults to 'auto'.
+            tol (float | None, optional): AAA only: The fit tolerance. Defaults to that of the adaptive sweep, or 5e-4.
 
         Returns:
-            SparamModel: The SparamModel object
+            np.ndarray: The modelled S-parameter
         """
         if freq is None:
             if self._dense_frequencies is None:
@@ -1695,6 +2593,11 @@ class MWScalarNdim(Saveable):
                 )
             else:
                 freq = self._dense_frequencies
+
+        if method == "auto":
+            method = "aaa" if self._aaa_tol is not None else "vf"
+        if method == "aaa":
+            return self._aaa_Smat(freq, tol)[..., self._portmap[i], self._portmap[j]]
 
         shape = np.squeeze(self.S(i, j)).shape
         if len(shape) > 1:
@@ -1728,19 +2631,26 @@ class MWScalarNdim(Saveable):
         frequencies: np.ndarray | None = None,
         Npoles: int = 10,
         inc_real: bool = True,
+        method: Literal["auto", "aaa", "vf"] = "auto",
+        tol: float | None = None,
         _warn: bool = True,
     ) -> np.ndarray:
-        """Generates a full S-parameter matrix on the provided frequency points using the Vector Fitting algorithm.
+        """Generates a full S-parameter matrix on the provided frequency points using a rational model.
 
         This function output can be used directly with the .save_matrix() method.
+        See .model_S() for the available methods.
 
         Args:
             frequencies (np.ndarray): The sample frequencies
-            Npoles (int, optional): The number of poles to fit. Defaults to 10.
-            inc_real (bool, optional): Wether allow for a real pole. Defaults to False.
+            Npoles (int, optional): VF only: The number of poles to fit. Defaults to 10.
+            inc_real (bool, optional): VF only: Wether allow for a real pole. Defaults to True.
+            method (Literal["auto", "aaa", "vf"], optional): The fitting method. Defaults to 'auto'.
+            tol (float | None, optional): AAA only: The fit tolerance. Defaults to that of the adaptive sweep, or 5e-4.
 
         Returns:
-            np.ndarray: The (Nf,Np,Np) S-parameter matrix
+            np.ndarray: The (Nf,Np,Np) S-parameter matrix. Entries for
+                ports eliminated by embed_external_component are NaN
+                (they are not vector-fit since their data is NaN).
         """
         if frequencies is None:
             if self._dense_frequencies is None:
@@ -1750,17 +2660,23 @@ class MWScalarNdim(Saveable):
             else:
                 frequencies = self._dense_frequencies
 
+        if method == "auto":
+            method = "aaa" if self._aaa_tol is not None else "vf"
+        if method == "aaa":
+            return self._aaa_Smat(frequencies, tol)
+
         Nports = len(self._portmap)
         nfreq = frequencies.shape[0]
 
-        Smat = np.zeros((nfreq, Nports, Nports), dtype=np.complex128)
+        Smat = np.full((nfreq, Nports, Nports), np.nan, dtype=np.complex128)
+        active = self._active_ports if self._active_ports is not None else set(self._portnumbers)
 
-        for i in self._portnumbers:
-            for j in self._portnumbers:
+        for i in active:
+            for j in active:
                 S = self.model_S(
-                    i, j, frequencies, Npoles=Npoles, inc_real=inc_real, _warn=_warn
+                    i, j, frequencies, Npoles=Npoles, inc_real=inc_real, method="vf", _warn=_warn
                 )
-                Smat[:, i - 1, j - 1] = S
+                Smat[:, self._portmap[i], self._portmap[j]] = S
         return Smat
 
     def export_touchstone(
@@ -1774,8 +2690,9 @@ class MWScalarNdim(Saveable):
     ):
         """Export the S-parameter data to a touchstone file
 
-        This function assumes that all ports are numbered in sequence 1,2,3,4... etc with
-        no missing ports. Otherwise it crashes. Will be update/improved soon with more features.
+        Only ports still active (not eliminated via embed_external_component)
+        are exported -- a Touchstone file can't represent internal/embedded
+        ports.
 
         Additionally, one may provide a reference impedance. If this argument is provided, a port impedance renormalization
         will be performed to that common impedance.
@@ -1783,31 +2700,28 @@ class MWScalarNdim(Saveable):
         Args:
             filename (str): The File name
             Z0ref (float): The reference impedance to normalize to. Defaults to None
-            format (Literal[DB, RI, MA]): The dataformat used in the touchstone file.
+            format (Literal["RI", "MA", "DB"]): The dataformat used in the touchstone file.
             custom_comments : list[str], optional. List of custom comment strings to add to the touchstone file header.
                                                     Each string will be prefixed with "! " automatically.
-            dense_freq (np.ndarray | optional): An optional dense interpolation frequency range
+            funit (Literal["Hz", "KHz", "MHz", "GHz"], optional): The frequency unit written to the file. Defaults to "GHz".
+            dense_freq (np.ndarray | None, optional): An optional dense interpolation frequency range
         """
 
         logger.info(f"Exporting S-data to {filename}")
-        Nports = len(self._portmap)
+
+        active = self._active_ports if self._active_ports is not None else set(self._portnumbers)
+        active_ports = sorted(active, key=lambda p: self._portmap[p])
+        active_pos = [self._portmap[p] for p in active_ports]
 
         if dense_freq is None:
             freqs = self.freq
-            Smat = np.zeros((len(freqs), Nports, Nports), dtype=np.complex128)
-
-            for i in range(1, Nports + 1):
-                for j in range(1, Nports + 1):
-                    S = self.S(i, j)
-                    Smat[:, i - 1, j - 1] = S
+            Smat = self.Sp[:, active_pos][:, :, active_pos]
         else:
             freqs = dense_freq
-            Smat = np.zeros((len(freqs), Nports, Nports), dtype=np.complex128)
+            full_dense = self.model_Smat(dense_freq)
+            Smat = full_dense[:, active_pos][:, :, active_pos]
 
-            for i in range(1, Nports + 1):
-                for j in range(1, Nports + 1):
-                    S = self.model_S(i, j, dense_freq)
-                    Smat[:, i - 1, j - 1] = S
+        Z0_active = self.Z0[:, active_pos]
 
         self.save_smatrix(
             filename,
@@ -1817,6 +2731,7 @@ class MWScalarNdim(Saveable):
             Z0ref=Z0ref,
             custom_comments=custom_comments,
             funit=funit,
+            Z0_override=Z0_active,
         )
 
     def save_smatrix(
@@ -1828,6 +2743,7 @@ class MWScalarNdim(Saveable):
         format: Literal["RI", "MA", "DB"] = "RI",
         custom_comments: list[str] | None = None,
         funit: Literal["Hz", "KHz", "MHz", "GHz"] = "GHz",
+        Z0_override: np.ndarray | None = None,
     ) -> None:
         """Save an S-parameter matrix to a touchstone file.
 
@@ -1841,11 +2757,15 @@ class MWScalarNdim(Saveable):
             format (Literal["RI","MA",'DB], optional): The S-parameter format. Defaults to 'RI'.
             custom_comments : list[str], optional. List of custom comment strings to add to the touchstone file header.
                                                     Each string will be prefixed with "! " automatically.
+            funit (Literal["Hz", "KHz", "MHz", "GHz"], optional): The frequency unit written to the file. Defaults to "GHz".
+            Z0_override (np.ndarray | None, optional): Reference impedance array
+                matching Smatrix's port axis, for when it's a subset of the
+                full self.Z0 (e.g. active ports only). Defaults to self.Z0.
         """
         from .touchstone import generate_touchstone
 
         if Z0ref is not None:
-            Z0s = self.Z0
+            Z0s = Z0_override if Z0_override is not None else self.Z0
             logger.debug(f"Renormalizing impedances {Z0s}Ω to {Z0ref}Ω")
             # This can be the case if the S-matrix data is interpolated with vectorfitting
             nz, nport = Z0s.shape

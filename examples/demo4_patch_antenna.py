@@ -34,8 +34,10 @@ f1 = 1.545e9  # start frequency
 f2 = 1.605e9  # stop frequency
 
 # --- Create simulation object -------------------------------------------
+
 model = em.Simulation("PatchAntenna")
-model.check_version("2.8.9")  # Checks version compatibility.
+model.check_version("3.0.0")  # Checks version compatibility.
+
 # --- Define geometry primitives -----------------------------------------
 # Substrate block centered at origin in XY, thickness in Z (negative down)
 dielectric = em.geo.Box(wsub, hsub, th, position=(-wsub / 2, -hsub / 2, -th))
@@ -75,7 +77,7 @@ rpatch.set_material(em.lib.PEC)
 dielectric.set_material(em.Material(3.38, color="EMERGE-DIEL", opacity=0.9))
 
 # Mesh resolution: fraction of wavelength
-model.mw.set_resolution(0.25)
+model.mw.set_resolution(0.15)
 
 # Frequency sweep across the resonance
 model.mw.set_frequency_range(f1, f2, 7)
@@ -85,7 +87,8 @@ model.commit_geometry()
 
 # --- Mesh refinement settings --------------------------------------------
 # Finer boundary mesh on patch edges for accuracy
-model.mesher.set_boundary_size(rpatch, 3 * mm)
+model.mesher.set_boundary_size(rpatch, 2 * mm)
+
 # Refined mesh on port face for excitation accuracy
 model.mesher.set_face_size(port, 1 * mm)
 
@@ -144,8 +147,7 @@ model.display.populate()
 field = data.field.find(freq=1.59e9)
 ff3d = field.farfield_3d(boundary_selection, origin=(0, 0, 0))
 model.display.add_farfield3d(ff3d, rmax=40 * mm, offset=(0, 0, 40 * mm))
-model.display.cbar("Ey [V/m]", clim=(-1000, 1000)).animate().add_field(
+model.display.cbar("Ey [V/m]").animate().add_field(
     field.grid(N=100_000, z_range=(-th, Rair)).scalar("Ey", "complex"), symmetrize=True
 )
-
 model.display.show()

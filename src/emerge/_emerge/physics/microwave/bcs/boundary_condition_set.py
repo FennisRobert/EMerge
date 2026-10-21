@@ -47,11 +47,17 @@ from .boundary_conditions import (
     ScatteredField,
     ThinConductor,
     RobinBC,
+    Void,
 )
 
 
 class MWBoundaryConditionSet(BoundaryConditionSet):
     def __init__(self, periodic_cell: PeriodicCell | None):
+        """The boundary conditions of the microwave physics. Use the attributes (PEC, ModalPort, ...) to create them.
+
+        Args:
+            periodic_cell (PeriodicCell | None): The periodic cell of the simulation, if any
+        """
         super().__init__()
 
         self.PEC: type[PEC] = self._construct_bc(PEC)
@@ -77,6 +83,8 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
         self.WavePortIH: type[WavePortIH] = self._construct_bc(WavePortIH)
         self.ScatteredField: type[ScatteredField] = self._construct_bc(ScatteredField)
         self.ThinConductor: type[ThinConductor] = self._construct_bc(ThinConductor)
+
+        self.Void: type[Void] = self._construct_bc(Void)
         self._cell: PeriodicCell | None = None
 
     def get_conductors(self) -> list[BoundaryCondition]:
@@ -106,15 +114,57 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
             "Periodic",
             "FloquetPort",
             "SurfaceImpedance",
+            "ThinConductor"
         ],
     ) -> FaceSelection:
+        """All faces with a boundary condition of a given type.
+
+        Args:
+            bctype (Literal["PEC", "ModalPort", "LumpedPort", "PMC", "LumpedElement", "RectangularWaveguide", "Periodic", "FloquetPort", "SurfaceImpedance", "ThinConductor"]): The boundary condition type
+
+        Returns:
+            FaceSelection: The faces
+        """
         tags = []
         for bc in self.boundary_conditions:
             if bctype in str(bc.__class__):
                 tags.extend(bc.selection.tags)
         return FaceSelection(tags)
 
+    def get_port(self, port_number: int) -> PortBC | None:
+        """Return the port boundary condition object for the given port number.
+
+        Args:
+            port_number (int): The desired port number
+
+        Returns:
+            PortBC | None: The port, None if there is no port with this number
+        """
+        for bc in self.oftype(PortBC):
+            if bc.port_number == port_number:
+                return bc
+        return None
+
+    def get_ports(self) -> tuple[PortBC]:
+        """Returns a tuple of all port boundary conditions
+
+        Returns:
+            tuple[PortBC]: All ports sorted by port number
+        """
+        ports = [bc for bc in self.oftype(PortBC)]
+        ports = sorted(ports, key=lambda x: x.port_number)
+        return ports
+
     def floquet_port(self, poly: GeoSurface, port_number: int) -> FloquetPort:
+        """Create a Floquet port on the periodic cell.
+
+        Args:
+            poly (GeoSurface): The port face
+            port_number (int): The port number
+
+        Returns:
+            FloquetPort: The Floquet port
+        """
         if self._cell is None:
             raise ValueError("Periodic cel must be defined for this simulation.")
         if isinstance(self._cell, RectCell):
@@ -132,7 +182,7 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
         """Iterates through all port + smatrix + port mode idex
 
         Yields:
-            Generator[tuple[PortBC, int | float, int], None, None]: _description_
+            tuple[PortBC, int | float, int]: The port, its S-matrix index and the mode number
         """
         ports = sorted(self.oftype(PortBC), key=lambda x: x.port_number)
         for port in ports:

@@ -65,7 +65,13 @@ def gauss3_composite(x: np.ndarray, y: np.ndarray) -> float:
 
 
 class Line(Saveable):
-    """A Line class used for convenient definition of integration lines"""
+    """A Line class used for convenient definition of integration lines
+
+    Args:
+        xpts (np.ndarray): The x-coordinates of the line points
+        ypts (np.ndarray): The y-coordinates of the line points
+        zpts (np.ndarray): The z-coordinates of the line points
+    """
 
     def __init__(self, xpts: np.ndarray, ypts: np.ndarray, zpts: np.ndarray):
 
@@ -161,15 +167,11 @@ class Line(Saveable):
     def subsample(self, n: int) -> Line:
         """Split each segment into n sub-segments, returning a new Line.
 
-        Parameters
-        ----------
-        n : int
-            Number of sub-segments per original segment.
+        Args:
+            n (int): Number of sub-segments per original segment.
 
-        Returns
-        -------
-        Line
-            A new Line with n*len(segments) segments.
+        Returns:
+            Line: A new Line with n*len(segments) segments.
         """
         xs, ys, zs = [], [], []
         for i in range(len(self.dxs)):
@@ -190,15 +192,11 @@ class Line(Saveable):
         arc length is unchanged. For closed loops (where the first and last
         point coincide), all points are treated as interior.
 
-        Parameters
-        ----------
-        nsteps : int
-            Number of smoothing iterations.
+        Args:
+            nsteps (int, optional): Number of smoothing iterations. Defaults to 1.
 
-        Returns
-        -------
-        Line
-            A new Line with smoothed coordinates.
+        Returns:
+            Line: A new Line with smoothed coordinates.
         """
         xs = self.xs.copy()
         ys = self.ys.copy()
@@ -301,7 +299,16 @@ class Line(Saveable):
     def line_integral_precalc(
         self, Ex: np.ndarray, Ey: np.ndarray, Ez: np.ndarray
     ) -> complex:
-        """Compute the line integral for a complex vector field function evalfunc."""
+        """Compute the line integral of a vector field sampled at the line points.
+
+        Args:
+            Ex (np.ndarray): The field x-component at the line points
+            Ey (np.ndarray): The field y-component at the line points
+            Ez (np.ndarray): The field z-component at the line points
+
+        Returns:
+            complex: The line integral
+        """
 
         EdotL = Ex * self.dx + Ey * self.dy + Ez * self.dz
         return gauss3_composite(self.l, EdotL)

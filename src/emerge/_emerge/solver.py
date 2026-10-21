@@ -17,21 +17,26 @@
 
 # Last Cleanup: 2025-01-01
 from __future__ import annotations
-from scipy.sparse import csc_matrix, save_npz # type: ignore
+from scipy.sparse import csc_matrix, save_npz# type: ignore
 from scipy.sparse.csgraph import reverse_cuthill_mckee  # type: ignore
-from scipy.sparse.linalg import bicgstab, cg, gmres, gcrotmk, eigs, splu  # type: ignore
+from scipy.sparse.linalg import bicgstab, cg, gmres, gcrotmk, eigs, splu, factorized, lobpcg, LinearOperator # type: ignore
 from scipy.linalg import eig  # type: ignore
 from scipy import sparse  # type: ignore
 import hashlib
 from dataclasses import dataclass, field
 import numpy as np
 from loguru import logger
+import multiprocessing as _mp
 import platform
 import time
 from typing import Literal, Callable
 from enum import Enum
 from .file import Saveable
 import os
+from .mldata import MLPreconData
+from packaging.version import Version
+
+_is_main_process = _mp.current_process().name == "MainProcess"
 
 ############################################################
 #                   ENVIRONMENT VARIABLES                  #
@@ -54,6 +59,8 @@ _CUDSS_AVAILABLE = False
 _MUMPS_AVAILABLE = False
 _AASDS_AVAILABLE = False
 _SKSP_AVAILABLE = False
+_RSLAB_AVAILABLE = False
+_SPARTA_AVAILABLE = False
 
 """ Check if the PC runs on a non-ARM architechture
 If so, attempt to import PyPardiso (if its installed)
@@ -80,7 +87,8 @@ try:
 
     _UMFPACK_AVAILABLE = True
 except ModuleNotFoundError:
-    logger.debug("UMFPACK not found, defaulting to SuperLU")
+    if _is_main_process:
+        logger.trace("UMFPACK Interface not found. (not harmful)")
 
 ############################################################
 #                           MUMPS                          #
@@ -91,7 +99,8 @@ try:
 
     _MUMPS_AVAILABLE = True
 except ModuleNotFoundError as e:
-    logger.debug("MUMPS not found, defaulting to SuperLU")
+    if _is_main_process:
+        logger.trace("MUMPSInterface not found. (not harmful)")
 
 
 ############################################################
@@ -102,11 +111,31 @@ try:
 
     _AASDS_AVAILABLE = True
 except ModuleNotFoundError as e:
-    logger.debug(e)
-    logger.debug("AASDS not found, defaulting to SuperLU")
+    logger.trace("AASDS Interface not found. (not harmful)")
 except ImportError as e:
-    logger.debug(e)
     logger.debug("Tried to import an installed AASDS solver on a non Darwin system.")
+
+############################################################
+#                          RSLAB                           #
+############################################################
+try:
+    import rslab  # type: ignore
+    _RSLAB_AVAILABLE = True
+except ModuleNotFoundError as e:
+    logger.trace("RSLAB Interface not found. (not harmful)")
+
+############################################################
+#                         SPARTA                           #
+############################################################
+try:
+    import sparta  # type: ignore
+    _SPARTA_AVAILABLE = True
+    if Version(sparta.__version__) < Version("0.2.0"):
+        logger.error('Sparta version is outdated, install the latest (at least 0.2.0) from github: pip install git+https://github.com/FennisRobert/SPARTA')
+        _SPARTA_AVAILABLE = False
+except ModuleNotFoundError as e:
+    logger.trace("SPARTA Interface not found. (not harmful)")
+
 
 ############################################################
 #                           CUDSS                          #
@@ -114,14 +143,16 @@ except ImportError as e:
 
 
 try:
-    from .solve_interfaces.cudss_interface import CuDSSInterface
+    from .solve_interfaces.cudss_interface import CuDSSInterface, gpu_fp64_ratio
 
     _CUDSS_AVAILABLE = True
 except ModuleNotFoundError:
-    pass
-except ImportError as e:
-    logger.error("Error while importing CuDSS dependencies:")
-    logger.exception(e)
+    logger.trace("CuDSS Interface not found. (not harmful)")
+except Exception as e:
+    # Any failure in the optional GPU stack (e.g. an API change in nvmath-python raising an
+    # AttributeError) must not break `import emerge` for CPU-only use.
+    logger.warning(f"The cuDSS GPU solver is unavailable: {type(e).__name__}: {e}")
+    logger.debug("cuDSS import error details:", exc_info=e)
 
 
 ############################################################
@@ -130,7 +161,7 @@ except ImportError as e:
 
 try:
     from sksparse.cholmod import cho_factor, metis
-
+    logger.trace("Scikit Sparse Interface not found. (not harmful)")
     _SKSP_AVAILABLE = True
 except ModuleNotFoundError:
     pass
@@ -406,6 +437,46 @@ def filter_unique_eigenpairs(
     return unique_values, unique_vectors
 
 
+def filter_and_rank_modes(
+    evals: np.ndarray,
+    evecs: np.ndarray,
+    nmodes: int,
+    target_k0: float,
+    sign: float = 1.0,
+    min_k0: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Filters out zero-eigenvalue/spurious modes and selects the top 'nmodes' 
+    closest to target_k0. Guarantees returning at least 'nmodes' items.
+    """
+    k0_vals = np.sqrt(evals / sign)
+    physical_mask = np.abs(k0_vals) >= min_k0
+    physical_indices = np.where(physical_mask)[0]
+
+    if len(physical_indices) >= nmodes:
+        # Rank physical modes by distance to target shift
+        ranked = physical_indices[
+            np.argsort(np.abs(k0_vals[physical_indices] - target_k0))
+        ]
+        selected_indices = ranked[:nmodes]
+    else:
+        # Fallback: keep all physical modes, pad remainder with remaining spectrum
+        spurious_indices = np.where(~physical_mask)[0]
+        
+        phys_ranked = physical_indices[
+            np.argsort(np.abs(k0_vals[physical_indices] - target_k0))
+        ]
+        spur_ranked = spurious_indices[
+            np.argsort(np.abs(k0_vals[spurious_indices] - target_k0))
+        ]
+        
+        selected_indices = np.concatenate((phys_ranked, spur_ranked))[:nmodes]
+
+    # Sort final selected slice by ascending real wavenumber
+    final_order = selected_indices[np.argsort(k0_vals[selected_indices].real)]
+
+    return evals[final_order], evecs[:, final_order]
+
 ############################################################
 #         COMPLEX MATRIX TO REAL MATRIX CONVERSION        #
 ############################################################
@@ -460,6 +531,7 @@ class Sorter:
     """
 
     def __init__(self):
+        """Create a sorter without a permutation."""
         self.perm = None
         self.inv_perm = None
 
@@ -474,9 +546,27 @@ class Sorter:
     def sort(
         self, A: csc_matrix, b: np.ndarray, reuse_sorting: bool = False
     ) -> tuple[csc_matrix, np.ndarray]:
+        """Reorder the system matrix and right hand side.
+
+        Args:
+            A (csc_matrix): The system matrix
+            b (np.ndarray): The right hand side
+            reuse_sorting (bool, optional): Reuse the permutation of the previous call. Defaults to False.
+
+        Returns:
+            tuple[csc_matrix, np.ndarray]: The sorted matrix and right hand side
+        """
         return A, b
 
     def unsort(self, x: np.ndarray) -> np.ndarray:
+        """Undo the reordering on a solution vector.
+
+        Args:
+            x (np.ndarray): The solution of the sorted system
+
+        Returns:
+            np.ndarray: The solution in the original ordering
+        """
         return x
 
 
@@ -512,6 +602,11 @@ class Solver:
     released_gil: bool = False
 
     def __init__(self, pre: str = ""):
+        """Create the solver.
+
+        Args:
+            pre (str, optional): The log message prefix. Defaults to "".
+        """
         self.own_preconditioner: bool = False
         self.initialized: bool = False
         self.pre: str = pre
@@ -520,17 +615,32 @@ class Solver:
         return f"{self.__class__.__name__}"
 
     def set_symmetry(self, complex_symmetric: bool) -> None:
+        """Tell the solver whether the matrix is complex symmetric.
+
+        Args:
+            complex_symmetric (bool): Whether the matrix is complex symmetric
+        """
         pass
 
     def initialize(self) -> None:
+        """Initialize the solver backend (only done once)."""
         return None
 
     def duplicate(self) -> Solver:
+        """Create a new solver of the same type with the same settings.
+
+        Returns:
+            Solver: The new solver
+        """
         return self.__class__(self.pre)
 
     def set_options(self, pivoting_threshold: float | None = None) -> None:
         """Write generic simulation options to the solver object.
-        Options may be ignored depending on the type of solver used."""
+        Options may be ignored depending on the type of solver used.
+
+        Args:
+            pivoting_threshold (float | None, optional): The pivoting threshold of direct solvers. Defaults to None.
+        """
         pass
 
     def solve(
@@ -541,6 +651,18 @@ class Solver:
         reuse_factorization: bool = False,
         id: int = -1,
     ) -> tuple[np.ndarray, SolveReport]:
+        """Solve the linear system Ax=b.
+
+        Args:
+            A (csc_matrix): The system matrix
+            b (np.ndarray): The right hand side
+            precon (Preconditioner): The preconditioner (used by iterative solvers)
+            reuse_factorization (bool, optional): Reuse the factorization of a previous solve. Defaults to False.
+            id (int, optional): The job id used in the log messages. Defaults to -1.
+
+        Returns:
+            tuple[np.ndarray, SolveReport]: The solution vector and the solve report
+        """
         raise NotImplementedError("This classes Ax=B solver method is not implemented.")
 
     def reset(self) -> None:
@@ -563,16 +685,27 @@ class EigSolver:
     req_sorter: bool = False
 
     def __init__(self, pre: str = ""):
+        """Create the eigenvalue solver.
+
+        Args:
+            pre (str, optional): The log message prefix. Defaults to "".
+        """
         self.own_preconditioner: bool = False
         self.pre: str = pre
 
     def initialize(self) -> None:
+        """Initialize the solver backend (only done once)."""
         return None
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}"
 
     def duplicate(self) -> Solver:
+        """Create a new solver of the same type with the same settings.
+
+        Returns:
+            Solver: The new solver
+        """
         return self.__class__(self.pre)
 
     def eig(
@@ -584,6 +717,19 @@ class EigSolver:
         which: str = "LM",
         sign: float = 1.0,
     ):
+        """Solve the generalized eigenvalue problem Ax=λBx.
+
+        Args:
+            A (csc_matrix): The A matrix
+            B (csc_matrix): The B matrix
+            nmodes (int, optional): The number of eigenmodes to find. Defaults to 6.
+            target_k0 (float, optional): The k0 around which to search. Defaults to 0.0.
+            which (str, optional): Which eigenvalues to find (ARPACK convention). Defaults to "LM".
+            sign (float, optional): The sign applied to the shift. Defaults to 1.0.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: The eigenvalues and eigenvectors
+        """
         raise NotImplementedError(
             "This classes eigenmdoe solver method is not implemented."
         )
@@ -726,6 +872,11 @@ class SolverBicgstab(Solver):
         self.b: np.ndarray = None
 
     def callback(self, xk):
+        """Iteration callback that logs the progress.
+
+        Args:
+            xk (np.ndarray): The current solution iterate
+        """
         self._iter += 1
         if self._iter % 10 == 0:
             logger.info(f"{self.pre}: Iteration {self._iter}")
@@ -796,6 +947,11 @@ class SolverGMRES(Solver):
 
     def callback(self, norm):
         # convergence = np.linalg.norm((self.A @ xk - self.b))
+        """Iteration callback that logs the progress.
+
+        Args:
+            norm (float): The preconditioned residual norm
+        """
         logger.info(self.pre + f"Iteration {norm:.4f}")
 
     def solve(
@@ -889,12 +1045,18 @@ class SolverSuperLU(Solver):
         self._a_hash: bytes = None
 
     def hash_A(self, A: csc_matrix) -> bytes:
-        """Hashes the A matrix"""
+        """Hashes the A matrix
+
+        Args:
+            A (csc_matrix): The system matrix
+
+        Returns:
+            bytes: The digest of the matrix
+        """
         hasher = hashlib.sha256()
         hasher.update(A.indptr.tobytes())
         hasher.update(A.indices.tobytes())
-        self._a_hash = hasher.digest()
-        return self._a_hash
+        return hasher.digest()
 
     def reset(self):
         self.A = None
@@ -972,10 +1134,10 @@ class SolverSuperLU(Solver):
                 x = np.empty_like(xp)
                 x[self._perm] = xp
             else:
-                x = np.empty_like(b)
-                for i in range(b.shape[1]):
-                    xp = self.lu.solve(b[self._perm, i])
-                    x[self._perm, i] = xp
+                bp = b[self._perm, :]
+                xp = self.lu.solve(bp)
+                x = np.empty_like(xp)
+                x[self._perm, :] = xp
         else:
             x = self.lu.solve(b)
 
@@ -1054,6 +1216,145 @@ class SolverUMFPACK(Solver):
             x[:, i] = self.umfpack.solve(um.UMFPACK_A, A, b[:, i], autoTranspose=False)  # ty: ignore
         aux = {"Pivoting Threshold": str(self._pivoting_threshold)}
         return x, SolveReport(solver=str(self), exit_code=0, aux=aux)
+
+class SolverRSLAB(Solver):
+    """Implements the UMFPACK Sparse SP solver."""
+
+    req_sorter = False
+    real_only = False
+    stype = SolverType.SINGLE_MP
+    name = "RS Lab"
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        logger.trace(self.pre + "Creating RSLAB solver")
+        self.A: np.ndarray = None
+        self.b: np.ndarray = None
+        self._csym: bool = True
+        self.factor = None
+        self.sym = None
+        self.initalized = False
+
+    def initialize(self):
+        if self.initalized:
+            return
+        logger.trace(self.pre + "Initializing RSLab Solver")
+        self.initalized = True
+
+    def reset(self) -> None:
+        logger.trace(self.pre + "Resetting RSLab solver state")
+        self.fact_symb = False
+
+    def set_symmetry(self, complex_symmetric: bool) -> None:
+        self._csym = complex_symmetric
+
+    def duplicate(self) -> Solver:
+        new_solver = self.__class__(self.pre)
+        return new_solver
+
+    def solve(self, A, b, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
+        logger.info(f"{_pfx(self.pre, id)} Calling RSLAB Solver.")
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        nthreads = int(os.getenv('RSLAB_NUM_THREADS', '4'))
+
+        path = 'lu'
+        extrdata = lambda x: x.data
+        kwargs = dict(method='left_looking', nemin=16, panel_nb=64, threads=nthreads)
+        if self._csym:
+            path = 'ldlt'
+            extrdata = lambda x: sparse.tril(A).data
+        if self.sym is None:
+            self.sym = rslab.analyze(A, path=path, ordering='metis', **kwargs)
+        self.factor = self.sym.factor(extrdata(A), **kwargs)
+
+
+        logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
+        x = self.factor.solve_many(b)
+        return x, SolveReport(solver=str(self), exit_code=0, aux=None)
+
+
+class SolverSparta(Solver):
+    """Implements the SPARTA Sparse Metal based GPU solver."""
+
+    req_sorter = False
+    real_only = False
+    stype = SolverType.SINGLE_MP
+    name = "Sparta"
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        logger.trace(self.pre + "Creating Sparta solver")
+        self.A: np.ndarray = None
+        self.b: np.ndarray = None
+        self._csym: bool = True
+        self.factor = None
+        self.sym = None
+        self.initalized = False
+        self.mode: Literal['CPU','GPU','HYBRID'] = 'GPU'
+        self.settings: dict = dict(
+            ordering=sparta.Ordering.SCALPEL, 
+            refinement_steps=0,
+        )
+
+    def initialize(self):
+        if self.initalized:
+            return
+        logger.trace(self.pre + "Initializing SPARTA Solver")
+        self.initalized = True
+
+    def reset(self) -> None:
+        logger.trace(self.pre + "Resetting SPARTA solver state")
+        if self.factor is not None:
+            self.factor.destroy()
+            self.factor = None
+        if self.sym is not None:
+            self.sym.destroy()
+            self.sym = None
+        self.fact_symb = False
+
+    def set_options(self, mode: Literal['GPU','CPU','HYBRID']) -> None:
+        """Set the factorization mode for the factorization. Options are:
+         - 'GPU': Use the GPU only
+         - 'CPU': Use the CPU only
+         - 'HYBRID': Use a Hybrid GPU + CPU solver (if available)
+        """
+        self.mode = mode
+
+    def set_symmetry(self, complex_symmetric: bool) -> None:
+        self._csym = complex_symmetric
+
+    def duplicate(self) -> Solver:
+        new_solver = self.__class__(self.pre)
+        return new_solver
+
+    def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
+
+        modemap = {
+            'GPU': (False, False),
+            'CPU': (True, False),
+            'HYBRID': (False, True),
+        }
+        cpu, hybrid = modemap.get(self.mode, (False, False))
+        
+        logger.info(f"{_pfx(self.pre, id)} Calling SPARTA Solver ({self.mode}, {sparta.__version__}).")
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        
+        mtype = sparta.MatrixType.COMPLEX_STRUCTURALLY_SYMMETRIC
+
+        if self._csym:
+            mtype = sparta.MatrixType.COMPLEX_SYMMETRIC
+            
+        if self.sym is None:
+            self.sym = sparta.analyze(A, force_cpu=cpu, hybrid=hybrid, mtype=mtype, **self.settings)
+        
+        self.factor = self.sym.factorize(A, force_cpu=cpu, hybrid=hybrid, mtype=mtype, **self.settings)
+        if not self.factor.quality.usable:
+            logger.warning('Matrix is so singular that it is broken on single precision. Use a double-precision CPU solver instead.')
+
+        logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
+        x = self.factor.solve_many(b)
+        
+        return x, SolveReport(solver=str(self), exit_code=0, aux=None)
 
 
 class SolverMUMPS(Solver):
@@ -1199,17 +1500,17 @@ class SolverAASDS(Solver):
             logger.trace(f"{_pfx(self.pre, id)} Executing symbolic factorization.")
             self.aasds.analyse(A)
             self.fact_symb = True
-        if True:
-            logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
-            self.aasds.factorize(A)
-            self.A = A
+    
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        self.aasds.factorize(A)
+        self.A = A
+
         logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
         x = np.zeros_like(b)
         for i in range(x.shape[1]):
             logger.trace(f"{_pfx(self.pre, id)} Solve RHS {i}.")
             x[:, i], _ = self.aasds.solve(b[:, i])
 
-        #
         return x, SolveReport(solver=str(self), exit_code=0)
 
 
@@ -1276,22 +1577,64 @@ class SolverCuDSS(Solver):
     stype = SolverType.SINGLE_ONLY
     name = "CUDSS"
 
+    # In 'auto' mode, single precision is used on GPUs whose FP64 throughput is at most 1/N of FP32.
+    FP64_RATIO_THRESHOLD: int = 8
+
     def __init__(self, pre: str):
         super().__init__(pre)
         self._cudss: CuDSSInterface | None = None
         self.fact_symb: bool = False
         self.fact_numb: bool = False
         self._csym: bool = True
+        self.precision: Literal['auto', 'single', 'double'] = 'auto'
+
+    def set_precision(self, precision: Literal['auto', 'single', 'double'] = 'auto') -> None:
+        """Sets the floating point precision of the cuDSS solve.
+
+        'auto' (default) checks the GPU: many consumer and workstation cards run double precision at
+        only 1/32 or 1/64 of the single precision rate, in which case single precision is used and a
+        warning is given. 'double' always uses double precision, 'single' always single precision.
+        Single precision is faster on such GPUs but less accurate for ill-conditioned problems.
+        """
+        if precision not in ('auto', 'single', 'double'):
+            raise ValueError(f"precision must be 'auto', 'single' or 'double', not {precision!r}")
+        self.precision = precision
+        if self._cudss is not None:
+            self._cudss._PRES = self._choose_precision()
+
+    def _choose_precision(self) -> int:
+        """Returns 1 (single) or 2 (double) for the CuDSS interface."""
+        if self.precision == 'single':
+            return 1
+        if self.precision == 'double':
+            return 2
+        try:
+            ratio, name = gpu_fp64_ratio()
+        except Exception as e:  # never let the hardware query stop a solve
+            logger.debug(f"Could not query the GPU double precision rate ({e}); using double precision.")
+            return 2
+        if ratio is not None and ratio >= self.FP64_RATIO_THRESHOLD:
+            logger.warning(
+                f"GPU '{name}' runs double precision at 1/{ratio} of single precision speed. cuDSS will use "
+                "single precision, which is faster but less accurate. To force double precision use "
+                "model.mw.solveroutine.solvers[em.EMSolver.CUDSS].set_precision('double')."
+            )
+            return 1
+        logger.debug(f"GPU '{name}' FP32:FP64 ratio {ratio}; using double precision.")
+        return 2
 
     def initialize(self) -> None:
         if self.initialized:
             return
         self._cudss = CuDSSInterface()
-        self._cudss._PRES = 2
+        self._cudss._PRES = self._choose_precision()
+        self._cudss._csym = self._csym
         self.initialized = True
 
     def set_symmetry(self, complex_symmetric: bool) -> None:
-        self._cudss._csym = complex_symmetric
+        self._csym = complex_symmetric
+        if self._cudss is not None:
+            self._cudss._csym = complex_symmetric
 
     def reset(self) -> None:
         self.fact_symb = False
@@ -1368,9 +1711,16 @@ class SolverLAPACK(EigSolver):
 
 
 class SolverARPACK(EigSolver):
-    """Implements the Scipy ARPACK iterative eigenmode solver."""
+    """Optimized baseline ARPACK solver utilizing fast SuperLU shift-invert factorization."""
 
     name = "ARPACK"
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        self.pivoting_threshold: float = 0.001
+        self.options: dict[str, str] = dict(
+            SymmetricMode=True, Equil=False, IterRefine="SINGLE"
+        )
 
     def eig(
         self,
@@ -1381,28 +1731,62 @@ class SolverARPACK(EigSolver):
         which: str = "LM",
         sign: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray]:
-        logger.info(
-            f"{_pfx(self.pre)} Searching for {nmodes} modes around β = {target_k0:.2f} rad/m mode={which} with ARPACK"
-        )
+        n_total = A.shape[0]
         sigma = (sign * (target_k0**2)).real
-        eigen_values, eigen_modes = eigs(A, k=nmodes, M=B, sigma=sigma, which=which)
-        return eigen_values, eigen_modes
 
+        # Oversample subspace to bypass Maxwell nullspace modes
+        k_request = min(max(nmodes * 3, 18), n_total - 2)
+        ncv = min(max(4 * k_request, 50), n_total - 1)
 
-class SmartARPACK_BMA(EigSolver):
-    """Implements the Scipy ARPACK iterative eigenmode solver with automatic search.
+        # 1. Fast, low-fill LU factorization at the fixed target shift
+        A_shifted = (A - sigma * B).tocsc()
+        lu = splu(
+            A_shifted,
+            permc_spec="MMD_AT_PLUS_A",
+            relax=0,
+            diag_pivot_thresh=self.pivoting_threshold,
+            options=self.options,
+        )
 
-    The Solver searches in a geometric range around the target wave constant.
+        def shift_invert_matvec(x: np.ndarray) -> np.ndarray:
+            return lu.solve(B @ x)
+
+        OPinv = LinearOperator(A.shape, matvec=shift_invert_matvec)
+
+        # 2. Run ARPACK using the pre-factored shift operator
+        evals_transformed, eigen_modes = eigs(
+            OPinv,
+            k=k_request,
+            which=which,
+            ncv=ncv,
+            tol=1e-8,
+        )
+
+        # Map mapped eigenvalues back to real spectrum: lambda = sigma + 1/theta
+        eigen_values = sigma + (1.0 / evals_transformed)
+
+        # Sort solutions relative to closeness to target_k0
+        k0_vals = np.sqrt(eigen_values / sign)
+        sort_idx = np.argsort(np.abs(k0_vals.real - target_k0))[:nmodes]
+
+        return eigen_values[sort_idx], eigen_modes[:, sort_idx]
+
+class SolverARPACK_BMA(EigSolver):
+    """Implements an optimized ARPACK solver with shift-invert SuperLU factorization,
+
+    Oversampled Krylov subspaces, and robust Cross-Modal Assurance Criterion (CMAC) filtering.
     """
 
-    name = "ARPACKBMA"
+    name = "ARPACK-BMA"
 
     def __init__(self, pre: str):
         super().__init__(pre)
-        self.symmetric_steps: int = 41
         self.search_range: float = 2.0
         self.energy_limit: float = 1e-4
-        self.ratio_limit: float = 1e-2
+        self.pivoting_threshold: float = 0.001
+        self.options: dict[str, str] = dict(
+            SymmetricMode=True, Equil=False, IterRefine="SINGLE"
+        )
 
         self.tot_eigen_values: list[complex] = []
         self.tot_eigen_modes: list[np.ndarray] = []
@@ -1414,50 +1798,33 @@ class SmartARPACK_BMA(EigSolver):
 
     @staticmethod
     def are_modes_identical(
-        v_old: np.ndarray, v_new: np.ndarray, tolerance: float = 0.99
+        v_old: np.ndarray, v_new: np.ndarray, tolerance: float = 0.98
     ) -> bool:
-        """
-        Check if two complex modes are the same regardless of phase or amplitude.
-
-        Parameters:
-            v_old, v_new: 1D arrays of complex degrees of freedom.
-            tolerance: Threshold close to 1.0 (e.g., 0.99 or 0.999 for numerical matches).
-        """
-        # Compute the complex inner product (Hermitian dot product)
+        """Check modal similarity using Cross-Modal Assurance Criterion (CMAC)."""
         inner_product = np.dot(np.conj(v_new), v_old)
-
-        # Compute self-products (magnitudes squared)
         mag_new = np.dot(np.conj(v_new), v_new).real
         mag_old = np.dot(np.conj(v_old), v_old).real
 
-        # Calculate CMAC
-        cmac = (np.abs(inner_product) ** 2) / (mag_new * mag_old)
+        if mag_new < 1e-15 or mag_old < 1e-15:
+            return False
 
-        logger.trace(f"    Modal Similarity (CMAC): {cmac:.5f}")
+        cmac = (np.abs(inner_product) ** 2) / (mag_new * mag_old)
         return cmac >= tolerance
 
     def add_mode(
         self, eigen_value: complex, eigen_vector: np.ndarray, energy: float
-    ) -> None:
-        logger.trace(
-            f"  Considering new eigenmode with value {eigen_value} and energy {energy:.4f}"
-        )
-        if self.n_found_modes == 0:
-            logger.trace("    adding new mode")
-            self.tot_eigen_values.append(eigen_value)
-            self.tot_eigen_modes.append(eigen_vector)
-            self.tot_energies.append(energy)
-            return
+    ) -> bool:
+        """Appends mode if unique relative to all previously accumulated modes."""
+        for existing_mode in self.tot_eigen_modes:
+            if self.are_modes_identical(existing_mode, eigen_vector):
+                logger.trace("    Ignoring duplicate mode via CMAC.")
+                return False
 
-        for mode in self.tot_eigen_modes:
-            if self.are_modes_identical(mode, eigen_vector):
-                continue
-            logger.trace("    adding new mode")
-            self.tot_eigen_values.append(eigen_value)
-            self.tot_eigen_modes.append(eigen_vector)
-            self.tot_energies.append(energy)
-            return
-        logger.trace("    ignoring mode because its the same as an existing mode")
+        logger.trace(f"    Adding new unique physical mode (Energy: {energy:.4e})")
+        self.tot_eigen_values.append(eigen_value)
+        self.tot_eigen_modes.append(eigen_vector)
+        self.tot_energies.append(energy)
+        return True
 
     def eig(
         self,
@@ -1468,197 +1835,119 @@ class SmartARPACK_BMA(EigSolver):
         which: str = "LM",
         sign: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray]:
-
         logger.info(
             f"{_pfx(self.pre)} Searching around β = {target_k0:.2f} rad/m with SmartARPACK (BMA)"
         )
 
-        # ARPACK uses a parameter which is the expected eigenvalue to search around.
-        # Because the exact eigenvalue is unknown, this scaler is used to scale
-        # target_k0
-        eig_search_scaler = np.geomspace(1, self.search_range, self.symmetric_steps)
-
-        # cache eigenvalues
         self.tot_eigen_values = []
         self.tot_eigen_modes = []
         self.tot_energies = []
 
-        # The Curl vs Total energy ratio should be in the order of k0**2 so keeping a safe margin:
         ratio_limit = (0.1 * target_k0) ** 2
+        n_total = A.shape[0]
 
-        q_factors = []
-        for q in eig_search_scaler:
-            q_factors.append(q)
-            q_factors.append(1 / q)
-        q_factors.pop(0)  # 1 and 1/1 is redundant
+        # 5 wide geometric shifts [1.0, 1.41, 0.71, 2.0, 0.5]
+        q_spread = np.geomspace(1.0, self.search_range, 3)
+        q_factors = [1.0]
+        for q in q_spread[1:]:
+            q_factors.extend([q, 1.0 / q])
 
-        # Search around k_0
-        for i, q in enumerate(q_factors):
-            # Search around q*k0
-            sigma = sign * ((q * target_k0) ** 2)
-            logger.trace(f" Searching around {q * target_k0:.2f} rad/m")
+        # Oversampling and enlarged subspace to bypass nullspace modes
+        k_request = min(max(nmodes * 3, 18), n_total - 2)
+        ncv = min(max(4 * k_request, 50), n_total - 1)
 
-            n_search = nmodes - self.n_found_modes
-            eigen_values, eigen_modes = eigs(
-                A, k=n_search, M=B, sigma=sigma, which=which
-            )
-            for i_sol in range(n_search):
-                eigen_mode = eigen_modes[:, i_sol]
-                eigen_value = eigen_values[i_sol]
-                # Compute the energy
-                energy = np.mean(np.abs(eigen_mode) ** 2)
+        for q in q_factors:
+            current_target = q * target_k0
+            sigma = (sign * (current_target**2)).real
+            logger.trace(f" Shift factorization at β = {current_target:.2f} rad/m")
 
-                # Compute curl and total energy
-                curl_energy = np.real(eigen_mode.conj() @ (A @ eigen_mode))
-                total_energy = np.real(eigen_mode.conj() @ (B @ eigen_mode))
-                ratio = abs(curl_energy / (total_energy + 1e-15))
-                logger.trace(
-                    f"Ratio = {ratio:.6f}, Energy = {energy:.4f}, value = {(sign * eigen_value) ** 0.5}, curl_energy = {curl_energy}, total_energy = {total_energy}"
+            # Fast direct factorization of (A - sigma*B) using custom SuperLU
+            try:
+                A_shifted = (A - sigma * B).tocsc()
+                lu = splu(
+                    A_shifted,
+                    permc_spec="MMD_AT_PLUS_A",
+                    relax=0,
+                    diag_pivot_thresh=self.pivoting_threshold,
+                    options=self.options,
                 )
 
-                if ratio > ratio_limit and energy > self.energy_limit:
+                def shift_invert_matvec(x: np.ndarray) -> np.ndarray:
+                    return lu.solve(B @ x)
+
+                OPinv = LinearOperator(A.shape, matvec=shift_invert_matvec)
+
+                evals_transformed, eigen_modes = eigs(
+                    OPinv,
+                    k=k_request,
+                    which=which,
+                    ncv=ncv,
+                    tol=1e-8,
+                )
+                eigen_values = sigma + (1.0 / evals_transformed)
+
+            except Exception as e:
+                logger.warning(f"ARPACK/SuperLU failed at shift {sigma:.2f}: {e}")
+                continue
+
+            # Process candidates retrieved from this shift
+            for i_sol in range(k_request):
+                eigen_mode = eigen_modes[:, i_sol]
+                eigen_value = eigen_values[i_sol]
+
+                energy = float(np.mean(np.abs(eigen_mode) ** 2))
+                curl_energy = float(np.real(eigen_mode.conj() @ (A @ eigen_mode)))
+                total_energy = float(np.real(eigen_mode.conj() @ (B @ eigen_mode)))
+                ratio = abs(curl_energy / (total_energy + 1e-15))
+
+                if (
+                    ratio > ratio_limit
+                    and energy > self.energy_limit
+                    and total_energy > 0.1
+                ):
                     self.add_mode(eigen_value, eigen_mode, energy)
 
-                # Break if you found enough valid modes.
                 if self.n_found_modes >= nmodes:
                     break
 
-            # Break if you found enough valid modes.
             if self.n_found_modes >= nmodes:
+                logger.info(
+                    f"Target mode count ({nmodes}) reached after shift q={q:.3f}"
+                )
                 break
 
-        # Sort solutions on mode energy
         if not self.tot_eigen_values:
             return np.array([]), np.array([])
-        val, mode, energy = zip(
-            *sorted(
-                zip(self.tot_eigen_values, self.tot_eigen_modes, self.tot_energies),
-                key=lambda x: x[2],
-                reverse=True,
-            )
-        )
-        eigen_values, eigen_modes = filter_unique_eigenpairs(val, mode)
 
-        eigen_values = np.array(eigen_values)
-        eigen_modes = np.array(eigen_modes).T
+        # Extract candidates and sort by ascending real wavenumber (k0)
+        vals_arr = np.array(self.tot_eigen_values)
+        modes_arr = np.column_stack(self.tot_eigen_modes)
 
-        return eigen_values, eigen_modes
+        k0_vals = np.sqrt(vals_arr / sign)
+        sort_idx = np.argsort(k0_vals.real)[:nmodes]
 
-
-class SmartARPACK(EigSolver):
-    """Implements the Scipy ARPACK iterative eigenmode solver with automatic search.
-
-    The Solver searches in a geometric range around the target wave constant.
-    """
-
-    name = "SMARTARPACK"
-
-    def __init__(self, pre: str):
-        super().__init__(pre)
-        self.symmetric_steps: int = 3
-        self.search_range: float = 2.0
-        self.energy_limit: float = 1e-4
-
-    def reduce_solutions(
-        self,
-        A: csc_matrix,
-        B: csc_matrix,
-        eigen_values: np.ndarray,
-        eigen_modes: np.ndarray,
-        limit: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Reduces the solutions by filtering out modes that don't have
-        an appropriate ratio of the curl term energy and total energy.
-
-        Args:
-            A (csc_matrix): _description_
-            B (csc_matrix): _description_
-            eigen_values (np.ndarray): _description_
-            eigen_modes (np.ndarray): _description_
-            limit (float): _description_
-
-        Returns:
-            tuple[np.ndarray, np.ndarray]: _description_
-        """
-        N = eigen_values.shape[0]
-        eigen_values_out = []
-        eigen_modes_out = []
-        for i in range(N):
-            value = eigen_values[i]
-            mode = eigen_modes[:, i]
-            energy = np.mean(np.abs(mode) ** 2)
-            curl_energy = np.real(mode.conj() @ (A @ mode))
-            total_energy = np.real(mode @ (B @ mode))
-            ratio = abs(curl_energy / (total_energy + 1e-15))
-            if ratio > limit and energy > self.energy_limit:
-                eigen_values_out.append(value)
-                eigen_modes_out.append(mode)
-        return eigen_values_out, eigen_modes_out
-
-    def eig(
-        self,
-        A: csc_matrix,
-        B: csc_matrix,
-        nmodes: int = 6,
-        target_k0: float = 0,
-        which: str = "LM",
-        sign: float = 1.0,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        logger.info(
-            f"{_pfx(self.pre)} Searching around 	β = {target_k0:.2f} rad/m with SmartARPACK"
-        )
-        # For BMA we can use a more constrained search space
-        eig_search_scalers = [1.0, 0.99, 1.01, 0.95, 1.05, 0.9, 1.1, 0.8, 1.2, 0.7, 1.3]
-        tot_eigen_values = []
-        tot_eigen_modes = []
-
-        ratio_limit = 0.1 * target_k0**2
-
-        for i, q in enumerate(eig_search_scalers):
-            logger.trace(
-                f"{_pfx(self.pre)} Modes Found = {len(tot_eigen_values)}, Search ratio: {q}"
-            )
-            sigma = sign * ((q * target_k0) ** 2)
-            eigen_values, eigen_modes = eigs(A, k=nmodes, M=B, sigma=sigma, which=which)
-            eigen_values, eigen_modes = self.reduce_solutions(
-                A, B, eigen_values, eigen_modes, ratio_limit
-            )
-            tot_eigen_values.extend(eigen_values)
-            tot_eigen_modes.extend(eigen_modes)
-            tot_eigen_values, tot_eigen_modes = filter_unique_eigenpairs(
-                tot_eigen_values, tot_eigen_modes
-            )
-            if len(tot_eigen_values) >= nmodes:
-                break
-
-        # Sort solutions on mode energy
-        val, mode = tot_eigen_values, tot_eigen_modes
-        val, mode = zip(*sorted(zip(val, mode), key=lambda x: x[0], reverse=False))  # type: ignore
-        eigen_values = np.array(val[:nmodes])
-        eigen_modes = np.array(mode[:nmodes]).T
-
-        return eigen_values, eigen_modes
-
-
+        return vals_arr[sort_idx], modes_arr[:, sort_idx]
 ############################################################
 #                        SOLVER ENUM                       #
 ############################################################
 
 
 class EMSolver(Enum):
+    TEST = 0
     SUPERLU = 1
     UMFPACK = 2
     PARDISO = 3
     LAPACK = 4
     ARPACK = 5
-    SMART_ARPACK = 6
-    SMART_ARPACK_BMA = 7
-    CUDSS = 8
-    MUMPS = 9
-    AASDS = 10
-    BICGSTAB = 11
-    CG = 12
-    CHOLMOD = 13
+    SMART_ARPACK_BMA = 6
+    CUDSS = 7
+    MUMPS = 8
+    AASDS = 9
+    BICGSTAB = 10
+    CG = 11
+    CHOLMOD = 12
+    RSLAB = 13
+    SPARTA = 14
 
     def create_solver(self, pre: str) -> Solver | EigSolver | None:
         """Create a solver class instance or None if the solver is not available."""
@@ -1670,28 +1959,34 @@ class EMSolver(Enum):
             return None
         elif self == EMSolver.MUMPS and not _MUMPS_AVAILABLE:
             return None
-        if self == EMSolver.CUDSS and not _CUDSS_AVAILABLE:
+        elif self == EMSolver.CUDSS and not _CUDSS_AVAILABLE:
             return None
-        if self == EMSolver.CHOLMOD and not _SKSP_AVAILABLE:
+        elif self == EMSolver.CHOLMOD and not _SKSP_AVAILABLE:
+            return None
+        elif self == EMSolver.RSLAB and not _RSLAB_AVAILABLE:
+            return None
+        elif self == EMSolver.SPARTA and not _SPARTA_AVAILABLE:
             return None
         return self._clss(pre)
 
     @property
     def _clss(self) -> type[Solver]:
         mapper = {
+            0: SolverRSLAB,
             1: SolverSuperLU,
             2: SolverUMFPACK,
             3: SolverPardiso,
             4: SolverLAPACK,
             5: SolverARPACK,
-            6: SmartARPACK,
-            7: SmartARPACK_BMA,
-            8: SolverCuDSS,
-            9: SolverMUMPS,
-            10: SolverAASDS,
-            11: SolverBicgstab,
-            12: SolverCG,
-            13: SolverCHOLMOD,
+            6: SolverARPACK_BMA,
+            7: SolverCuDSS,
+            8: SolverMUMPS,
+            9: SolverAASDS,
+            10: SolverBicgstab,
+            11: SolverCG,
+            12: SolverCHOLMOD,
+            13: SolverRSLAB,
+            14: SolverSparta
         }
         return mapper.get(self.value, None)
 
@@ -1713,6 +2008,12 @@ class SolveRoutine:
 
     def __init__(self, thread_nr: int = 0, proc_nr: int = 0):
 
+        """Create the solve routine with all available solvers.
+
+        Args:
+            thread_nr (int, optional): The thread number used in the log prefix. Defaults to 0.
+            proc_nr (int, optional): The process number used in the log prefix. Defaults to 0.
+        """
         self.pre: str = ""
         self._set_name(thread_nr, proc_nr)
 
@@ -1735,7 +2036,9 @@ class SolveRoutine:
         self.use_sorter: bool = False
         self.use_preconditioner: bool = False
         self.use_direct: bool = True
+
         self.save_disk: bool = False
+
         for solverkey, solver in self.solvers.items():
             if solver.name in _FORCED_SOLVER:
                 self.forced_solver.append(solver)
@@ -1780,23 +2083,21 @@ class SolveRoutine:
 
     @property
     def all_solvers(self) -> list[Solver]:
-        return list(
-            [
+        """All available Ax=b solvers."""
+        return [
                 solver
                 for solver in self.solvers.values()
                 if not isinstance(solver, EigSolver)
             ]
-        )
 
     @property
     def all_eig_solvers(self) -> list[EigSolver]:
-        return list(
-            [
+        """All available eigenvalue solvers."""
+        return [
                 solver
                 for solver in self.solvers.values()
                 if isinstance(solver, EigSolver)
             ]
-        )
 
     def _try_solver(self, solver_type: EMSolver) -> Solver:
         """Try to use the selected solver or else find another one that is working.
@@ -1842,11 +2143,14 @@ class SolveRoutine:
         Solvers will be checked on validity for the given problem.
 
         Args:
-            solver (EMSolver | Solver): The solver objects
+            *solvers (EMSolver | EigSolver | Solver): The solver objects
         """
 
         for solver in solvers:
             if isinstance(solver, EMSolver):
+                if solver not in self.solvers:
+                    logger.error(f'Solver {solver} is not installed. Ignoring preference.')
+                    return
                 self.forced_solver = [self.solvers[solver]]
             else:
                 self.forced_solver = [solver]
@@ -1856,7 +2160,7 @@ class SolveRoutine:
         Solvers will be checked on validity for the given problem.
 
         Args:
-            solver (EMSolver): The solver objects
+            *solvers (EMSolver): The solvers to disable
         """
         for solver in solvers:
             if isinstance(solver, EMSolver):
@@ -1909,7 +2213,12 @@ class SolveRoutine:
                 solver.set_options(pivoting_threshold=pivoting_threshold)
 
     def reset(self, reset_solver_preference: bool = False, hard: bool = False) -> None:
-        """Reset all solver states"""
+        """Reset all solver states
+
+        Args:
+            reset_solver_preference (bool, optional): Also clear the forced and disabled solvers. Defaults to False.
+            hard (bool, optional): Recreate all solver objects. Defaults to False.
+        """
         for solver in self.solvers.values():
             solver.reset()
         self.sorter.reset()
@@ -1937,7 +2246,7 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
 
         Returns:
@@ -1961,8 +2270,10 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
+            matrix_type (MatrixType): Type of the matrix (e.g., SPD, HPD)
+            direct (bool, optional): Whether to use a direct solver. Defaults to True.
 
         Returns:
             Solver: Returns the direct solver
@@ -1987,7 +2298,7 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
             direct (bool): If the direct solver should be used.
 
@@ -2001,7 +2312,7 @@ class SolveRoutine:
         if direct or A.shape[0] < 1000:
             return self.solvers[EMSolver.LAPACK]  # type: ignore
         else:
-            return self.solvers[EMSolver.SMART_ARPACK]  # type: ignore
+            return self.solvers[EMSolver.ARPACK]  # type: ignore
 
     def _get_eig_solver_bma(
         self, A: csc_matrix, b: csc_matrix, direct: bool | None = None
@@ -2011,7 +2322,7 @@ class SolveRoutine:
         This is the default implementation for the SolveRoutine Class.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
             direct (bool): If the direct solver should be used.
 
@@ -2030,12 +2341,13 @@ class SolveRoutine:
 
     def solve(
         self,
-        A: csc_matrix | csc_matrix,
+        A: csc_matrix,
         b: np.ndarray,
         solve_ids: np.ndarray,
         direct: bool = True,
         id: int = -1,
         matrix_type: MatrixType = MatrixType.UNKNOWN,
+        mldataset: MLPreconData | None = None,
     ) -> tuple[np.ndarray, SolveReport]:
         """Solve the system of equations defined by Ax=b for x.
 
@@ -2043,27 +2355,33 @@ class SolveRoutine:
         The solve routine will go through the required steps defined in the routine to tackle the problme.
 
         Args:
-            A (np.ndarray | csc_matrix): The (Sparse) matrix
+            A (csc_matrix): The (Sparse) matrix
             b (np.ndarray): The source vector
             solve_ids (np.ndarray): A vector of ids for which to solve the problem. For EM problems this
-            implies all non-PEC degrees of freedom.
-            reuse (bool): Whether to reuse the existing factorization if it exists.
+                implies all non-PEC degrees of freedom.
+            direct (bool, optional): Use a direct solver. Defaults to True.
+            id (int, optional): An identifier of this solve used in log messages and cache file names. Defaults to -1.
+            matrix_type (MatrixType, optional): The matrix type. Classified from A if UNKNOWN. Defaults to MatrixType.UNKNOWN.
+            mldataset (MLPreconData | None, optional): Data for the machine learning preconditioner. Defaults to None.
 
         Returns:
-            np.ndarray: The resultant solution.
+            tuple[np.ndarray, SolveReport]: The solution and the solve report.
         """
         if matrix_type is MatrixType.UNKNOWN:
             matrix_type = classify_matrix(A)
 
-        logger.debug(f"{_pfx(self.pre, id)} matrix type: {matrix_type}")
-
         if self.save_disk:
             name_A = f'SparseMatrix_{id}.npz'
-            name_b = f'SolVector_{id}.npy'
+            name_b = f'SolVector_{id}'
+            name_solve_ids = f'SolveIds_{id}'
+
             save_npz(name_A, A)
             np.save(name_b, b)
+            np.save(name_solve_ids, solve_ids)
             logger.info(f'Saved {name_A} and {name_b}')
-            
+
+        logger.debug(f"{_pfx(self.pre, id)} matrix type: {matrix_type}")
+
         if b.ndim == 1:
             b = b.reshape((b.shape[0], 1))
         solver: Solver = self._get_solver(A, b, matrix_type=matrix_type, direct=direct)
@@ -2126,6 +2444,15 @@ class SolveRoutine:
 
         solution[solve_ids, :] = x
 
+        if self.save_disk:
+            name_solution = f'Solution_{id}'
+            np.save(name_solution, solution)
+            logger.info(f'Saved {name_solution}')
+
+        if mldataset is not None:
+
+            mldataset.save(f'_{id}', b, solution)
+
         logger.debug(f"{_pfx(self.pre, id)} Solver complete!")
         report.jobid = id
         report.sorter = str(sorter)
@@ -2142,7 +2469,7 @@ class SolveRoutine:
     def eig_boundary(
         self,
         A: csc_matrix,
-        B: np.ndarray,
+        B: csc_matrix,
         solve_ids: np.ndarray,
         nmodes: int = 6,
         direct: bool | None = None,
@@ -2165,7 +2492,7 @@ class SolveRoutine:
             sign (float): The sign of the eigenvalue expression. Defaults to -1
 
         Returns:
-            np.ndarray: The eigen values
+            tuple[np.ndarray, np.ndarray, SolveReport]: The eigen values
             np.ndarray: The eigen vectors
             SolveReport: The solution report
         """
@@ -2204,7 +2531,7 @@ class SolveRoutine:
     def eig(
         self,
         A: csc_matrix,
-        B: np.ndarray,
+        B: csc_matrix,
         solve_ids: np.ndarray,
         nmodes: int = 6,
         direct: bool | None = None,
@@ -2215,16 +2542,15 @@ class SolveRoutine:
         Find the eigenmodes for the system Ax = λBx for a boundary mode problem
         
         Args:
-            A (csr_matrix): The Stiffness matrix
-            B (csr_matrix): The mass matrix
+            A (csc_matrix): The Stiffness matrix
+            B (csc_matrix): The mass matrix
             solve_ids (np.ndarray): The free nodes (non PEC)
-            nmodes (int): The number of modes to solve for. Defaults to 6
-            direct (bool): If the direct solver should be used (always). Defaults to False
-            target_k0 (float): The k0 value to search around
-            which (str): The search method. Defaults to 'LM' (Largest Magnitude)
-            sign (float): The sign of the eigenvalue expression. Defaults to -1\
+            nmodes (int, optional): The number of modes to solve for. Defaults to 6.
+            direct (bool | None, optional): If the direct solver should be used (always). Defaults to None.
+            target_f0 (float, optional): The eigenvalue to search around. Defaults to 0.0.
+            which (str, optional): The search method. Defaults to 'LM' (Largest Magnitude).
         Returns:
-            np.ndarray: The resultant solution.
+            tuple[np.ndarray, np.ndarray, SolveReport]: The eigenvalues, the eigenvectors and the solve report.
         """
         solver = self._get_eig_solver(A, B, direct=direct)
 
@@ -2263,12 +2589,26 @@ class SolveRoutine:
             ),
         )
 
-
 class AutomaticRoutine(SolveRoutine):
-    """Defines the Automatic Routine for EMerge."""
+    """Defines the Automatic Routine for EMerge as a Singleton."""
+    
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, *args, **kwargs):
+        # Prevent re-initialization if the singleton instance already exists
+        if getattr(self, "_initialized", False):
+            return
+        
+        super().__init__(*args, **kwargs)
+        self._initialized = True
 
     def pick_solver(
-        self, A: np.ndarray, b: np.ndarray, matrix_type: MatrixType, direct: bool = True
+        self, A: csc_matrix, b: np.ndarray, matrix_type: MatrixType, direct: bool = True
     ) -> Solver:
         """Returns the relevant Solver object given a certain matrix and source vector
 
@@ -2277,8 +2617,10 @@ class AutomaticRoutine(SolveRoutine):
         for medium sized problems or SPSolve for small ones.
 
         Args:
-            A (np.ndarray): The Matrix to solve for
+            A (csc_matrix): The Matrix to solve for
             b (np.ndarray): the vector to solve for
+            matrix_type (MatrixType): Type of the matrix (e.g., SPD, HPD)
+            direct (bool, optional): Whether to use a direct solver. Defaults to True.
 
         Returns:
             Solver: A solver object appropriate for solving the problem.
@@ -2303,6 +2645,8 @@ class AutomaticRoutine(SolveRoutine):
                 return self._try_solver(EMSolver.PARDISO)
             elif _AASDS_AVAILABLE:
                 return self._try_solver(EMSolver.AASDS)
+            elif _RSLAB_AVAILABLE:
+                            return self._try_solver(EMSolver.RSLAB)
             elif _MUMPS_AVAILABLE:
                 return self._try_solver(EMSolver.MUMPS)
             elif _UMFPACK_AVAILABLE:
@@ -2312,6 +2656,8 @@ class AutomaticRoutine(SolveRoutine):
         elif self.parallel == "MP":
             if _AASDS_AVAILABLE:
                 return self._try_solver(EMSolver.AASDS)
+            elif _RSLAB_AVAILABLE:
+                return self._try_solver(EMSolver.RSLAB)
             if _UMFPACK_AVAILABLE:
                 return self._try_solver(EMSolver.UMFPACK)
             else:
@@ -2320,10 +2666,3 @@ class AutomaticRoutine(SolveRoutine):
             return self._try_solver(EMSolver.SUPERLU)
 
         return self._try_solver(EMSolver.SUPERLU)
-
-
-############################################################
-#                    DEFAULT DEFINITION                   #
-############################################################
-
-DEFAULT_ROUTINE = AutomaticRoutine()

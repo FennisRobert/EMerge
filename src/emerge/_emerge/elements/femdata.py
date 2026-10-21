@@ -22,7 +22,6 @@ import numpy as np
 from typing import Callable
 from emsutil import Saveable
 
-
 class FEMBasis(Saveable):
     def __init__(self, mesh: Mesh3D):
         self.mesh: Mesh3D = mesh
@@ -56,42 +55,36 @@ class FEMBasis(Saveable):
 
     def empty_tet_rowcol(self) -> tuple[np.ndarray, np.ndarray]:
         N = self.n_tet_dofs
-        N2 = N**2
-        nnz = self.n_tets * N2
-        rows = np.empty(nnz, dtype=np.int64)
-        cols = np.empty(nnz, dtype=np.int64)
+        t2f = self.tet_to_field  # shape (N, n_tets)
 
-        for itet in range(self.n_tets):
-            p = itet * N2
+        rows = np.repeat(t2f, N, axis=0).ravel(order="F").astype(np.int64, copy=False)
+        cols = np.tile(t2f, (N, 1)).ravel(order="F").astype(np.int64, copy=False)
 
-            indices = self.tet_to_field[:, itet]
-            for ii in range(self.n_tet_dofs):
-                rows[p + N * ii : p + N * (ii + 1)] = indices[ii]
-                cols[p + ii : p + N2 : N] = indices[ii]
         self._rows = rows
         self._cols = cols
         return rows, cols
 
-    def empty_tri_rowcol(
-        self, other_side: bool = False
+    def tri_rowcol(
+        self, tri_ids: np.ndarray | None = None, other_side: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Row/col DOF index pairs for the given triangles.
+
+        With tri_ids=None (default), returns the pairs for every triangle in
+        the mesh -- e.g. for the field._rows/_cols cache built once at basis
+        construction. Passing a subset returns a correspondingly compact
+        result, e.g. for a boundary condition that only touches a handful of
+        the mesh's triangles.
+        """
         N = self.n_tri_dofs
-        N2 = N**2
-        nnz = self.n_tris * N2
-        rows = np.empty(nnz, dtype=np.int64)
-        cols = np.empty(nnz, dtype=np.int64)
+        t2f = self.tri_to_field_os if other_side else self.tri_to_field
+        if tri_ids is not None:
+            t2f = t2f[:, tri_ids]
 
-        t2f = self.tri_to_field
-        if other_side:
-            t2f = self.tri_to_field_os
-
-        for itri in range(self.n_tris):
-            p = itri * N2
-            indices = t2f[:, itri]
-            for ii in range(N):
-                rows[p + N * ii : p + N * (ii + 1)] = indices[ii]
-                cols[p + ii : p + N2 : N] = indices[ii]
+        rows = np.repeat(t2f, N, axis=0).ravel(order="F").astype(np.int64, copy=False)
+        cols = np.tile(t2f, (N, 1)).ravel(order="F").astype(np.int64, copy=False)
         return rows, cols
+
+    empty_tri_rowcol = tri_rowcol
 
     def tetslice(self, itet: int) -> slice:
         N = self.n_tet_dofs**2
@@ -100,23 +93,6 @@ class FEMBasis(Saveable):
     def trislice(self, itri: int) -> slice:
         N = self.n_tri_dofs**2
         return slice(itri * N, (itri + 1) * N)
-
-    def generate_csc(
-        self, data: np.ndarray, rowcol: tuple[np.ndarray, np.ndarray] | None = None
-    ):
-
-        from scipy.sparse import csc_matrix  # type: ignore
-
-        if rowcol is None:
-            rows, cols = self._rows, self._cols
-        else:
-            rows, cols = rowcol
-
-        ids = np.argwhere(data != 0)[:, 0]
-        return csc_matrix(
-            (data[ids], (rows[ids], cols[ids])),
-            shape=(self.n_field, self.n_field),
-        )
 
     ############################################################
     #                         INTERPOLATORS                    #
@@ -130,8 +106,6 @@ class FEMBasis(Saveable):
         tetids: np.ndarray | None = None,
     ) -> Callable:
         """Generates the Interpolation function as a function object for a given coordiante basis and origin."""
-        from ..mth.optimized import matmul
-
         if basis is None:
             basis = np.eye(3)
 
@@ -142,12 +116,11 @@ class FEMBasis(Saveable):
 
         def func(xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndarray:
             xyz = np.array([xs, ys, zs]) + origin[:, np.newaxis]
-            xyzg = matmul(basis, xyz)
+            xyzg = basis @ xyz
             tet_mapping = self.interpolate_index(
                 xyzg[0, :], xyzg[1, :], xyzg[2, :], tetids, usenan=False
             )
-            return matmul(
-                ibasis,
+            return ibasis @ (
                 np.array(
                     self.interpolate(
                         field,
@@ -158,7 +131,7 @@ class FEMBasis(Saveable):
                         tetids,
                         usenan=False,
                     )
-                ),
+                )
             )
 
         return func

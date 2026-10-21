@@ -16,8 +16,9 @@
 # <https://www.gnu.org/licenses/>.
 
 # Last Cleanup: 2025-01-01
+from ._global import _GlobalHandler
 from .cs import Axis, _parse_axis, GCS, _parse_vector
-from .selection import SELECTOR_OBJ, Selection, FaceSelection
+from .selection import Selection, FaceSelection
 from .geo import GeoPrism, XYPolygon, Alignment, XYPlate
 from .bc import BoundaryCondition
 from typing import Generator
@@ -38,19 +39,19 @@ def _rotnorm(v: np.ndarray) -> np.ndarray:
     ax = ax/np.linalg.norm(ax)
     return ax
 
-def _pair_selection(f1: Selection, 
-                    f2: Selection, 
+def _pair_selection(f1: FaceSelection, 
+                    f2: FaceSelection, 
                     translation: tuple[float, float, float]):
     if len(f1.tags) == 1:
         return [f1,], [f2,]
-    c1s = [np.array(c) for c in f1.centers]
-    c2s = [np.array(c) for c in f2.centers]
+    cA1s = [(np.array(c),A) for c,A in f1.getCAs]
+    cA2s = [(np.array(c),A) for c,A in f2.getCAs]
     ds = np.array(translation)
     f1s = []
     f2s = []
-    for t1, c1 in zip(f1.tags, c1s):
-        for t2, c2 in zip(f2.tags, c2s):
-            if np.linalg.norm((c1 + ds)-c2) < 1e-8:
+    for t1, (c1,A1) in zip(f1.tags, cA1s):
+        for t2, (c2,A2) in zip(f2.tags, cA2s):
+            if np.linalg.norm((c1 + ds)-c2) < 1e-8 and abs(A1-A2)<1e-8:
                 f1s.append(FaceSelection([t1,]))
                 f2s.append(FaceSelection([t2,]))
     return f1s, f2s
@@ -68,6 +69,12 @@ class PeriodicCell:
                  origins: list[tuple[float, float, float] | list[float] | np.ndarray | Axis],
                  vectors: list[tuple[float, float, float] | list[float] | np.ndarray | Axis]):
 
+        """A periodic unit cell defined by pairs of periodic faces.
+
+        Args:
+            origins (list[tuple[float, float, float] | list[float] | np.ndarray | Axis]): A point on the first face of each periodic face pair
+            vectors (list[tuple[float, float, float] | list[float] | np.ndarray | Axis]): The lattice vector of each face pair
+        """
         self.origins: list[tuple[float, float, float]] = [_parse_vector(origin) for origin in origins] # type: ignore
         self.vectors: list[Axis] = [_parse_axis(vec) for vec in vectors]
         self.included_faces: Selection | None = None
@@ -95,12 +102,15 @@ class PeriodicCell:
         """An iterator that yields the two faces of the hex cell plus a cell periodicity vector
 
         Yields:
-            Generator[np.ndarray, np.ndarray, np.ndarray]: The face and periodicity data
+            Generator[tuple[Selection, Selection, np.ndarray], None, None]: The face and periodicity data
         """
         raise NotImplementedError('This method is not implemented for this subclass.')
 
     def generate_bcs(self) -> list[Periodic]:
         """Generate the priodic boundary conditions
+
+        Returns:
+            list[Periodic]: The periodic boundary conditions of the cell
         """
         bcs = []
         for f1, f2, a in self.cell_data():
@@ -123,7 +133,7 @@ class PeriodicCell:
             exclude_faces (list[FaceSelection], optional): A possible list of faces to exclude from the bcs. Defaults to None.
 
         Returns:
-            list[Periodic]: The list of Periodic boundary conditions
+            list[BoundaryCondition]: The list of Periodic boundary conditions
         """
         if not self._bcs:
             raise ValueError('Periodic Boundary conditions not generated')
@@ -203,16 +213,16 @@ class RectCell(PeriodicCell):
         return XYPlate(self.width, self.height, position=(0,0,z), alignment=Alignment.CENTER)
         
     def cell_data(self):
-        f1s = SELECTOR_OBJ.inplane(*self.fleft[0], self.fleft[1])
-        f2s = SELECTOR_OBJ.inplane(*self.fright[0], self.fright[1])
+        f1s = _GlobalHandler.active().selector.inplane(*self.fleft[0], self.fleft[1])
+        f2s = _GlobalHandler.active().selector.inplane(*self.fright[0], self.fright[1])
         vec = (self.fright[0][0]-self.fleft[0][0], 
                self.fright[0][1]-self.fleft[0][1], 
                self.fright[0][2]-self.fleft[0][2])
         for f1, f2 in zip(*_pair_selection(f1s, f2s, vec)):
             yield f1, f2, vec
 
-        f1s = SELECTOR_OBJ.inplane(*self.fbot[0], self.fbot[1])
-        f2s = SELECTOR_OBJ.inplane(*self.ftop[0], self.ftop[1])
+        f1s = _GlobalHandler.active().selector.inplane(*self.fbot[0], self.fbot[1])
+        f2s = _GlobalHandler.active().selector.inplane(*self.ftop[0], self.ftop[1])
         vec = (self.ftop[0][0]-self.fbot[0][0], 
                self.ftop[0][1]-self.fbot[0][1], 
                self.ftop[0][2]-self.fbot[0][2])
@@ -296,9 +306,9 @@ class HexCell(PeriodicCell):
         o = self.o1[:-1]
         n = self.f11[1][:-1]
         w = nrm(self.p2-self.p1)/2
-        f1s = SELECTOR_OBJ.inplane(*self.f11[0], self.f11[1])\
+        f1s = _GlobalHandler.active().selector.inplane(*self.f11[0], self.f11[1])\
             .exclude(lambda x, y, z: (nrm(np.array([x,y])-o)>w) or (abs((np.array([x,y])-o) @ n ) > 1e-6))
-        f2s = SELECTOR_OBJ.inplane(*self.f12[0], self.f12[1])\
+        f2s = _GlobalHandler.active().selector.inplane(*self.f12[0], self.f12[1])\
             .exclude(lambda x, y, z: (nrm(np.array([x,y])+o)>w) or (abs((np.array([x,y])+o) @ n ) > 1e-6))
         vec = - (self.p1 + self.p2)
 
@@ -308,9 +318,9 @@ class HexCell(PeriodicCell):
         o = self.o2[:-1]
         n = self.f21[1][:-1]
         w = nrm(self.p3-self.p2)/2
-        f1s = SELECTOR_OBJ.inplane(*self.f21[0], self.f21[1])\
+        f1s = _GlobalHandler.active().selector.inplane(*self.f21[0], self.f21[1])\
             .exclude(lambda x, y, z: (nrm(np.array([x,y])-o)>w) or (abs((np.array([x,y])-o) @ n ) > 1e-6))
-        f2s = SELECTOR_OBJ.inplane(*self.f22[0], self.f22[1])\
+        f2s = _GlobalHandler.active().selector.inplane(*self.f22[0], self.f22[1])\
             .exclude(lambda x, y, z: (nrm(np.array([x,y])+o)>w) or (abs((np.array([x,y])+o) @ n ) > 1e-6))
         vec = - (self.p2 + self.p3)
         for f1, f2 in zip(*_pair_selection(f1s, f2s, vec)): # type: ignore
@@ -319,9 +329,9 @@ class HexCell(PeriodicCell):
         o = self.o3[:-1]
         n = self.f31[1][:-1]
         w = nrm(-self.p1-self.p3)/2
-        f1s = SELECTOR_OBJ.inplane(*self.f31[0], self.f31[1])\
+        f1s = _GlobalHandler.active().selector.inplane(*self.f31[0], self.f31[1])\
             .exclude(lambda x, y, z: (nrm(np.array([x,y])-o)>w) or (abs((np.array([x,y])-o) @ n ) > 1e-6))
-        f2s = SELECTOR_OBJ.inplane(*self.f32[0], self.f32[1])\
+        f2s = _GlobalHandler.active().selector.inplane(*self.f32[0], self.f32[1])\
             .exclude(lambda x, y, z: (nrm(np.array([x,y])+o)>w) or (abs((np.array([x,y])+o) @ n ) > 1e-6))
         vec = - (self.p3 - self.p1)
         for f1, f2 in zip(*_pair_selection(f1s, f2s, vec)): # type: ignore
@@ -338,9 +348,9 @@ class HexCell(PeriodicCell):
             z2 (float): The ending z-height
 
         Returns:
-            GeoPrism: _description_
+            GeoPrism: The hexagonal cell volume from z1 to z2
         """
-        z1, z2 = min(z1, z2), max(z2, z2)
+        z1, z2 = min(z1, z2), max(z1, z2)
         xs, ys, zs = zip(self.p1, self.p2, self.p3)
         xs2 = np.array(xs) # type: ignore
         ys2 = np.array(ys) # type: ignore
@@ -349,4 +359,62 @@ class HexCell(PeriodicCell):
         poly = XYPolygon(xs3, ys3)
         length = z2-z1
         return poly.extrude(length, cs=GCS.displace(0,0,z1))
-    
+
+class CustomCell1D(PeriodicCell):
+
+    def __init__(self, 
+                 u: tuple[float,float,float],
+                 ou: tuple[float,float,float]):
+        """A periodic cell with a single periodic direction.
+
+        Args:
+            u (tuple[float,float,float]): The lattice vector
+            ou (tuple[float,float,float]): A point on the first periodic face
+        """
+        self.u: np.ndarray = np.array(u)
+        self.ou: np.ndarray = np.array(ou)
+        super().__init__([self.ou, ],[self.u])
+
+    def cell_data(self):
+
+        tol = 1e-8
+        f1s = _GlobalHandler.active().selector.inplane(*self.ou, self.u, tolerance=tol)
+        f2s = _GlobalHandler.active().selector.inplane(*(self.ou+self.u), self.u, tolerance=tol)
+        for f1, f2 in zip(*_pair_selection(f1s, f2s, self.u)):
+            yield f1, f2, self.u
+
+class CustomCell2D(PeriodicCell):
+
+    def __init__(self, 
+                 u: tuple[float,float,float],
+                 ou: tuple[float,float,float],
+                 v: tuple[float,float,float],
+                 ov: tuple[float,float,float]):
+        """A periodic cell with two periodic directions.
+
+        Args:
+            u (tuple[float,float,float]): The first lattice vector
+            ou (tuple[float,float,float]): A point on the first face of the u face pair
+            v (tuple[float,float,float]): The second lattice vector
+            ov (tuple[float,float,float]): A point on the first face of the v face pair
+        """
+        self.u: np.ndarray = np.array(u)
+        self.ou: np.ndarray = np.array(ou)
+        self.v: np.ndarray = np.array(v)
+        self.ov: np.ndarray = np.array(ov)
+        super().__init__([self.ou, self.ov],[self.u, self.v])
+        self.width: float = np.linalg.norm(self.u)
+        self.height: float = np.linalg.norm(self.v)
+
+    def cell_data(self):
+
+        tol = 1e-8
+        f1s = _GlobalHandler.active().selector.inplane(*self.ou, self.u, tolerance=tol)
+        f2s = _GlobalHandler.active().selector.inplane(*(self.ou+self.u), self.u, tolerance=tol)
+        for f1, f2 in zip(*_pair_selection(f1s, f2s, self.u)):
+            yield f1, f2, self.u
+
+        f1s = _GlobalHandler.active().selector.inplane(*self.ov, self.v, tolerance=tol)
+        f2s = _GlobalHandler.active().selector.inplane(*(self.ov+self.v), self.v, tolerance=tol)
+        for f1, f2 in zip(*_pair_selection(f1s, f2s, self.v)):
+            yield f1, f2, self.v

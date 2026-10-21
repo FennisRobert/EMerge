@@ -2771,6 +2771,8 @@ class PCB:
         polyset = PolygonSet()
 
         for path in self.paths:
+            if len(path.path) < 2:
+                continue
             layer = path.layer
             self.zs.append(self.z(layer))
             xysL = []

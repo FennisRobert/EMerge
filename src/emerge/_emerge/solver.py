@@ -1895,7 +1895,8 @@ class SolverARPACK_BMA(EigSolver):
                 eigen_mode = eigen_modes[:, i_sol]
                 eigen_value = eigen_values[i_sol]
 
-                energy = float(np.mean(np.abs(eigen_mode) ** 2))
+                # Squared norm, not the mean: the mean scales with 1/N_dof and dropped every mode on large port faces
+                energy = float(np.sum(np.abs(eigen_mode) ** 2))
                 curl_energy = float(np.real(eigen_mode.conj() @ (A @ eigen_mode)))
                 total_energy = float(np.real(eigen_mode.conj() @ (B @ eigen_mode)))
                 ratio = abs(curl_energy / (total_energy + 1e-15))

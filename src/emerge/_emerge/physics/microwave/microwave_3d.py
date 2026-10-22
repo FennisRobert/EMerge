@@ -776,14 +776,15 @@ class Microwave3D(GenericPhysics3D):
 
             self.bc._selections_post_boolean_fragment()
 
-            # Process thin conductor DOF split
-            thin_conductor_bcs = self.bc.oftype(ThinConductor)
-            if len(thin_conductor_bcs) > 0:
-                logger.debug("Processing thin conductors")
-                self.basis.partition_dof([x.tags for x in thin_conductor_bcs])
-                self.basis._partitioned = True
-
             self._bc_data_initialized = True
+
+        # Thin conductor DOF split. This belongs to the basis, which is rebuilt for every new mesh
+        # (e.g. after an adaptive mesh refinement pass), so it is not part of the one-time setup above.
+        thin_conductor_bcs = self.bc.oftype(ThinConductor)
+        if len(thin_conductor_bcs) > 0 and not getattr(self.basis, "_partitioned", False):
+            logger.debug("Processing thin conductors")
+            self.basis.partition_dof([x.tags for x in thin_conductor_bcs])
+            self.basis._partitioned = True
 
     def _check_meshed(self) -> None:
         """Checks if a mesh is generated"""

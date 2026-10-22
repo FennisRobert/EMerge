@@ -1393,7 +1393,7 @@ class Simulation:
         locally (longest-edge bisection of the highest-error tetrahedra, followed by flips and
         smoothing) until it has (1+growth) times as many tetrahedra. All Mesh3D mappings are rebuilt
         without GMSH. New nodes on curved faces/curves are projected onto a one-time snapshot of the
-        OCC geometry. Periodic face pairs are refined identically, keeping the node ordering consistent.
+        OCC geometry. Periodic models are not supported yet.
 
         Args:
             max_steps: The maximum number of solve passes.
@@ -1424,7 +1424,17 @@ class Simulation:
 
         Returns:
             SimulationDataset: The data set that was stashed before refinement.
+
+        Raises:
+            SimulationError: If the model is periodic.
         """
+        from .bc import Periodic
+        if self.mesher.periodic_cell is not None or len(self.mw.bc.oftype(Periodic)) > 0:
+            raise SimulationError(
+                "Adaptive mesh refinement does not support periodic models yet. Refine the mesh manually "
+                "(e.g. with model.mw.set_resolution() or model.mesher.set_boundary_size()) instead."
+            )
+
         from .aura import BrepSnapshot
         from .aura.brep import snapshot_gmsh
         from .aura.emerge_tools import estimate_growth, growth_for_pass, refine_mesh_step

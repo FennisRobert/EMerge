@@ -34,3 +34,54 @@ def test_amr_local_refinement():
     S21 = np.abs(data.scalar.grid.S(2, 1))
     assert np.all(S21 > 0.05) and np.all(S21 < 1.0 + 1e-6)
     em.cleanup()
+
+
+def test_amr_thin_conductor():
+    """AMR on a finite conductivity (ThinConductor) trace: the refined basis needs its DoF split too."""
+    import emerge as em
+    import numpy as np
+
+    em.cleanup()
+    mm = 0.001
+    model = em.Simulation("AMRThin", loglevel="ERROR")
+    pcb = em.geo.PCB(1.6, unit=mm, material=em.Material(er=4.2), trace_material=em.Material(cond=5.8e7))
+    pcb.new(0, 0, 3.0, (1, 0)).store("p1").straight(20).store("p2")
+    pcb.compile_paths(merge=True)
+    pcb.determine_bounds(topmargin=10, bottommargin=10)
+    pcb.generate_pcb()
+    pcb.generate_air(5)
+    pcb.modal_port(pcb["p1"], 1, width_multiplier=5, height=5)
+    pcb.modal_port(pcb["p2"], 2, width_multiplier=5, height=5)
+    model.commit_geometry()
+    model.mw.set_frequency_range(2e9, 3e9, 2)
+    model.mw.set_resolution(0.3)
+    model.generate_mesh()
+
+    n0 = model.mesh.n_tets
+    model.adaptive_mesh_refinement(max_steps=2, frequency=3e9, convergence=1e-9)
+    from emerge._emerge.physics.microwave.bcs import ThinConductor
+    assert len(model.mw.bc.oftype(ThinConductor)) > 0
+    assert model.mesh.n_tets > n0
+
+    S21 = np.abs(model.mw.run_sweep(False).scalar.grid.S(2, 1))
+    assert np.all(S21 > 0.9) and np.all(S21 < 1.0 + 1e-6)
+    em.cleanup()
+
+
+def test_amr_rejects_periodic_models():
+    """AURA does not refine periodic meshes yet, so AMR must refuse periodic models."""
+    import emerge as em
+    import pytest
+    from emerge._emerge.simmodel import SimulationError
+
+    em.cleanup()
+    model = em.Simulation("AMRPeriodic", loglevel="ERROR")
+    cell = em.RectCell(0.01, 0.01)
+    model.set_periodic_cell(cell)
+    cell.volume(0, 0.01)
+    model.commit_geometry()
+    model.mw.set_frequency_range(9e9, 10e9, 2)
+    model.generate_mesh()
+    with pytest.raises(SimulationError, match="periodic"):
+        model.adaptive_mesh_refinement(max_steps=2)
+    em.cleanup()

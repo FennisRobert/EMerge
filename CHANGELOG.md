@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b2 — changes since 2.8.9
+## 3.0.0b3 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus
@@ -18,7 +18,7 @@
 - **New adaptive mesh refinement (AURA).** `Simulation.adaptive_mesh_refinement()` refines the
   existing mesh locally, without remeshing in GMSH:
   - New nodes are projected onto curved CAD faces and curves.
-  - Periodic face pairs are refined identically.
+  - Periodic models are not supported yet; the refinement raises an error for them.
   - You control how fast the mesh grows: `growth` (a float, a per-pass list, `"auto"` or a
     callable), `growth_limits`, `order` and `theta`.
   - Further options: how far refinement spreads (`max_depth`, `lepp_ratio`), quality

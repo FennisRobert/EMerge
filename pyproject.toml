@@ -1,6 +1,6 @@
 [project]
 name = "emerge"
-version = "3.0.0b3"
+version = "3.0.0b4"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"
@@ -17,6 +17,7 @@ dependencies = [
     "msgpack>=1.1.2",
     "msgpack-numpy>=0.4.8",
     "psutil>=7.2.2",
+    "emerge-aasds>=0.4.0; sys_platform == 'darwin'"
 ]
 
 [project.scripts]
@@ -64,7 +65,6 @@ include = [{ path = "LICENSE", format = "sdist" }, { path = "THIRD_PARTY_LICENSE
 
 [dependency-groups]
 dev = [
-    "emerge-aasds",
     "pytest>=9.0.2",
     "scikit-umfpack>=0.4.2",
     "twine>=7.0.0",
@@ -87,10 +87,6 @@ publish-url = "https://upload.pypi.org/legacy"
 name = "testpypi"
 url = "https://test.pypi.org/simple"
 publish-url = "https://test.pypi.org/legacy"
-
-[tool.uv.sources]
-emerge-iron = { git = "https://github.com/FennisRobert/EMerge-IRON" }
-emerge-aasds = { git = "https://github.com/FennisRobert/emerge-aasds" }
 
 [tool.pytest.ini_options]
 addopts = [

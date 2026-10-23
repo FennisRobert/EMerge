@@ -34,6 +34,7 @@ from ....elements.nedelec2 import Nedelec2
 from ....elements.nedleg2 import NedelecLegrange2
 from ....elements.dofsets import DoFSet
 from ....mesh3d import Mesh3D
+from ....precon_data import PreconData
 from ....settings import Settings
 from scipy.sparse import csc_matrix
 from .system_pattern import (SystemPattern, product_pattern, copy_onto_pattern,
@@ -283,12 +284,31 @@ class Assembler:
         self._system: SystemPattern | None = None
         self._periodic_patterns: tuple[tuple, csc_matrix, csc_matrix] | None = None
         self.settings: Settings = settings
-        self.mldata_filename: str | None = None
+        self._precon_cache: tuple[int, PreconData | None] | None = None
 
     def reset_cache(self) -> None:
-        """Discards the cached sparsity pattern, boundary matrices and volume matrices."""
+        """Discards the cached sparsity pattern, boundary matrices, volume matrices and preconditioner data."""
         self._system = None
         self._periodic_patterns = None
+        self._precon_cache = None
+
+    def _precon_dataset(self, field: Nedelec2, has_periodic: bool) -> PreconData | None:
+        """The mesh data for a preconditioned iterative solver, built once per field.
+
+        Args:
+            field (Nedelec2): The field
+            has_periodic (bool): Whether the system is reduced by periodic boundary conditions
+
+        Returns:
+            PreconData | None: The data, or None if the system cannot use it
+        """
+        if has_periodic:
+            # The periodic reduction recombines DoFs, so the rows no longer map onto single mesh entities.
+            logger.debug(" - No preconditioner data for periodic systems.")
+            return None
+        if self._precon_cache is None or self._precon_cache[0] != id(field):
+            self._precon_cache = (id(field), PreconData.from_field(field))
+        return self._precon_cache[1]
 
     # ------------------------------------------------------------------
     # Shared helpers (used by assemble_freq_matrix / assemble_scattering_matrix
@@ -725,6 +745,7 @@ class Assembler:
         bcs: list[BoundaryCondition],
         frequency: float,
         cache_matrices: bool = False,
+        iterative: bool = False,
     ) -> tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Assembles the frequency domain FEM matrix
 
@@ -734,6 +755,7 @@ class Assembler:
             bcs (list[BoundaryCondition]): The boundary conditions
             frequency (float): The simulation frequency
             cache_matrices (bool, optional): Whether to use and cache matrices. Defaults to False.
+            iterative (bool, optional): Attach the mesh data a preconditioned iterative solver needs. Defaults to False.
 
         Returns:
             tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]: The SimJob and the (er, ur, cond) material tensors
@@ -782,36 +804,12 @@ class Assembler:
         logger.debug(f"  - Number of DoF: {K.shape[0]:,}")
         logger.debug(f"  - Number of non-zero: {K.nnz:,}")
 
-        if self.mldata_filename is not None:
-            from ....mldata import MLPreconData
-            Emat = system.as_csc_matrix(E)
-            # K = E - k0^2 (B - R/k0^2): the boundary terms folded into the mass matrix.
-            Bmat = system.as_csc_matrix((E - K_data) / K0 ** 2)
-
-            # Discrete gradient G : Legrange2 -> Nedelec2. Exported alongside
-            # E/B because it cannot be reconstructed from them, and an
-            # auxiliary-space Maxwell preconditioner needs it to separate the
-            # gradient (curl-free) modes from the rest.
-            from .ams_export import (assemble_abc2_terms,
-                                     assemble_discrete_gradient,
-                                     assemble_nedelec_interpolation)
-            t_grad = time.time()
-            Gmat = assemble_discrete_gradient(field)
-            Pimat = assemble_nedelec_interpolation(field)
-            logger.debug(f"  - AMS operators: G {Gmat.shape} nnz={Gmat.nnz:,}, "
-                         f"Pi {Pimat.shape} nnz={Pimat.nnz:,} ({time.time() - t_grad:.1f}s)")
-            # The second order ABC, also contained in Bmat, split out so a
-            # preconditioner can treat it per term; see ams_export/boundary_terms.py.
-            abc2_curl, abc2_div = assemble_abc2_terms(system, robin_bcs, K0)
-
-            mldataset = MLPreconData(self.mldata_filename, Emat, Bmat, K0, np.array(solve_ids), mesh.nodes, mesh.edges, mesh.tris, field.compute_global_dofcodes(), field.compute_global_dof_coords(), grad=Gmat, pi=Pimat, abc2_curl=abc2_curl, abc2_div=abc2_div)
-        else:
-            mldataset = None
+        precon_dataset = self._precon_dataset(field, has_periodic) if iterative else None
 
         #diagnose_matrix(K[solve_ids,:][:,solve_ids], field, solve_ids)
 
         simjob = SimJob(
-            K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic, mldataset=mldataset
+            K, port_vectors, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic, precon_dataset=precon_dataset
         )
 
         simjob.solve_ids = solve_ids
@@ -834,6 +832,7 @@ class Assembler:
         bcs: list[BoundaryCondition],
         frequency: float,
         cache_matrices: bool = False,
+        iterative: bool = False,
     ) -> tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Assembles the scattered-field frequency domain FEM matrix
 
@@ -843,6 +842,7 @@ class Assembler:
             bcs (list[BoundaryCondition]): The boundary conditions
             frequency (float): The simulation frequency
             cache_matrices (bool, optional): Whether to use and cache matrices. Defaults to False.
+            iterative (bool, optional): Attach the mesh data a preconditioned iterative solver needs. Defaults to False.
 
         Returns:
             tuple[SimJob, tuple[np.ndarray, np.ndarray, np.ndarray]]: The SimJob and the (er, ur, cond) material tensors
@@ -884,8 +884,11 @@ class Assembler:
         logger.debug(f"Number of DoF: {matrix_fem.shape[0]:,}")
         logger.debug(f"Number of non-zero: {matrix_fem.nnz:,}")
 
+        precon_dataset = self._precon_dataset(field, has_periodic) if iterative else None
+
         simjob = SimJob(
-            matrix_fem, background_fields, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic
+            matrix_fem, background_fields, K0 * 299792458 / (2 * np.pi), symmetric=not has_periodic,
+            precon_dataset=precon_dataset,
         )
 
         simjob.solve_ids = solve_ids

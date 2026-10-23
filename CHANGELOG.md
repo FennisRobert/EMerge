@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b3 — changes since 2.8.9
+## 3.0.0b4 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus
@@ -145,6 +145,9 @@
 
 ### Installation and tools
 
+- **The Apple Accelerate solver is installed automatically on macOS.** `emerge-aasds` is now a
+  precompiled PyPI package and a dependency of EMerge on macOS, so the fast Accelerate direct
+  solver works out of the box. `emerge install-solver aasds` (re)installs it from PyPI.
 - **Opt-in daily update check** with critical-bug notices: `emerge updates on|off|status|check|notices|clear`.
 - `emerge install-solver cad` installs the `cad` extra (Gerber and ODB++).
 - `pip install emerge[spyder]` installs the packages needed to use EMerge in Spyder.
@@ -367,7 +370,7 @@
 - Face tags of named faces are cached on `GeoVolume`.
 - `GeoObject._become()` replaces an object in place, for example when voids are subtracted.
 - Launch messages and the version banner are only shown in the main process. A one-time welcome
-  message and an Apple Silicon Accelerate hint are shown on first launch. Spyder is detected and
+  message is shown on first launch. Spyder is detected and
   the PyVista backend is set automatically.
 - `EMergeGlobalCache` stores user settings, such as the update check and notices that were
   already shown.

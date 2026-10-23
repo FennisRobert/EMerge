@@ -647,9 +647,10 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.0a25"
+version = "3.0.0b3"
 source = { editable = "." }
 dependencies = [
+    { name = "emerge-aasds", marker = "sys_platform == 'darwin'" },
     { name = "emsutil" },
     { name = "gmsh" },
     { name = "joblib" },
@@ -694,7 +695,6 @@ umfpack = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "emerge-aasds" },
     { name = "pytest" },
     { name = "scikit-umfpack" },
     { name = "twine" },
@@ -705,6 +705,7 @@ requires-dist = [
     { name = "cupy-cuda12x", marker = "extra == 'cudss'" },
     { name = "cupy-cuda12x", marker = "extra == 'cudss12'" },
     { name = "emcad", marker = "extra == 'cad'", specifier = ">=0.2,<0.3" },
+    { name = "emerge-aasds", marker = "sys_platform == 'darwin'", specifier = ">=0.4.0" },
     { name = "emsutil", specifier = ">=1.1.3,<1.2.0" },
     { name = "ezdxf", marker = "extra == 'dxf'" },
     { name = "gmsh", specifier = ">=4.13.0,<=5.0" },
@@ -732,7 +733,6 @@ provides-extras = ["umfpack", "cudss", "cudss12", "dxf", "cad", "spyder"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "emerge-aasds", git = "https://github.com/FennisRobert/emerge-aasds" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "scikit-umfpack", specifier = ">=0.4.2" },
     { name = "twine", specifier = ">=7.0.0" },
@@ -740,12 +740,16 @@ dev = [
 
 [[package]]
 name = "emerge-aasds"
-version = "0.3.0"
-source = { git = "https://github.com/FennisRobert/emerge-aasds#8c750443ac63daed4ab0306a0ab3caaabb2b0e2e" }
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/09/efcf3b9e77ba93b0b986493dcf41db9c7b41e7e15bb82a2de3de1d0fa635/emerge_aasds-0.4.0.tar.gz", hash = "sha256:ef4c871592860f727bcf6e4a6bfd4006a216d5dc129c5c2b746c8d3565c4511b", size = 22189, upload-time = "2026-10-23T07:17:00.514Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/a3/ccdaef5ba4c1bfef7e8b466ff6d34912d189f02964b63fb60e901095a26c/emerge_aasds-0.4.0-py3-none-macosx_15_0_universal2.whl", hash = "sha256:410b4f6a1bcc8e4499bd3945acbc2ca5ca535b6b7ec4a87d5a3836e022ab07b1", size = 37101, upload-time = "2026-10-23T07:16:59.061Z" },
 ]
 
 [[package]]

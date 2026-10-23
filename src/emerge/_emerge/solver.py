@@ -33,7 +33,7 @@ from typing import Literal, Callable
 from enum import Enum
 from .file import Saveable
 import os
-from .mldata import MLPreconData
+from .precon_data import PreconData
 from packaging.version import Version
 
 _is_main_process = _mp.current_process().name == "MainProcess"
@@ -61,6 +61,7 @@ _AASDS_AVAILABLE = False
 _SKSP_AVAILABLE = False
 _RSLAB_AVAILABLE = False
 _SPARTA_AVAILABLE = False
+_CORVID_AVAILABLE = False
 
 """ Check if the PC runs on a non-ARM architechture
 If so, attempt to import PyPardiso (if its installed)
@@ -135,6 +136,15 @@ try:
         _SPARTA_AVAILABLE = False
 except ModuleNotFoundError as e:
     logger.trace("SPARTA Interface not found. (not harmful)")
+
+############################################################
+#                         CORVID                           #
+############################################################
+try:
+    import corvid  # type: ignore
+    _CORVID_AVAILABLE = True
+except ModuleNotFoundError as e:
+    logger.trace("CORVID Interface not found. (not harmful)")
 
 
 ############################################################
@@ -600,6 +610,7 @@ class Solver:
     real_only: bool = False
     req_sorter: bool = False
     released_gil: bool = False
+    needs_precon_data: bool = False  # True if solve() needs a PreconData (set with set_precon_data)
 
     def __init__(self, pre: str = ""):
         """Create the solver.
@@ -1357,6 +1368,111 @@ class SolverSparta(Solver):
         return x, SolveReport(solver=str(self), exit_code=0, aux=None)
 
 
+
+class SolverCorvid(Solver):
+    """Implements the CORVID preconditioned iterative solver.
+
+    CORVID combines vertex-block Schwarz smoothing with a Whitney-level coarse solve inside a GMRES or
+    COCG Krylov loop. Next to A and b it needs the mesh topology of the solved DoFs, which the SolveRoutine
+    hands over through set_precon_data() before every solve.
+    """
+
+    req_sorter = False  # rows must stay in solve_ids order to match the topology
+    real_only = False
+    stype = SolverType.PARALLEL  # CORVID runs its own thread pool and keeps the GIL
+    name = "CORVID"
+    needs_precon_data = True
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        self.own_preconditioner = True
+        self.method: Literal["gmres", "cocg"] = "cocg"
+        self.order: int = 1
+        self.rtol: float = 1e-6
+        self.maxiter: int = 500
+        self.restart: int = 100
+        self._topology = None
+        self._topology_key: tuple | None = None
+
+    def set_options(
+        self,
+        order: int | None = None,
+        rtol: float | None = None,
+        maxiter: int | None = None,
+        restart: int | None = None,
+    ) -> None:
+        """Set the CORVID solver options. Options that are None are left unchanged.
+
+        Args:
+            order (int | None, optional): The Chebyshev order of the smoother. Defaults to None.
+            rtol (float | None, optional): The relative residual tolerance. Defaults to None.
+            maxiter (int | None, optional): The maximum number of Krylov iterations. Defaults to None.
+            restart (int | None, optional): The GMRES restart length. Defaults to None.
+        """
+        if order is not None:
+            self.order = order
+        if rtol is not None:
+            self.rtol = rtol
+        if maxiter is not None:
+            self.maxiter = maxiter
+        if restart is not None:
+            self.restart = restart
+
+    def set_symmetry(self, complex_symmetric: bool) -> None:
+        # COCG stores no Krylov basis but requires a complex symmetric matrix
+        self.method = "cocg" if complex_symmetric else "gmres"
+
+    def set_precon_data(self, precon_dataset: PreconData, solve_ids: np.ndarray) -> None:
+        """Build (or reuse) the CORVID topology of the solved DoFs.
+
+        Args:
+            precon_dataset (PreconData): The mesh topology per global DoF
+            solve_ids (np.ndarray): The solved global DoFs, in the row order of the solved system
+        """
+        key = (id(precon_dataset.dof_entity), solve_ids.shape[0], hash(solve_ids.tobytes()))
+        if key == self._topology_key:
+            return
+        logger.debug(self.pre + " Building CORVID topology")
+        self._topology = corvid.Topology(
+            precon_dataset.dof_entity[solve_ids],
+            precon_dataset.dof_kind[solve_ids],
+            precon_dataset.edges,
+            precon_dataset.tris,
+        )
+        self._topology_key = key
+
+    def reset(self) -> None:
+        self._topology = None
+        self._topology_key = None
+
+    def duplicate(self) -> Solver:
+        new_solver = self.__class__(self.pre)
+        new_solver.set_options(self.order, self.rtol, self.maxiter, self.restart)
+        return new_solver
+
+    def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
+        if self._topology is None:
+            raise SimulationError("CORVID needs the mesh topology. Call set_precon_data() before solve().")
+        logger.info(f"{_pfx(self.pre, id)} Calling CORVID solver ({self.method}).")
+        sol = corvid.Solver(
+            self._topology,
+            order=self.order,
+            method=self.method,
+            rtol=self.rtol,
+            maxiter=self.maxiter,
+            restart=self.restart,
+        ).factorize(A)
+        x = sol.solve(b)
+        iterations = [info["iterations"] for info in sol.info]
+        converged = all(info["converged"] for info in sol.info)
+        logger.info(f"{_pfx(self.pre, id)} CORVID {self.method}: iterations {iterations}")
+        return x, SolveReport(
+            solver=str(self),
+            exit_code=0 if converged else 1,
+            aux={"iterations": iterations, "memory_bytes": sol.memory_bytes},
+        )
+
+
 class SolverMUMPS(Solver):
     """Implements the MUMPS Sparse SP solver."""
 
@@ -1949,6 +2065,7 @@ class EMSolver(Enum):
     CHOLMOD = 12
     RSLAB = 13
     SPARTA = 14
+    CORVID = 15
 
     def create_solver(self, pre: str) -> Solver | EigSolver | None:
         """Create a solver class instance or None if the solver is not available."""
@@ -1967,6 +2084,8 @@ class EMSolver(Enum):
         elif self == EMSolver.RSLAB and not _RSLAB_AVAILABLE:
             return None
         elif self == EMSolver.SPARTA and not _SPARTA_AVAILABLE:
+            return None
+        elif self == EMSolver.CORVID and not _CORVID_AVAILABLE:
             return None
         return self._clss(pre)
 
@@ -1987,7 +2106,8 @@ class EMSolver(Enum):
             11: SolverCG,
             12: SolverCHOLMOD,
             13: SolverRSLAB,
-            14: SolverSparta
+            14: SolverSparta,
+            15: SolverCorvid,
         }
         return mapper.get(self.value, None)
 
@@ -2340,6 +2460,62 @@ class SolveRoutine:
         else:
             return self.solvers[EMSolver.SMART_ARPACK_BMA]  # type: ignore
 
+    def _solve_with(
+        self,
+        solver: Solver,
+        Asel: csc_matrix,
+        bsel: np.ndarray,
+        matrix_type: MatrixType,
+        id: int = -1,
+    ) -> tuple[np.ndarray, SolveReport, str, str, csc_matrix]:
+        """Solve the reduced system with one solver, including its real conversion, sorting and preconditioner.
+
+        Args:
+            solver (Solver): The solver to use
+            Asel (csc_matrix): The matrix on the solved DoFs
+            bsel (np.ndarray): The right hand side(s) on the solved DoFs
+            matrix_type (MatrixType): The matrix type
+            id (int, optional): An identifier of this solve used in log messages. Defaults to -1.
+
+        Returns:
+            tuple[np.ndarray, SolveReport, str, str, csc_matrix]: The solution on the solved DoFs, the solver report,
+                the sorter name, the preconditioner name and the matrix as given to the solver.
+        """
+        solver.initialize()
+        solver.set_symmetry(matrix_type.symmetric or self.force_symmetric)
+
+        if solver.real_only:
+            logger.debug(f"{_pfx(self.pre, id)} Converting to real matrix")
+            Asel, bsel = complex_to_real_block(Asel, bsel)
+
+        # SORT
+        sorter = "None"
+        if solver.req_sorter and self.use_sorter:
+            sorter = str(self.sorter)
+            Asorted, bsorted = self.sorter.sort(Asel, bsel)
+        else:
+            Asorted, bsorted = Asel, bsel
+
+        # Preconditioner
+        precon = "None"
+        if self.use_preconditioner:
+            if not solver.own_preconditioner:
+                self.precon.init(Asorted, bsorted)
+                precon = str(self.precon)
+
+        x_solved, report = solver.solve(Asorted, bsorted, self.precon, id=id)
+
+        if self.use_sorter and solver.req_sorter:
+            x = self.sorter.unsort(x_solved)
+        else:
+            x = x_solved
+
+        if solver.real_only:
+            logger.debug(f"{_pfx(self.pre, id)} Converting back to complex matrix")
+            x = real_to_complex_block(x)
+
+        return x, report, sorter, precon, Asorted
+
     def solve(
         self,
         A: csc_matrix,
@@ -2348,7 +2524,7 @@ class SolveRoutine:
         direct: bool = True,
         id: int = -1,
         matrix_type: MatrixType = MatrixType.UNKNOWN,
-        mldataset: MLPreconData | None = None,
+        precon_dataset: PreconData | None = None,
     ) -> tuple[np.ndarray, SolveReport]:
         """Solve the system of equations defined by Ax=b for x.
 
@@ -2363,7 +2539,8 @@ class SolveRoutine:
             direct (bool, optional): Use a direct solver. Defaults to True.
             id (int, optional): An identifier of this solve used in log messages and cache file names. Defaults to -1.
             matrix_type (MatrixType, optional): The matrix type. Classified from A if UNKNOWN. Defaults to MatrixType.UNKNOWN.
-            mldataset (MLPreconData | None, optional): Data for the machine learning preconditioner. Defaults to None.
+            precon_dataset (PreconData | None, optional): The mesh topology needed by preconditioned iterative
+                solvers such as CORVID. Defaults to None.
 
         Returns:
             tuple[np.ndarray, SolveReport]: The solution and the solve report.
@@ -2387,9 +2564,6 @@ class SolveRoutine:
             b = b.reshape((b.shape[0], 1))
         solver: Solver = self._get_solver(A, b, matrix_type=matrix_type, direct=direct)
 
-        solver.initialize()
-        solver.set_symmetry(matrix_type.symmetric or self.force_symmetric)
-
         NF = A.shape[0]
         NS = solve_ids.shape[0]
         NB = b.shape[1]
@@ -2402,28 +2576,25 @@ class SolveRoutine:
             f"{_pfx(self.pre, id)} Removed {NF - NS} prescribed DOFs ({NS:,} left, {nnz:,}≠0)"
         )
 
-        if solver.real_only:
-            logger.debug(f"{_pfx(self.pre, id)} Converting to real matrix")
-            Asel, bsel = complex_to_real_block(Asel, bsel)
-
-        # SORT
-        sorter = "None"
-        if solver.req_sorter and self.use_sorter:
-            sorter = str(self.sorter)
-            Asorted, bsorted = self.sorter.sort(Asel, bsel)
-        else:
-            Asorted, bsorted = Asel, bsel
+        if solver.needs_precon_data:
+            if precon_dataset is None:
+                logger.warning(
+                    f"{_pfx(self.pre, id)} {solver} needs mesh data that is not available for this system "
+                    "(e.g. periodic boundaries or thin conductors). Using a direct solver instead."
+                )
+                solver = self.pick_solver(A, b, matrix_type, direct=True)
+            else:
+                solver.set_precon_data(precon_dataset, solve_ids)
 
         start = time.time()
+        x, report, sorter, precon, Asorted = self._solve_with(solver, Asel, bsel, matrix_type, id)
 
-        # Preconditioner
-        precon = "None"
-        if self.use_preconditioner:
-            if not solver.own_preconditioner:
-                self.precon.init(Asorted, bsorted)
-                precon = str(self.precon)
-
-        x_solved, report = solver.solve(Asorted, bsorted, self.precon, id=id)
+        if report.exit_code != 0 and solver.needs_precon_data:
+            logger.warning(
+                f"{_pfx(self.pre, id)} {solver} did not converge. Solving again with a direct solver."
+            )
+            solver = self.pick_solver(A, b, matrix_type, direct=True)
+            x, report, sorter, precon, Asorted = self._solve_with(solver, Asel, bsel, matrix_type, id)
 
         end = time.time()
         simtime = end - start
@@ -2431,15 +2602,6 @@ class SolveRoutine:
         logger.debug(
             f"{_pfx(self.pre, id)} O(N^2) performance = {(NS ** (2)) / ((end - start + 1e-6) * 1e6):.1f} MDoF/s"
         )
-
-        if self.use_sorter and solver.req_sorter:
-            x = self.sorter.unsort(x_solved)
-        else:
-            x = x_solved
-
-        if solver.real_only:
-            logger.debug(f"{_pfx(self.pre, id)} Converting back to complex matrix")
-            x = real_to_complex_block(x)
 
         solution = np.zeros((NF, NB), dtype=A.dtype)
 
@@ -2450,10 +2612,6 @@ class SolveRoutine:
             np.save(name_solution, solution)
             logger.info(f'Saved {name_solution}')
 
-        if mldataset is not None:
-
-            mldataset.save(f'_{id}', b, solution)
-
         logger.debug(f"{_pfx(self.pre, id)} Solver complete!")
         report.jobid = id
         report.sorter = str(sorter)
@@ -2461,7 +2619,7 @@ class SolveRoutine:
         report.nnz = A.nnz
         report.ndof = b.shape[0]
         report.nnz_solve = Asorted.nnz
-        report.ndof_solve = bsorted.shape[0]
+        report.ndof_solve = Asorted.shape[0]
         report.precon = precon
         report.worker_name = self.pre
 
@@ -2630,7 +2788,9 @@ class AutomaticRoutine(SolveRoutine):
 
         N = A.shape[0]
         if not direct:
-            if matrix_type in (MatrixType.SPD, MatrixType.HPD):
+            if matrix_type in (MatrixType.COMPLEX_SYMMETRIC,):
+                return self._try_solver(EMSolver.CORVID)
+            elif matrix_type in (MatrixType.SPD, MatrixType.HPD):
                 return self._try_solver(EMSolver.CG)
             else:
                 return self._try_solver(EMSolver.BICGSTAB)

@@ -149,7 +149,9 @@ def run_job_multi(job: SimJob) -> SimJob:
         nr = int(mp.current_process().name.split("-")[1])
         _worker_routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
-    solution, report = _worker_routine.solve(A, bmat, ids, matrix_type=job.mtype, id=job.id)
+    solution, report = _worker_routine.solve(
+        A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon
+    )
     report.add(**aux)
     job.submit_solution(solution, report)
     return job
@@ -439,6 +441,7 @@ class Microwave3D(GenericPhysics3D):
 
         self.mat_assy: MaterialAssignment | None = None
 
+        self.solve_method: Literal['iterative','direct'] = 'direct'
         ## States
         self._default_bcs_initialized: bool = False
         self._bc_data_initialized = False
@@ -459,6 +462,17 @@ class Microwave3D(GenericPhysics3D):
         """
         return self._state.params
 
+    @property
+    def _iterative(self) -> bool:
+        """ If iterative solvers are to be used"""
+        return self.solve_method == 'iterative'
+
+    @property
+    def _direct(self) -> bool:
+        """ If direct solvers are to be used"""
+        return self.solve_method == 'direct'
+
+        
     @property
     def mesh(self) -> Mesh3D:
         """A shorthand alias for the Mesh. May be removed at some point"""
@@ -514,7 +528,14 @@ class Microwave3D(GenericPhysics3D):
     ############################################################
     #                            SETTERS                       #
     ############################################################
+    def set_method(self, method: Literal['iterative','direct']) -> None:
+        """Configure the use of an iterative or direct solver. (Iterative is experimental with CORVID)
 
+        Args:
+            method (Literal[&#39;iterative&#39;,&#39;direct&#39;]): _description_
+        """
+        self.solve_method = method
+        
     def set_basis_space(self,
                     element_order: Literal[1,2] = 2,
                     complete: bool = False,
@@ -1016,10 +1037,11 @@ class Microwave3D(GenericPhysics3D):
         instead of being torn down and rebuilt after each one. If no pool is
         supplied, a one-off pool is created for just this batch of jobs.
         """
+
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id, mldataset=job._mlpd
+                A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, direct=self._direct
             )
             report.add(**aux)
             job.submit_solution(solution, report)
@@ -1044,7 +1066,7 @@ class Microwave3D(GenericPhysics3D):
                 routine = get_routine()
                 A, bmat, ids, aux = job.get_Ab()
                 solution, report = routine.solve(
-                    A, bmat, ids, matrix_type=job.mtype, id=job.id, mldataset=job._mlpd
+                    A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon
                 )
                 report.add(**aux)
                 job.submit_solution(solution, report)
@@ -1148,6 +1170,7 @@ class Microwave3D(GenericPhysics3D):
                         self.bc.boundary_conditions,
                         freq,
                         cache_matrices=self.cache_matrices,
+                        iterative=self._iterative
                     )
                     if cache_harddisk:
                         job.store_if_needed(harddisc_path)

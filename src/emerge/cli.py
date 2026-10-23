@@ -187,7 +187,7 @@ class InstallSolverCommand(Command):
                 "Solver to install: "
                 "umfpack (Linux/macOS via pip, Windows via conda), "
                 "cudss / cudss12 (Windows + NVIDIA GPU), "
-                "aasds (macOS Apple Silicon), "
+                "aasds (macOS, installed with EMerge by default), "
                 "dxf, cad (file format extras: Gerber, ODB++; 'gerber' is an alias of 'cad')"
             ),
         )
@@ -251,15 +251,15 @@ class InstallSolverCommand(Command):
 
     @staticmethod
     def _install_aasds(system: str, machine: str) -> None:
-        if system != "Darwin" or machine != "arm64":
+        if system != "Darwin":
             print(
-                "The Apple Accelerate solver (emerge-aasds) is only supported on "
-                "macOS with Apple Silicon (arm64).\n"
+                "The Apple Accelerate solver (emerge-aasds) is only supported on macOS.\n"
                 f"Detected: {system} / {machine}"
             )
             sys.exit(1)
+        # Installed automatically with EMerge on macOS; this (re)installs it for older environments.
         print("Installing emerge-aasds (Apple Accelerate solver)...")
-        _pip("install", "git+https://github.com/FennisRobert/emerge-aasds")
+        _pip("install", "--upgrade", "emerge-aasds>=0.4.0")
         print("Apple Accelerate solver installed.")
 
     @staticmethod

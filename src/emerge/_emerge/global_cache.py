@@ -66,15 +66,14 @@ class EMergeGlobalCache:
 
     Example:
     >>> cache = EMergeGlobalCache()
-    >>> if not cache.user_warned("accelerate_installed_check"):
+    >>> if not cache.user_warned("welcome_message"):
     ...     ...
-    ...     cache.set_user_warned("accelerate_installed_check")
+    ...     cache.set_user_warned("welcome_message")
     """
 
     DEFAULTS: dict[str, dict[str, Any]] = {
         "_user_warned": {
             "welcome_message": False,
-            "accelerate_installed_check": False,
         },
         "update_check": {
             "enabled": False,

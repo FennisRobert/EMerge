@@ -20,8 +20,6 @@ One-time checks run when EMerge is imported. Each check uses the
 EMergeGlobalCache so that the user is only notified once, ever.
 """
 
-import importlib.util
-import platform
 import sys
 from loguru import logger
 from .global_cache import EMergeGlobalCache
@@ -71,26 +69,6 @@ def _welcome_message(cache: EMergeGlobalCache) -> None:
     )
 
 
-def _check_accelerate_installed(cache: EMergeGlobalCache) -> None:
-    key = "accelerate_installed_check"
-    if cache.user_warned(key):
-        return
-    if sys.platform != "darwin" or platform.machine() != "arm64":
-        return
-    if importlib.util.find_spec("emerge_aasds") is not None:
-        return
-
-    # Mark first so an interrupted prompt still counts as warned.
-    cache.set_user_warned(key)
-    _prompt_once(
-        "Hey! I notice that you run Apple on ARM and you don't have Accelerate installed yet.\n"
-        "I recommend you do! Just run:\n\n"
-        "    pip install git+https://github.com/FennisRobert/emerge-aasds\n\n"
-        "(or: emerge install-solver aasds)\n\n"
-        "Accelerate is much faster than SuperLU."
-    )
-
-
 def run_launch_checks() -> None:
     # A failing check must never prevent EMerge from importing.
     try:
@@ -99,7 +77,6 @@ def run_launch_checks() -> None:
         # Prompts that wait for Enter only make sense in a real terminal.
         if _is_interactive_terminal():
             _welcome_message(cache)
-            _check_accelerate_installed(cache)
 
         # Opt-in only; just logs, so it is safe without a terminal.
         from .update_check import daily_update_check

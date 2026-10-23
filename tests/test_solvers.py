@@ -85,6 +85,31 @@ def test_aux_functionality():
     assert isinstance(DEFAULT_ROUTINE.duplicate(), AutomaticRoutine)
 
 
+def test_duplicate_gives_independent_routines():
+    """Worker threads of a sweep must not share a routine or solver objects (shared PARDISO handles crashed)."""
+    routine = AutomaticRoutine()
+    forced = next(iter(routine.solvers.values()))
+    routine.set_solver(forced)
+    a, b = routine.duplicate(), routine.duplicate()
+    assert a is not routine and b is not a
+    for key, solver in routine.solvers.items():
+        assert a.solvers[key] is not solver and a.solvers[key] is not b.solvers[key]
+    assert a.forced_solver[0] is not forced and a.forced_solver[0] is not b.forced_solver[0]
+
+
+def test_physics_share_one_routine():
+    """set_solver() on the Simulation applies to both physics, and every Simulation gets a fresh routine."""
+    import emerge as em
+
+    sim1 = em.Simulation("RoutineA", loglevel="ERROR")
+    assert sim1.hc.solveroutine is sim1.mw.solveroutine
+    routine1 = sim1.mw.solveroutine
+    em.cleanup()
+    sim2 = em.Simulation("RoutineB", loglevel="ERROR")
+    assert sim2.mw.solveroutine is not routine1
+    em.cleanup()
+
+
 if __name__ == "__main__":
     test_solver_choice()
     test_basic_function()

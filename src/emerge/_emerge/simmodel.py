@@ -162,10 +162,8 @@ class Simulation:
         self.hc: HeatConduction3D = HeatConduction3D(
             self.state, self.mesher, self.settings
         )
-        # AutomaticRoutine is a process-wide singleton, so a new Simulation must
-        # explicitly clear any solver state (e.g. cached METIS orderings) left
-        # behind by a previous, unrelated Simulation in this process.
-        self.mw.solveroutine.reset()
+        # Both physics share one solve routine, so set_solver() applies to both
+        self.hc.solveroutine = self.mw.solveroutine
         self._geo_scale_factor: float = 1.0
 
         self._mw_active: bool = True

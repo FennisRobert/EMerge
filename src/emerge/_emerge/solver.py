@@ -2254,10 +2254,14 @@ class SolveRoutine:
         new_routine = self.__class__()
         new_routine.parallel = self.parallel
         new_routine.smart_search = self.smart_search
-        new_routine.forced_solver = self.forced_solver
         new_routine.force_symmetric = self.force_symmetric
+        copies = {}
         for tpe, solver in self.solvers.items():
-            new_routine.solvers[tpe] = solver.duplicate()
+            copies[id(solver)] = new_routine.solvers[tpe] = solver.duplicate()
+        # Forced solvers must point to the copies too, or threads share one solver (and its factorization)
+        new_routine.forced_solver = [
+            copies[id(s)] if id(s) in copies else s.duplicate() for s in self.forced_solver
+        ]
         return new_routine
 
     def set_solver(self, *solvers: EMSolver | EigSolver | Solver) -> None:
@@ -2751,22 +2755,7 @@ class SolveRoutine:
         )
 
 class AutomaticRoutine(SolveRoutine):
-    """Defines the Automatic Routine for EMerge as a Singleton."""
-    
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __init__(self, *args, **kwargs):
-        # Prevent re-initialization if the singleton instance already exists
-        if getattr(self, "_initialized", False):
-            return
-        
-        super().__init__(*args, **kwargs)
-        self._initialized = True
+    """Defines the Automatic Routine for EMerge."""
 
     def pick_solver(
         self, A: csc_matrix, b: np.ndarray, matrix_type: MatrixType, direct: bool = True

@@ -284,6 +284,10 @@
 
 ### Bug fixes
 
+- **Multithreaded sweeps:** every worker thread got the same solve routine, so threads replaced
+  each other's solvers and could factorize in the same PARDISO handle at once (occasional
+  segmentation faults in MKL). Each thread now gets its own routine and solvers, also for a solver
+  forced with `set_solver()`.
 - **Selections:** `Selection.exclude()` and `isolate()` returned wrong selections (`~` was used
   on Python booleans).
 - **`ModalPort`/`WavePortIH`:** passing `cs=...` raised
@@ -364,7 +368,7 @@
   removed.
 - `diagnose_matrix()` raises `MatrixDiagnosisError` with the coordinates of the problematic
   degrees of freedom.
-- `AutomaticRoutine` is a singleton.
+- The microwave and heat physics of a `Simulation` share one solve routine.
 - Face tags of named faces are cached on `GeoVolume`.
 - `GeoObject._become()` replaces an object in place, for example when voids are subtracted.
 - Launch messages and the version banner are only shown in the main process. Spyder is detected and

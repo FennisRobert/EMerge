@@ -41,6 +41,9 @@ from ..material_assignment import MaterialAssignment
 #                 MULTI PROCESSING FUNCTION                #
 ############################################################
 
+# The solve routine of a worker process, created by its first job and reused by the next ones
+_worker_routine: SolveRoutine | None = None
+
 
 def run_job_multi(job: SimJob) -> SimJob:
     """The job launcher for Multi-Processing environements
@@ -51,10 +54,12 @@ def run_job_multi(job: SimJob) -> SimJob:
     Returns:
         SimJob: The solved SimJob
     """
-    nr = int(mp.current_process().name.split("-")[1])
-    routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
+    global _worker_routine
+    if _worker_routine is None:
+        nr = int(mp.current_process().name.split("-")[1])
+        _worker_routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
-    solution, report = routine.solve(A, bmat, ids, id=job.id)
+    solution, report = _worker_routine.solve(A, bmat, ids, id=job.id)
     report.add(**aux)
     job.submit_solution(solution, report)
     return job

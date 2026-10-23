@@ -68,20 +68,43 @@ def test_amr_thin_conductor():
     em.cleanup()
 
 
-def test_amr_rejects_periodic_models():
-    """AURA does not refine periodic meshes yet, so AMR must refuse periodic models."""
+def test_amr_periodic():
+    """AMR on a periodic unit cell: paired faces are refined identically and power is conserved."""
     import emerge as em
-    import pytest
-    from emerge._emerge.simmodel import SimulationError
+    import numpy as np
+    from emerge._emerge.aura.emerge_tools import periodic_report
 
+    mm = 1e-3
     em.cleanup()
     model = em.Simulation("AMRPeriodic", loglevel="ERROR")
-    cell = em.RectCell(0.01, 0.01)
+    cell = em.RectCell(10 * mm, 10 * mm)
     model.set_periodic_cell(cell)
-    cell.volume(0, 0.01)
+    cell.volume(0, 30 * mm)
+    em.geo.Sphere(3 * mm, position=(0, 0, 15 * mm)).set_material(em.Material(6))
+    top, bot = cell.port_face(30 * mm), cell.port_face(0)
+    cell.set_scanangle(30, 20)
     model.commit_geometry()
-    model.mw.set_frequency_range(9e9, 10e9, 2)
+    model.mw.set_frequency(10e9)
+    model.mw.set_resolution(0.2)
     model.generate_mesh()
-    with pytest.raises(SimulationError, match="periodic"):
-        model.adaptive_mesh_refinement(max_steps=2)
+    model.mw.bc.floquet_port(top, 1)
+    model.mw.bc.floquet_port(bot, 2)
+
+    periodic = [(bc.face1.tags, bc.face2.tags, np.asarray(bc.dv)) for bc in model.mesher._get_periodic_bcs()]
+    tris_before = [r["n_tris"][0] for r in periodic_report(model.mesh, periodic)]
+    n0 = model.mesh.n_tets
+    model.adaptive_mesh_refinement(max_steps=3, frequency=10e9, convergence=1e-9)
+    assert model.mesh.n_tets > 1.3 * n0
+
+    reports = periodic_report(model.mesh, periodic)
+    assert sum(r["n_tris"][0] for r in reports) > sum(tris_before), "periodic faces were not refined"
+    for r in reports:
+        assert r["n_tris"][0] == r["n_tris"][1]
+        assert r["unmatched"] == 0
+        assert r["order_preserving"]
+
+    model.mw.run_sweep()
+    powers = model.mw._check_port_powers()
+    assert abs(abs(powers[1]) - 1.0) < 1e-4
+    assert abs(abs(powers[2]) - 1.0) < 1e-4
     em.cleanup()

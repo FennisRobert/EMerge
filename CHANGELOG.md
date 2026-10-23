@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b4 — changes since 2.8.9
+## 3.0.0b5 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus
@@ -18,7 +18,7 @@
 - **New adaptive mesh refinement (AURA).** `Simulation.adaptive_mesh_refinement()` refines the
   existing mesh locally, without remeshing in GMSH:
   - New nodes are projected onto curved CAD faces and curves.
-  - Periodic models are not supported yet; the refinement raises an error for them.
+  - Works on periodic models: every split on a periodic face is mirrored on its paired face, so the periodic meshes keep matching.
   - You control how fast the mesh grows: `growth` (a float, a per-pass list, `"auto"` or a
     callable), `growth_limits`, `order` and `theta`.
   - Further options: how far refinement spreads (`max_depth`, `lepp_ratio`), quality
@@ -147,11 +147,8 @@
 
 - **The Apple Accelerate solver is installed automatically on macOS.** `emerge-aasds` is now a
   precompiled PyPI package and a dependency of EMerge on macOS, so the fast Accelerate direct
-  solver works out of the box. `emerge install-solver aasds` (re)installs it from PyPI.
-- **Opt-in daily update check** with critical-bug notices: `emerge updates on|off|status|check|notices|clear`.
-- `emerge install-solver cad` installs the `cad` extra (Gerber and ODB++).
+  solver works out of the box.
 - `pip install emerge[spyder]` installs the packages needed to use EMerge in Spyder.
-- `python -m emerge ...` now works.
 
 ### Experimental
 
@@ -167,7 +164,9 @@
 
 - **numba is removed.** EMerge ships compiled wheels; building from source needs a Rust
   toolchain. The `emerge compile` command is removed.
-- The **`gerber` extra is renamed to `cad`**. `emerge install-solver gerber` still works.
+- The **`gerber` extra is renamed to `cad`**.
+- **The `emerge` command line tool is removed** (`emerge install-solver`, `python -m emerge`). Install
+  optional solvers with pip, e.g. `pip install emerge[cad]`.
 - The minimum `emsutil` version is 1.1.3.
 - **`emerge.beta` is removed:**
   - `emerge.beta.gerber.FileBasedPCB` → `emerge.read.FileBasedPCB`
@@ -310,7 +309,6 @@
   - Works with nvmath-python 0.5 and 1.0 and cuDSS 0.8.
   - `set_algorithm()` now takes effect.
   - A failing cuDSS import no longer breaks `import emerge`.
-- **`python -m emerge`** failed on a wrong import.
 - Boolean operations no longer try to assign a missing material.
 
 ### Accuracy improvements
@@ -369,11 +367,8 @@
 - `AutomaticRoutine` is a singleton.
 - Face tags of named faces are cached on `GeoVolume`.
 - `GeoObject._become()` replaces an object in place, for example when voids are subtracted.
-- Launch messages and the version banner are only shown in the main process. A one-time welcome
-  message is shown on first launch. Spyder is detected and
+- Launch messages and the version banner are only shown in the main process. Spyder is detected and
   the PyVista backend is set automatically.
-- `EMergeGlobalCache` stores user settings, such as the update check and notices that were
-  already shown.
 - More informative logging:
   - every boundary condition and its attributes;
   - the port impedance with its definition;

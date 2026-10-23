@@ -34,7 +34,7 @@ warnings.filterwarnings(
 
 import os
 
-__version__ = "3.0.0b4"
+__version__ = "3.0.0b5"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -86,10 +86,6 @@ from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttrib
 from . import optycal
 from . import plot 
 howto = _HowtoClass()
-
-if _is_main_process:
-    from ._emerge._launch_checks import run_launch_checks
-    run_launch_checks()
 
 
 ############################################################

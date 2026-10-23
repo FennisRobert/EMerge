@@ -1,3 +1,4 @@
+# [Written by Claude] All code in this module was written by Claude (AI).
 # This file was written by Claude Opus 5.5 (Anthropic) for the EMerge project.
 # No copyright is claimed on this file.
 

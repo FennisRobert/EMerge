@@ -1,3 +1,4 @@
+# [Written by Claude] All code in this module was written by Claude (AI).
 # EMerge is an open source Python based FEM EM simulation module.
 # Copyright (C) 2025  Robert Fennis.
 

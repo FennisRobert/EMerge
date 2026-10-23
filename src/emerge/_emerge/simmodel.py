@@ -1361,6 +1361,7 @@ class Simulation:
     #                   ADAPTIVE MESH REFINEMENT              #
     ############################################################
 
+    # [Written by Claude]
     def adaptive_mesh_refinement(
         self,
         max_steps: int = 6,
@@ -1585,6 +1586,7 @@ class Simulation:
         self.state.store_geometry_data()
         return old
 
+    # [Written by Claude]
     def _install_refined_mesh(self, mesh: Mesh3D) -> None:
         """Replace the simulation mesh by a locally refined one and reset mesh-dependent state."""
         self.state.set_mesh(mesh)

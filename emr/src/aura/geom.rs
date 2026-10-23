@@ -1,3 +1,4 @@
+// [Written by Claude] All code in this module was written by Claude (AI).
 //! Snapshot of the original BREP geometry and point projection onto it.
 //!
 //! The Python side samples the CAD model once (sphere/cylinder fits, circles,

@@ -1,3 +1,4 @@
+// [Written by Claude] All code in this module was written by Claude (AI).
 //! Local mesh quality improvement after refinement: topological flips and
 //! smart Laplacian smoothing of interior nodes.
 //!

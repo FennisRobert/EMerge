@@ -1369,6 +1369,7 @@ class SolverSparta(Solver):
 
 
 
+# [Written by Claude]
 class SolverCorvid(Solver):
     """Implements the CORVID preconditioned iterative solver.
 
@@ -2460,6 +2461,7 @@ class SolveRoutine:
         else:
             return self.solvers[EMSolver.SMART_ARPACK_BMA]  # type: ignore
 
+    # [Written by Claude]
     def _solve_with(
         self,
         solver: Solver,

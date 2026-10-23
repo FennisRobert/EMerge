@@ -1,3 +1,4 @@
+// [Written by Claude] All code in this module was written by Claude (AI).
 //! Python bindings of the AURA local mesh refinement: numpy arrays in, refined mesh dictionary out.
 use crate::aura::geom::{Brep, Curve, Surface, P3};
 use crate::aura::improve::{ImproveParams, Improver};

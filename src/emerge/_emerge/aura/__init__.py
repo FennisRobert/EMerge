@@ -1,3 +1,4 @@
+# [Written by Claude] All code in this module was written by Claude (AI).
 """AURA: Adaptive Unstructured Refinement Algorithm for EMerge (Rust core in emr/src/aura).
 
 Local, conforming refinement of tetrahedral meshes by longest-edge bisection,

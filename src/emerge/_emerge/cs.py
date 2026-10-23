@@ -134,6 +134,7 @@ class Axis(Saveable):
         ax2 = self.cross(ax1).neg
         return CoordinateSystem(ax2, ax1, self, np.array(origin))
 
+    # [Written by Claude]
     def tensor(self, axis_value: complex, plane_value: complex) -> np.ndarray:
         """Generates a uniaxial (3x3) tensor with an axis value and orthogonal value
 

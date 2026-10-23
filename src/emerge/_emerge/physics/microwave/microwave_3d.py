@@ -1934,6 +1934,7 @@ class Microwave3D(GenericPhysics3D):
         self._state.set_modified()
         logger.info(f"Stored CNOSDD solution at {_format_freq(frequency)}.")
 
+    # [Written by Claude]
     def run_adaptive_sweep(
         self,
         parallel: bool = False,

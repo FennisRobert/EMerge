@@ -1,3 +1,4 @@
+// [Written by Claude] All code in this module was written by Claude (AI).
 //! AURA (Adaptive Unstructured Refinement Algorithm): local tetrahedral mesh refinement and quality improvement.
 pub mod geom;
 #[allow(clippy::unnecessary_map_or)]

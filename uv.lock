@@ -647,7 +647,7 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.0b4"
+version = "3.0.0b5"
 source = { editable = "." }
 dependencies = [
     { name = "emerge-aasds", marker = "sys_platform == 'darwin'" },

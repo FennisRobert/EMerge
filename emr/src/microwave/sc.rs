@@ -98,6 +98,7 @@ fn py_stratton_chu_ff<'py>(
     (r.0.into_pyarray_bound(py), r.1.into_pyarray_bound(py))
 }
 
+// [Written by Claude]
 /// A surface sample with the cross and dot products of the near field integral precomputed.
 struct NfSource {
     x: f64,
@@ -109,6 +110,7 @@ struct NfSource {
     hdn: c64,
 }
 
+// [Written by Claude]
 /// Near field E and H (3, N) at the points xyz (3, N) from surface fields Ein/Hin at points vis with weighted normals wns.
 ///
 /// Evaluates the Stratton-Chu integrals with the free space Green's function G = exp(-jkR)/(4 pi R), R = r - r':
@@ -187,6 +189,7 @@ pub fn stratton_chu_nf(
     (eout, hout)
 }
 
+// [Written by Claude]
 #[pyfunction]
 #[pyo3(name = "stratton_chu_nf")]
 fn py_stratton_chu_nf<'py>(

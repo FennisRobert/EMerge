@@ -71,6 +71,7 @@ def stratton_chu(
     return Eout.astype(np.complex128), Hout.astype(np.complex128), weighted_normals
 
 
+# [Written by Claude]
 def stratton_chu_near(
     Ein, Hin, mesh: SurfaceMesh, xyz: np.ndarray, k0: float
 ) -> tuple[np.ndarray, np.ndarray]:

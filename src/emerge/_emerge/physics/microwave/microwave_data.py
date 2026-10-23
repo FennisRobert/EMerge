@@ -1654,6 +1654,7 @@ class MWField(Saveable):
             faces.tags, inward_normal=False, origin=origin
         )
 
+    # [Written by Claude]
     def nearfield(
         self,
         x: np.ndarray | float,
@@ -2533,6 +2534,7 @@ class MWScalarNdim(Saveable):
         S = renormalise_s(S, Z0s, 50.0)
         return f, S
 
+    # [Written by Claude]
     def _aaa_Smat(self, freq: np.ndarray, tol: float | None) -> np.ndarray:
         """Joint AAA model of all active ports evaluated at freq.
 

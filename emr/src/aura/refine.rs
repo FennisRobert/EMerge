@@ -1,3 +1,4 @@
+// [Written by Claude] All code in this module was written by Claude (AI).
 //! Conforming local refinement of a tetrahedral mesh by longest-edge bisection.
 //!
 //! Refinement is done exclusively by *edge splits*: an edge `(a, b)` receives a

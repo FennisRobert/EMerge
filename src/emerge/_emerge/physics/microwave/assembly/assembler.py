@@ -292,6 +292,7 @@ class Assembler:
         self._periodic_patterns = None
         self._precon_cache = None
 
+    # [Written by Claude]
     def _precon_dataset(self, field: Nedelec2, has_periodic: bool) -> PreconData | None:
         """The mesh data for a preconditioned iterative solver, built once per field.
 

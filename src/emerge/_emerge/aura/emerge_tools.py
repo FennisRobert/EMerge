@@ -1,3 +1,4 @@
+# [Written by Claude] All code in this module was written by Claude (AI).
 """Helpers that operate on EMerge ``Mesh3D`` objects.
 
 Every function receives the EMerge objects it works on. EMerge's

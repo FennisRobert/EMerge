@@ -1,3 +1,4 @@
+# [Written by Claude] All code in this module was written by Claude (AI).
 """A one-time snapshot of the BREP geometry used to project new boundary nodes.
 
 Every geometric face and curve is reduced to a small descriptor:

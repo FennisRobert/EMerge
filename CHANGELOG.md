@@ -284,6 +284,11 @@
 
 ### Bug fixes
 
+- **`ThinConductor`:** the two sides of a thin conductor sheet were not separated in the solve.
+  The volume was assembled with the unsplit numbering, only one tet per sheet triangle got the
+  copied DoFs (not the tets that touch the sheet through an edge), and the copied side was picked
+  at random per triangle. Now every tet on one side of the sheet uses the copies, and the solve,
+  the fields, the far fields and the error estimate all use the same numbering.
 - **Multithreaded sweeps:** every worker thread got the same solve routine, so threads replaced
   each other's solvers and could factorize in the same PARDISO handle at once (occasional
   segmentation faults in MKL). Each thread now gets its own routine and solvers, also for a solver

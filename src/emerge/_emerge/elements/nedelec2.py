@@ -90,8 +90,8 @@ class Nedelec2(FEMBasis, Saveable):
         self.tri_to_split: list[int] = []
 
         self._dof_mapping: dict[int, int] = dict()
-        self._tet_to_field_orig: np.ndaray = None
         self._partitioned: bool = False
+        self._split_tris: list[int] = []
         self.diagnose()
 
         rows, cols = self.empty_tri_rowcol()
@@ -113,14 +113,14 @@ class Nedelec2(FEMBasis, Saveable):
         silently averaged over.
 
         Args:
-            field: a Nedelec2 field object (anything exposing `get_tet_to_field()`,
+            field: a Nedelec2 field object (anything exposing `tet_to_field`,
                 `dofcodes3d`, and `n_field`).
 
         Returns:
             np.ndarray, shape (field.n_field,), int64 dofcode per global DOF.
         """
         field = self
-        tet_to_field = field.get_tet_to_field()  # (ndof_local, ntets)
+        tet_to_field = field.tet_to_field  # (ndof_local, ntets)
         dofcodes3d = np.asarray(field.dofcodes3d)  # (ndof_local,)
 
         global_codes = np.full(field.n_field, -1, dtype=np.int64)
@@ -192,7 +192,7 @@ class Nedelec2(FEMBasis, Saveable):
         tris = mesh.tris              # (3, n_tris)  -- global node ids per face
         tet_to_edge = mesh.tet_to_edge  # (6, ntets)
         tet_to_tri = mesh.tet_to_tri    # (4, ntets)
-        tet_to_field = field.get_tet_to_field()  # (ndof_local, ntets)
+        tet_to_field = field.tet_to_field  # (ndof_local, ntets)
         dofcodes3d = np.asarray(field.dofcodes3d)
 
         typearray, indexarray = self._parse_dofcode_np(dofcodes3d)
@@ -226,11 +226,6 @@ class Nedelec2(FEMBasis, Saveable):
         visited_field[self.tet_to_field] = True
         assert np.all(visited_field)
 
-    def get_tet_to_field(self) -> np.ndarray:
-        if self._tet_to_field_orig is not None:
-            return self._tet_to_field_orig
-        return self.tet_to_field
-
     def partition_dof(self, list_tags: list[list[int]]) -> None:
         """Partition_DOF splits the degrees of freedom for an input list of face tags."""
 
@@ -241,7 +236,6 @@ class Nedelec2(FEMBasis, Saveable):
         if self.tri_to_field_os is None:
             self.tri_to_field_os = self.tri_to_field.copy()
             self.edge_to_field_os = self.edge_to_field.copy()
-            self._tet_to_field_orig = self.tet_to_field.copy()
 
         tags: list[int] = []
         for sublist in list_tags:
@@ -259,6 +253,8 @@ class Nedelec2(FEMBasis, Saveable):
 
         split_edges = sorted(list(set(split_edges)))
         split_tris = sorted(list(set(split_tris)))
+        split_tets = self._copied_side_tets(split_tets, split_tris, split_edges)
+        self._split_tris = split_tris
 
         NF = self.n_field
         NE_SPLIT = len(split_edges)
@@ -289,6 +285,58 @@ class Nedelec2(FEMBasis, Saveable):
 
 
         self._partitioned = True
+
+    # [Written by Claude]
+    def _copied_side_tets(self, face_tets: list[int], split_tris: list[int], split_edges: list[int]) -> list[int]:
+        """All tets on the copied side of the sheets that contain a split edge.
+
+        face_tets are the tets on the copied side that share a face with a sheet triangle. The tets that
+        only touch the sheet through an edge must use the copied DoFs of that edge as well, otherwise the
+        two sides stay connected through them. Around every split edge the ring of tets is cut in two by the
+        two sheet triangles on that edge; the half that holds the face tets is the copied side.
+
+        Args:
+            face_tets (list[int]): The tets on the copied side that share a face with the sheet
+            split_tris (list[int]): The sheet triangles
+            split_edges (list[int]): The split (interior) sheet edges
+
+        Returns:
+            list[int]: The sorted tets on the copied side that contain a split edge or a sheet triangle
+        """
+        mesh = self.mesh
+        sheet = set(split_tris)
+        copied = set(face_tets)
+
+        # Tets around every split edge
+        hit = np.flatnonzero(np.isin(mesh.tet_to_edge, split_edges))
+        rows, cols = np.unravel_index(hit, mesh.tet_to_edge.shape)
+        edge_tets: dict[int, list[int]] = {}
+        for ie, itet in zip(mesh.tet_to_edge[rows, cols].tolist(), cols.tolist()):
+            edge_tets.setdefault(ie, []).append(itet)
+
+        result = set(face_tets)
+        for ie in split_edges:
+            ring = edge_tets.get(ie, [])
+            # Neighbours in the ring share a triangle that contains the edge (and is not a sheet triangle)
+            face_tet: dict[int, list[int]] = {}
+            for itet in ring:
+                for itri in mesh.tet_to_tri[:, itet].tolist():
+                    if itri not in sheet and ie in mesh.tri_to_edge[:, itri]:
+                        face_tet.setdefault(itri, []).append(itet)
+            neighbours: dict[int, list[int]] = {itet: [] for itet in ring}
+            for pair in face_tet.values():
+                if len(pair) == 2:
+                    neighbours[pair[0]].append(pair[1])
+                    neighbours[pair[1]].append(pair[0])
+            stack = [itet for itet in ring if itet in copied]
+            seen = set(stack)
+            while stack:
+                for nb in neighbours[stack.pop()]:
+                    if nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+            result |= seen
+        return sorted(result)
 
     def _partition_dof_face(self, tag: int) -> None:
         """Splits DOFs on a specific face tag between two volumes.
@@ -344,12 +392,11 @@ class Nedelec2(FEMBasis, Saveable):
             tet1 = self.mesh.tri_to_tet[0, itri]
             tet2 = self.mesh.tri_to_tet[1, itri]
 
-            tri_c = self.mesh.tri_centers[:, itri]
-            tet_c = self.mesh.centers[:, tet2]
-            vec = tet_c - tri_c
-            vec = vec / (np.linalg.norm(vec) + 1e-13)
+            # The copied side is the side the face normal points to. get_normal has an arbitrary sign,
+            # so orient it with the face normal first, then check on which side tet2 lies.
             trinorm = self.mesh.get_normal(itri)
-            normdot = np.sum(trinorm * normal)
+            trinorm = trinorm * np.sign(np.sum(trinorm * normal) or 1.0)
+            vec = self.mesh.centers[:, tet2] - self.mesh.tri_centers[:, itri]
 
             e1, e2, e3 = self.mesh.tri_to_edge[:, itri]
             for ie in (e1, e2, e3):
@@ -357,11 +404,7 @@ class Nedelec2(FEMBasis, Saveable):
                     split_edges.append(ie)
             split_tris.append(itri)
 
-            pick = tet1
-            if normdot > 0:
-                pick = tet2
-
-            split_tets.append(pick)
+            split_tets.append(tet2 if np.sum(vec * trinorm) > 0 else tet1)
 
         return split_tets, split_tris, split_edges
 

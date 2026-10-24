@@ -26,6 +26,7 @@ import hashlib
 from dataclasses import dataclass, field
 import numpy as np
 from loguru import logger
+from .mth.csc_submatrix import csc_submatrix  # [Written by Claude]
 import multiprocessing as _mp
 import platform
 import time
@@ -2574,7 +2575,7 @@ class SolveRoutine:
         NS = solve_ids.shape[0]
         NB = b.shape[1]
 
-        Asel = A[:, solve_ids][solve_ids, :]
+        Asel = csc_submatrix(A, solve_ids)  # [Written by Claude] same as A[:, solve_ids][solve_ids, :]
         bsel = b[solve_ids, :]
         nnz = Asel.nnz
 

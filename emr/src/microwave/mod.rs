@@ -7,4 +7,5 @@ pub mod periodicbc;
 pub mod robin_abc_order2;
 pub mod robinbc;
 pub mod sc;
+pub mod sc_multi;
 pub mod system_pattern;

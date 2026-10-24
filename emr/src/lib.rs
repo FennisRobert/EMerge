@@ -58,6 +58,7 @@ fn emr(m: &Bound<'_, PyModule>) -> PyResult<()> {
         mth::integrals::register(s)?;
         mth::csc_cast::register(s)
     })?;
+    add_submodule(m, "csc_submatrix", mth::csc_submatrix::register)?; // [Written by Claude]
     add_submodule(m, "interp", compiled::interp::register)?;
     add_submodule(m, "index_interp", compiled::index_interp::register)?;
     add_submodule(m, "ccbf", compiled::ccbf_py::register)?;

@@ -71,6 +71,7 @@ fn emr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_submodule(m, "ams_kernels", microwave::ams_kernels::register)?;
     add_submodule(m, "adaptive_mesh", microwave::adaptive_mesh::register)?;
     add_submodule(m, "sc", microwave::sc::register)?;
+    add_submodule(m, "sc_multi", microwave::sc_multi::register)?; // [Written by Claude]
     add_submodule(m, "heat_grad", heat::grad::register)?;
     add_submodule(m, "heat_convection", heat::convection::register)?;
     add_submodule(m, "heat_heatflux", heat::heatflux::register)?;

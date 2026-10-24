@@ -1490,6 +1490,35 @@ class MWField(Saveable):
 
         return EHFieldFF(E, H, T, P, Ptot, freq=self.freq)
 
+    # [Written by Claude]
+    def farfield_3d_ports(
+        self,
+        faces: FaceSelection | GeoSurface,
+        thetas: np.ndarray | None = None,
+        phis: np.ndarray | None = None,
+        origin: tuple[float, float, float] | None = None,
+        syms: list[Literal["Ex", "Ey", "Ez", "Hx", "Hy", "Hz"]] | None = None,
+        ports: list[int | float] | None = None,
+    ) -> dict[int | float, EHFieldFF]:
+        """Compute the 3D farfield of every port excited on its own, in one pass.
+
+        Gives the same result as calling excite_port(p) and farfield_3d for every port, but builds the integration
+        surface and the phase factors only once. The excitation of this field is left unchanged.
+
+        Args:
+            faces (FaceSelection | GeoSurface): The integration faces
+            thetas (np.ndarray, optional): The 1D array of theta values. Defaults to None.
+            phis (np.ndarray, optional): A 1D array of phi values. Defaults to None.
+            origin (tuple[float, float, float], optional): The boundary normal alignment origin. Defaults to None.
+            syms (list[Literal['Ex','Ey','Ez','Hx','Hy','Hz']], optional): E and H-plane symmetry planes where Ex is E-symmetry in x=0. Defaults to None.
+            ports (list[int | float], optional): The port numbers. Defaults to all active ports.
+        Returns:
+            dict[int | float, EHFieldFF]: The farfield of every port.
+        """
+        from .sc_multi import farfield_ports
+
+        return farfield_ports(self, faces, thetas, phis, origin=origin, syms=syms, ports=ports)
+
     def embed_external_component(
         self, touchstone_file: str, port_indices: list[int | float]
     ) -> None:

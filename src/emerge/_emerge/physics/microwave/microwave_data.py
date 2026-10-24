@@ -1638,7 +1638,7 @@ class MWField(Saveable):
             Eff = Eff + E2
             Hff = Hff + H2
 
-        return Eff * factor, Hff * factor, Ptot * (factor**2)
+        return Eff * factor, Hff * factor, Ptot  # [Written by Claude] Ptot of the simulated part already is the power of the full structure at 1 W
 
     def _integration_surface(
         self, faces: FaceSelection | GeoSurface, origin: tuple[float, float, float] | None

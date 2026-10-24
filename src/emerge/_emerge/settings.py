@@ -74,5 +74,10 @@ class Settings:
 
         self.qtem_limit: float = 0.1
 
+        # [Written by Claude]
+        self.mw_curved_elements: bool = False
+        # Curved (isoparametric) tetrahedra at curved PEC and material surfaces: edge midpoints on curved
+        # CAD faces are moved onto the true geometry (see physics/microwave/assembly/curvilinear.py).
+
 
 DEFAULT_SETTINGS = Settings()

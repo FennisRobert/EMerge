@@ -273,9 +273,10 @@ class Nedelec2(FEMBasis, Saveable):
 
         self.n_field = self.n_field + self.nedof * NE_SPLIT + dofset.n_face_dofs*NF_SPLIT
 
-        for tet in split_tets:
-            for i, idof in enumerate(self.tet_to_field[:, tet]):
-                self.tet_to_field[i, tet] = self._dof_mapping.get(idof, idof)
+        # [Written by Claude] tet_to_field keeps the original numbering. The system matrix is assembled
+        # with get_tet_to_field() (the original numbering), and the split copies only carry the second side
+        # of the ThinConductor surface term, so the solution lives on the original DoFs. Remapping the
+        # tetrahedra at the sheet here made fields, far fields and the error estimate read the copies there.
 
         for itri in split_tris:
             for i, idof in enumerate(self.tri_to_field[:, itri]):

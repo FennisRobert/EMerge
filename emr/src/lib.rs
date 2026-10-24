@@ -63,6 +63,7 @@ fn emr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_submodule(m, "index_interp", compiled::index_interp::register)?;
     add_submodule(m, "ccbf", compiled::ccbf_py::register)?;
     add_submodule(m, "curlcurl", microwave::curlcurl::register)?;
+    add_submodule(m, "curlcurl_iso", microwave::curlcurl_iso::register)?; // [Written by Claude]
     add_submodule(m, "generalized_eigen_hb", microwave::generalized_eigen_hb::register)?;
     add_submodule(m, "robinbc", microwave::robinbc::register)?;
     add_submodule(m, "robin_abc_order2", microwave::robin_abc_order2::register)?;

@@ -1,6 +1,7 @@
 pub mod adaptive_mesh;
 pub mod ams_kernels;
 pub mod curlcurl;
+pub mod curlcurl_iso;
 pub mod generalized_eigen_hb;
 pub mod periodicbc;
 pub mod robin_abc_order2;

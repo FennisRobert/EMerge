@@ -409,6 +409,7 @@ class Assembler:
         conductor_tets: np.ndarray,
         robin_bcs: list[RobinBC],
         use_cache: bool,
+        bcs: list[BoundaryCondition] | None = None,
     ) -> tuple[SystemPattern, np.ndarray, np.ndarray]:
         """Returns the system pattern and the volume matrices E, B as data
         arrays on that pattern.
@@ -432,6 +433,10 @@ class Assembler:
         Evec, Bvec, volume_coo_to_csc = tet_mass_stiffness_matrices(
             field, er, ur, conductor_tets, None if system is None else system.volume_coo_to_csc
         )
+        if self.settings.mw_curved_elements and bcs is not None:  # [Written by Claude]
+            from .curvilinear import apply_curved
+            ncurved = apply_curved(field, er, ur, conductor_tets, Evec, Bvec, bcs)
+            logger.debug(f' - Curved elements: {ncurved} tetrahedra')
         t1 = time.time()
         logger.debug(f' - Assembly speed: {(field.ntets - len(conductor_tets)) / (t1 - t0):.1f} tets/s')
 
@@ -776,7 +781,7 @@ class Assembler:
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
 
         system, E, B = self._prepare_system(
-            field, er, ur, conductor_tets, robin_bcs, cache_matrices and not is_frequency_dependent
+            field, er, ur, conductor_tets, robin_bcs, cache_matrices and not is_frequency_dependent, bcs=bcs
         )
 
         port_vectors: dict[int | float, np.ndarray] = {}
@@ -859,7 +864,7 @@ class Assembler:
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
 
         system, E, B = self._prepare_system(
-            field, er, ur, conductor_tets, robin_bcs, cache_matrices and not is_frequency_dependent
+            field, er, ur, conductor_tets, robin_bcs, cache_matrices and not is_frequency_dependent, bcs=bcs
         )
 
         logger.debug("Implementing PEC Boundary Conditions.")
@@ -937,7 +942,7 @@ class Assembler:
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
 
         logger.debug("Assembling matrices")
-        system, E, B = self._prepare_system(field, er, ur, conductor_tets, robin_bcs, use_cache=False)
+        system, E, B = self._prepare_system(field, er, ur, conductor_tets, robin_bcs, use_cache=False, bcs=bcs)
 
         logger.debug("Implementing PEC Boundary Conditions.")
         pec_ids, _ = self._collect_pec_dofs(field, mesh, bcs, conductor_tets, cond)

@@ -27,6 +27,25 @@ from enum import Enum
 from .bc import Periodic, BoundaryCondition
 
 
+
+# [Written by Claude]
+def _curve_sampling(curve_tags: list[int], size: float) -> int:
+    """The number of sample points per curve for a gmsh Distance field.
+
+    The Distance field measures the distance to points sampled on each curve, not to the curve itself.
+    With a fixed number of samples, long curves get sample points far apart and the mesh size pulsates
+    between them. Sample at least twice per mesh size (the same count is used for every curve in the field).
+
+    Args:
+        curve_tags (list[int]): The curves of the Distance field
+        size (float): The target mesh size near the curves (modelling units)
+
+    Returns:
+        int: The number of sample points per curve (at least 100)
+    """
+    length = max((gmsh.model.occ.getMass(1, tag) for tag in curve_tags), default=0.0)
+    return max(100, int(np.ceil(2 * length / size)) + 1)
+
 class MeshError(Exception):
     pass
 
@@ -424,7 +443,10 @@ class Mesher:
             gmsh.model.mesh.field.setNumbers(
                 disttag, "SurfacesList", [n[1] for n in nodes]
             )
-        gmsh.model.mesh.field.setNumber(disttag, "Sampling", 100)
+        if boundary.dim == 2:
+            gmsh.model.mesh.field.setNumber(disttag, "Sampling", _curve_sampling([n[1] for n in nodes], size))
+        else:
+            gmsh.model.mesh.field.setNumber(disttag, "Sampling", 100)
 
         thtag = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(thtag, "InField", disttag)
@@ -537,7 +559,7 @@ class Mesher:
                     edge_tag,
                 ],
             )
-            gmsh.model.mesh.field.setNumber(disttag, "Sampling", 100)
+            gmsh.model.mesh.field.setNumber(disttag, "Sampling", _curve_sampling([edge_tag], size))
 
             thtag = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thtag, "InField", disttag)
@@ -649,7 +671,7 @@ class Mesher:
 
         # gmsh.model.mesh.field.setNumbers(1, "PointsList", [5])
         gmsh.model.mesh.field.setNumbers(tag, "CurvesList", [n[1] for n in nodes])
-        gmsh.model.mesh.field.setNumber(tag, "Sampling", 100)
+        gmsh.model.mesh.field.setNumber(tag, "Sampling", _curve_sampling([n[1] for n in nodes], size))
 
         # We then define a `Threshold' field, which uses the return value of the
         # `Distance' field 1 in order to define a simple change in element size

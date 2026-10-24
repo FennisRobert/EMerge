@@ -68,7 +68,7 @@ def assemble_discrete_gradient(field: Nedelec2, rtol: float = 1e-8) -> csr_matri
     n_nodes = mesh.n_nodes
     n_lagrange = n_nodes + mesh.n_edges
 
-    tet_to_field = np.ascontiguousarray(field.get_tet_to_field())
+    tet_to_field = np.ascontiguousarray(field.tet_to_field)
     dofcodes = np.ascontiguousarray(field.dofcodes3d)
     typearr, indexarr = Nedelec2._parse_dofcode_np(dofcodes)
     ndof = dofcodes.shape[0]

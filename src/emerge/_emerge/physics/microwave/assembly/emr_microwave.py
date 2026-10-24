@@ -58,7 +58,7 @@ def tet_mass_stiffness_matrices(
     edges = field.mesh.edges
     nodes = field.mesh.nodes
 
-    tet_to_field = field.get_tet_to_field()
+    tet_to_field = field.tet_to_field
     tet_to_edge = field.mesh.tet_to_edge
     tet_to_tri = field.mesh.tet_to_tri
 
@@ -109,7 +109,7 @@ def tet_mass_stiffness_matrices_subdom(
     edges = field.mesh.edges
     nodes = field.mesh.nodes
 
-    tet_to_field = field.get_tet_to_field()
+    tet_to_field = field.tet_to_field
     tet_to_edge = field.mesh.tet_to_edge
     tet_to_tri = field.mesh.tet_to_tri
 

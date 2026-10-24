@@ -1075,8 +1075,25 @@ class Microwave3D(GenericPhysics3D):
             logger.info(
                 f"Starting distributed solve of {len(jobs)} jobs with {n_workers} threads."
             )
+            # [Written by Claude] Reset each worker's routine on the worker thread itself. scipy's SuperLU
+            # frees a factorization only in the thread that created it, so a routine that is dropped or
+            # reset in another thread keeps one factorization per worker allocated after every batch.
+            def release_routine(barrier: threading.Barrier) -> None:
+                try:
+                    barrier.wait(timeout=60)  # one release task per worker thread
+                except threading.BrokenBarrierError:
+                    pass
+                routine = thread_local.__dict__.pop("routine", None)
+                if routine is not None:
+                    routine.reset()
+
             with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="WKR") as executor:
-                results = list(executor.map(run_job, jobs))
+                try:
+                    results = list(executor.map(run_job, jobs))
+                finally:
+                    barrier = threading.Barrier(n_workers)
+                    for _ in range(n_workers):
+                        executor.submit(release_routine, barrier)
             thread_local.__dict__.clear()
             return results
 

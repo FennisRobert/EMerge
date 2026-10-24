@@ -133,7 +133,7 @@ def farfield_ports(
         factor = _symmetry_factor(syms)
         Effs = [E * factor for E in Effs]
         Hffs = [H * factor for H in Hffs]
-        Ptots = [Pt * factor**2 for Pt in Ptots]
+        # Ptot of the simulated part already is the power of the full structure at 1 W (as in _farfield)
 
     out = dict()
     for p, E, H, Pt in zip(ports, Effs, Hffs, Ptots):

@@ -60,7 +60,7 @@ system and hardware you have, some might work better and/or are easier to instal
 
 <br>
 
-EMerge uses the Apple Accelerate sparse solver for all cases. From 3.0.0b5 onwards it is installed automatically
+EMerge uses the Apple Accelerate sparse solver for all cases. From 3.0.0b4 onwards it is installed automatically
 with EMerge on macOS (the precompiled `emerge-aasds` package on PyPI), so no extra installation is needed.
 
 By default the Accelrate solver will be limited to a single thread for frequency distributed sweeps. To allow for more threads either set the environment variable manually:

@@ -2,6 +2,7 @@
 //! Python bindings of the AURA local mesh refinement: numpy arrays in, refined mesh dictionary out.
 use crate::aura::geom::{Brep, Curve, Surface, P3};
 use crate::aura::improve::{ImproveParams, Improver};
+use crate::aura::wedge::flip_concave_wedges;
 use crate::aura::refine::{mean_ratio, Params, Refiner};
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
@@ -205,7 +206,14 @@ fn refine<'py>(
         global: improve_global,
     };
 
-    let (mut out, region, istats) = py.allow_threads(|| {
+    let mut region_in = region_in;
+    let mut faces = faces;
+    let (mut out, region, istats, n_wedge_flips) = py.allow_threads(|| {
+        // reflex edges of curved faces first, else their midpoints cannot be projected (dents)
+        let curve_set_in: HashSet<(u32, u32)> = curves.iter().map(|(e, _)| if e.0 < e.1 { *e } else { (e.1, e.0) }).collect();
+        let locked: HashSet<u32> = pairs.iter().flat_map(|p| [p.1, p.2]).collect();
+        let n_wedge_flips =
+            flip_concave_wedges(&nodes, &tets, &mut region_in, &mut faces, &curve_set_in, &locked, &brep);
         let mut r = Refiner::new(nodes, tets, error, &faces, &curves, &brep, params);
         r.set_periodic(&pairs);
         let limit = |n: usize| (n as f64 * (1.0 + strip_max_growth)).round() as usize;
@@ -221,7 +229,7 @@ fn refine<'py>(
         let mut out = r.finish();
         let region: Vec<i32> = out.tet_root.iter().map(|&i| region_in[i as usize]).collect();
         if iparams.sweeps == 0 {
-            return (out, region, Default::default());
+            return (out, region, Default::default(), n_wedge_flips);
         }
         let curve_set: HashSet<(u32, u32)> = out.curve_edges.iter().copied().collect();
         let tets = std::mem::take(&mut out.tets);
@@ -245,7 +253,7 @@ fn refine<'py>(
         out.tet_new = a;
         out.face_tris = faces.iter().map(|x| x.0).collect();
         out.face_tri_tags = faces.iter().map(|x| x.1).collect();
-        (out, r, istats)
+        (out, r, istats, n_wedge_flips)
     });
     let tet_new: Vec<bool> = std::mem::take(&mut out.tet_new);
 
@@ -274,6 +282,7 @@ fn refine<'py>(
     s.set_item("n_projection_reduced", out.stats.n_projection_reduced)?;
     s.set_item("n_projection_rejected", out.stats.n_projection_rejected)?;
     s.set_item("n_strip_splits", out.stats.n_strip_splits)?;
+    s.set_item("n_wedge_flips", n_wedge_flips)?;
     s.set_item("n_flip23", istats.n_flip23)?;
     s.set_item("n_flip32", istats.n_flip32)?;
     s.set_item("n_flip44", istats.n_flip44)?;

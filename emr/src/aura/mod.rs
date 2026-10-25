@@ -6,3 +6,4 @@ pub mod improve;
 pub mod py;
 #[allow(clippy::unnecessary_map_or)]
 pub mod refine;
+pub mod wedge;

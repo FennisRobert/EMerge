@@ -87,6 +87,11 @@ def refine(
     improve the worst tet it touches. Tagged faces, tagged curve edges, their
     nodes and region boundaries are never changed.
 
+    Before refining, every concave wedge at a curved face (a tet with two faces on
+    that face, meeting at a reflex edge) is moved to the region on the other side,
+    so the face runs over the convex diagonal. Otherwise new nodes on the reflex
+    edge cannot be projected onto the surface and stay on the chord.
+
     Args:
         nodes: (N, 3) node coordinates.
         tets: (M, 4) node indices per tetrahedron.

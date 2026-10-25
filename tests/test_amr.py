@@ -140,3 +140,116 @@ def test_aura_reflex_edge_on_sphere():
     on = np.unique(np.asarray(res.face_tris)[np.asarray(res.face_tri_tags) == 7])
     r = np.linalg.norm(np.asarray(res.nodes)[on], axis=1)
     assert np.allclose(r, 1.0, atol=1e-12), r
+
+
+# [Written by Claude]
+def _aura_passes(obj_factory, passes, cavity, two_sided=False):
+    """A few AURA passes on an object in an air box with an error that peaks at the object surface.
+    ``min_projected_volume=0.9`` makes almost every projection of a new surface node fail for plain
+    bisection, so the cavity re-meshing (hzAURA) has to do all of them."""
+    import emerge as em
+    import gmsh
+    import numpy as np
+    from scipy.spatial import cKDTree
+    from emerge._emerge.aura import refine
+    from emerge._emerge.aura.brep import snapshot_gmsh
+    from emerge._emerge.aura.emerge_tools import mesh_to_aura_inputs
+
+    em.cleanup()
+    model = em.Simulation("hzAURA", loglevel="ERROR")
+    air = em.geo.Box(1.2, 1.2, 1.2, position=(-0.6, -0.6, -0.6))
+    obj = obj_factory(em)
+    if two_sided:
+        obj.set_material(em.Material(er=4.0))
+        obj.prio_up()
+    else:
+        em.geo.subtract(air, obj)
+    model.commit_geometry()
+    model.mw.set_frequency(1e9)
+    model.mw.set_resolution(0.25)
+    model.generate_mesh()
+    brep = snapshot_gmsh()
+    curved = [t for _, t in gmsh.model.getEntities(2) if gmsh.model.getType(2, t) != "Plane"]
+    x = mesh_to_aura_inputs(model.mesh)
+    nodes, tets, region = x["nodes"], x["tets"], x["tet_region"]
+    ft, fg, ce, cg = x["face_tris"], x["face_tri_tags"], x["curve_edges"], x["curve_edge_tags"]
+    rng = np.random.default_rng(1)
+    stats = {}
+    for _ in range(passes):
+        surf = np.unique(ft[np.isin(fg, curved)])
+        d, _ = cKDTree(nodes[surf]).query(nodes[tets].mean(axis=1))
+        err = rng.uniform(0.5, 1.5, len(tets)) / (d + 1e-3)
+        r = refine(nodes, tets, err, region, ft, fg, ce, cg, None, brep, growth=0.3, min_projected_volume=0.9,
+                   cavity=cavity)
+        nodes, tets, region = r.nodes, r.tets, r.tet_region
+        ft, fg, ce, cg = r.face_tris, r.face_tri_tags, r.curve_edges, r.curve_edge_tags
+        for k, v in r.stats.items():
+            stats[k] = stats.get(k, 0) + v
+    # valid and conforming: same orientation everywhere, every boundary face is a tagged face
+    p = nodes[tets]
+    v = np.einsum("ij,ij->i", p[:, 1] - p[:, 0], np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]))
+    assert np.all(v * np.sign(v[0]) > 0)
+    faces = np.sort(np.concatenate([tets[:, [1, 2, 3]], tets[:, [0, 2, 3]], tets[:, [0, 1, 3]], tets[:, [0, 1, 2]]]), axis=1)
+    uf, cnt = np.unique(faces, axis=0, return_counts=True)
+    assert cnt.max() <= 2
+    assert {tuple(f) for f in uf[cnt == 1]} <= {tuple(f) for f in np.sort(ft, axis=1)}
+    surf = np.unique(ft[np.isin(fg, curved)])
+    em.cleanup()
+    return nodes[surf], stats
+
+
+# [Written by Claude]
+def test_hzaura_sphere_and_cylinder():
+    """hzAURA: where bisection cannot move a new node onto the curved face, the cavity around it is re-meshed
+    and the node lies on the surface; plain AURA leaves it on the chord (a dent)."""
+    import numpy as np
+
+    sphere = lambda em: em.geo.Sphere(0.25)  # noqa: E731
+    cylinder = lambda em: em.geo.Cylinder(0.2, 0.5, em.ZAX.construct_cs((0, 0, -0.25)))  # noqa: E731
+    for factory, dist, two_sided in [
+        (sphere, lambda x: np.abs(np.linalg.norm(x, axis=1) - 0.25), False),
+        (cylinder, lambda x: np.abs(np.linalg.norm(x[:, :2], axis=1) - 0.2), True),
+    ]:
+        x, st = _aura_passes(factory, 3, cavity=False, two_sided=two_sided)
+        assert st["n_projection_reduced"] > 0 and dist(x).max() > 1e-4
+        x, st = _aura_passes(factory, 3, cavity=True, two_sided=two_sided)
+        assert st["n_cavity"] > 0, st
+        assert st["n_cavity_failed"] == 0 and dist(x).max() < 1e-9, (dist(x).max(), st)
+
+
+# [Written by Claude]
+def test_hzaura_freeform_face():
+    """hzAURA on a lofted B-spline body (sampled face, bicubic interpolation of the CAD parameter grid):
+    new surface nodes stay within 0.5 mm of the true face."""
+    import gmsh
+    import numpy as np
+    from emerge._emerge.geometry import GeoVolume
+
+    def blob(em):
+        occ = gmsh.model.occ
+        wires = []
+        for z, r0, a in [(-0.25, 0.18, 0.04), (0.0, 0.24, -0.05), (0.25, 0.15, 0.03)]:
+            pts = [occ.addPoint((r0 + a * np.cos(3 * t + 4 * z)) * np.cos(t), (r0 + a * np.cos(3 * t + 4 * z)) * np.sin(t), z)
+                   for t in np.linspace(0, 2 * np.pi, 13)[:-1]]
+            wires.append(occ.addWire([occ.addBSpline(pts + [pts[0]])]))
+        vols = occ.addThruSections(wires, makeSolid=True, makeRuled=False)
+        occ.synchronize()
+        blob.tags = [t for d, t in gmsh.model.getEntities(2) if gmsh.model.getType(2, t) != "Plane"]
+        return GeoVolume([t for d, t in vols if d == 3])
+
+    import emerge as em  # noqa: F401
+    x, st = _aura_passes(blob, 3, cavity=True)
+    assert st["n_cavity"] > 0, st
+    # _aura_passes cleans up gmsh, so measure against a fresh copy of the same body
+    gmsh.initialize() if not gmsh.isInitialized() else None
+    gmsh.model.add("blob")
+    blob(None)
+    best = np.full(len(x), np.inf)
+    for tag in blob.tags:
+        cp = np.asarray(gmsh.model.getClosestPoint(2, tag, x.ravel())[0]).reshape(-1, 3)
+        best = np.minimum(best, np.linalg.norm(cp - x, axis=1))
+    gmsh.finalize()
+    # nodes of the flat caps are far from the side face; only nodes near it count
+    near = best < 0.02
+    assert near.sum() > 100
+    assert best[near].max() < 5e-4, best[near].max()

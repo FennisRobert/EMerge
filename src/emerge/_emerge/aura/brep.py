@@ -26,7 +26,7 @@ CURVE_STRAIGHT, CURVE_CIRCLE, CURVE_POLYLINE = 0, 1, 2
 class BrepSnapshot:
     surf_tags: np.ndarray  # (S,) int32
     surf_kind: np.ndarray  # (S,) int32
-    surf_params: np.ndarray  # (S, 7) sphere [c, r] / cylinder [p, axis, r]
+    surf_params: np.ndarray  # (S, 7) sphere [c, r] / cylinder [p, axis, r] / sampled [nu, nv] grid size (0: no grid)
     samp_owner: np.ndarray  # (K,) int32 face tag of each sample
     samp_pts: np.ndarray  # (K, 3)
     samp_nrm: np.ndarray  # (K, 3)
@@ -166,8 +166,11 @@ def snapshot_gmsh(
             nrm = np.asarray(gmsh.model.getNormal(tag, uv)).reshape(-1, 3)
             ok = np.all(np.isfinite(xyz), axis=1) & np.all(np.isfinite(nrm), axis=1)
             ok &= np.linalg.norm(nrm, axis=1) > 0.5
+            # [Written by Claude] a complete parameter grid is interpolated bicubically in emr (hzAURA)
+            grid = [n_surface_samples, n_surface_samples] if ok.all() else [0, 0]
             xyz, nrm = xyz[ok], nrm[ok]
             kind = SURF_SAMPLED
+            params[:2] = grid
             if typ == "Sphere":
                 c, r, res = fit_sphere(xyz)
                 if res < fit_tol:

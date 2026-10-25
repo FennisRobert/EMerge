@@ -65,6 +65,7 @@ def refine(
     strip_ratio: float = 0.0,
     strip_max_growth: float = 2.0,
     strip_gated: bool = True,
+    cavity: bool = False,
 ) -> RefineResult:
     """Refine a tetrahedral mesh locally until it has ``(1 + growth)`` times as many tets.
 
@@ -124,6 +125,12 @@ def refine(
         strip_max_growth: Strip regularisation stops once it has grown the tet count by
             this fraction.
         strip_gated: Only regularise strips in high-error regions (see above).
+        cavity: hzAURA. Where a new node on a curved face cannot be projected onto the
+            surface by bisection (a child would invert or flatten), put it on the surface
+            anyway and re-mesh the tets around it by a constrained Delaunay cavity
+            (``emr/src/aura/cavity.rs``). Nodes and tagged entities outside the cavity
+            are kept. Where no valid cavity exists, the reduced projection is used as
+            without this option. Counted as ``n_cavity`` / ``n_cavity_failed``.
     """
     nodes = np.ascontiguousarray(nodes, dtype=np.float64)
     tets = np.ascontiguousarray(tets, dtype=np.int64)
@@ -165,6 +172,7 @@ def refine(
         float(strip_ratio),
         float(strip_max_growth),
         bool(strip_gated),
+        bool(cavity),
     )
     return RefineResult(**out)
 

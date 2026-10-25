@@ -405,6 +405,7 @@ def refine_mesh_step(
     strip_max_growth: float = 2.0,
     strip_gated: bool = True,
     periodic: Periodic | None = None,
+    cavity: bool = False,
 ) -> tuple[Any, dict]:
     """Refine an EMerge ``Mesh3D`` once and return the new mesh plus a report.
 
@@ -419,6 +420,8 @@ def refine_mesh_step(
         strip_ratio, strip_max_growth, strip_gated: Narrow-strip regularisation, see
             :func:`emerge._emerge.aura.refine`.
         periodic: Periodic boundaries as ``[(face1_tags, face2_tags, dv), ...]``.
+        cavity: hzAURA cavity re-meshing of nodes that cannot be projected, see
+            :func:`emerge._emerge.aura.refine`.
 
     Returns:
         (new_mesh, report): the refined ``Mesh3D`` and a dict with ``n_tets_before``,
@@ -440,6 +443,7 @@ def refine_mesh_step(
         strip_ratio=strip_ratio,
         strip_max_growth=strip_max_growth,
         strip_gated=strip_gated,
+        cavity=cavity,
     )
     q_after = quality(result.nodes, result.tets)
     new = refine_mesh3d(mesh, result)

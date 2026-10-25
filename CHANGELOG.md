@@ -47,6 +47,8 @@
 
 ### Post-processing
 
+- `MWField.farfield_3d_ports(faces, ...)` returns the 3D far field of every port at once
+  (`{port: EHFieldFF}`), about 4× faster than exciting and computing each port separately.
 - `MWField.nearfield(x, y, z, faces, origin, syms, structure)` computes E and H at any point
   outside a closed surface, including points outside the mesh. It accepts inputs of any shape
   and returns an `EHField` of the same shape.
@@ -343,6 +345,8 @@
 ### Performance
 
 - No JIT compilation: the first-run delay is gone.
+- Removing the prescribed degrees of freedom before a solve is done in one parallel pass, about
+  10× faster on large systems and without an intermediate matrix copy.
 - Faster assembly:
   - Rust kernels.
   - A sparsity pattern that is cached across frequencies.

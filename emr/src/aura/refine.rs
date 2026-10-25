@@ -29,6 +29,9 @@
 
 use crate::aura::geom::*;
 use std::cmp::Ordering;
+// [Written by Claude] hzAURA: cavity re-meshing where a projection would fail.
+#[path = "cavity.rs"]
+mod cavity;
 use std::collections::{BinaryHeap, HashMap};
 
 pub type Edge = (u32, u32);
@@ -101,6 +104,9 @@ pub struct Params {
     /// 1.0 is strict longest-edge propagation (LEPP); lower values limit how far
     /// refinement spreads into large neighbouring elements, at some cost in quality.
     pub lepp_ratio: f64,
+    /// hzAURA: when a new boundary node cannot be projected onto a curved face by
+    /// bisection, re-mesh a cavity around it instead (see `cavity.rs`).
+    pub cavity: bool,
 }
 
 impl Default for Params {
@@ -111,6 +117,7 @@ impl Default for Params {
             max_depth: 6,
             min_projected_volume: 0.2,
             lepp_ratio: 0.7,
+            cavity: false,
         }
     }
 }
@@ -123,6 +130,11 @@ pub struct Stats {
     pub n_projection_rejected: usize,
     /// Curve edges split by the narrow-strip regularisation (step 0).
     pub n_strip_splits: usize,
+    /// hzAURA: nodes placed on the surface by cavity re-meshing, tets removed for them,
+    /// and failed cavity attempts (those fell back to the reduced projection).
+    pub n_cavity: usize,
+    pub n_cavity_tets: usize,
+    pub n_cavity_failed: usize,
 }
 
 pub struct Refiner<'a> {
@@ -148,6 +160,8 @@ pub struct Refiner<'a> {
     strip_gate: Option<f64>,
     /// Periodic node maps, one (forward, inverse) pair per periodic boundary.
     pmap: Vec<(HashMap<u32, u32>, HashMap<u32, u32>)>,
+    /// Region per input tet (empty: one region); used by the cavity re-meshing.
+    region: Vec<i32>,
     pub stats: Stats,
 }
 
@@ -218,7 +232,7 @@ impl<'a> Refiner<'a> {
             refined_cutoff: f64::INFINITY,
             strip_gate: None,
             pmap: vec![],
-
+            region: vec![],
             stats: Stats::default(),
         }
     }
@@ -231,6 +245,11 @@ impl<'a> Refiner<'a> {
             self.pmap[k].0.insert(a, b);
             self.pmap[k].1.insert(b, a);
         }
+    }
+
+    /// Region per input tet; the cavity re-meshing never mixes regions.
+    pub fn set_regions(&mut self, region: Vec<i32>) {
+        self.region = region;
     }
 
     /// All nodes that take part in a periodic map.
@@ -448,6 +467,16 @@ impl<'a> Refiner<'a> {
         let target = if project { self.projected_point(e, &shell, mid) } else { None };
         if let Some(target) = target {
             self.stats.n_projected += 1;
+            if self.params.cavity && !self.placement_ok(e, &shell, target) {
+                let tags = self.cavity_tags(e, &shell);
+                if !tags.is_empty() {
+                    if let Some(m) = self.cavity_insert(e, &shell, target, &tags) {
+                        self.stats.n_splits += 1;
+                        return m;
+                    }
+                    self.stats.n_cavity_failed += 1;
+                }
+            }
             let mut q = target;
             let mut ok = false;
             for attempt in 0..5 {

@@ -2,6 +2,7 @@
 //! Python bindings of the AURA local mesh refinement: numpy arrays in, refined mesh dictionary out.
 use crate::aura::geom::{Brep, Curve, Surface, P3};
 use crate::aura::improve::{ImproveParams, Improver};
+use crate::aura::wedge::flip_concave_wedges;
 use crate::aura::refine::{mean_ratio, Params, Refiner};
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
@@ -37,7 +38,7 @@ fn to_2d<T: numpy::Element>(py: Python<'_>, data: Vec<T>, ncol: usize) -> PyObje
 
 /// Build the BREP snapshot from flat descriptor arrays.
 ///
-/// Surface kinds: 0 flat, 1 sphere [c, r], 2 cylinder [p, axis, r], 3 sampled.
+/// Surface kinds: 0 flat, 1 sphere [c, r], 2 cylinder [p, axis, r], 3 sampled [nu, nv] (grid size, or 0).
 /// Curve kinds:   0 straight, 1 circle [c, n, r], 2 polyline.
 #[allow(clippy::too_many_arguments)]
 fn build_brep(
@@ -72,6 +73,8 @@ fn build_brep(
                 Surface::Sampled {
                     pts: idx.iter().map(|&k| samp_pts[k]).collect(),
                     nrm: idx.iter().map(|&k| samp_nrm[k]).collect(),
+                    // [Written by Claude] hzAURA: (nu, nv) of a regular parameter grid, 0 if none
+                    grid: (p[0].max(0.0) as usize, p[1].max(0.0) as usize),
                 }
             }
             k => return Err(PyValueError::new_err(format!("unknown surface kind {k}"))),
@@ -116,7 +119,7 @@ fn params7(a: &PyReadonlyArray2<f64>) -> Vec<[f64; 7]> {
     curve_tags, curve_kind, curve_params, poly_owner, poly_pts,
     growth, child_factor, max_depth, min_projected_volume, lepp_ratio,
     improve_sweeps, flip_quality, smooth_iters, improve_layers, improve_global,
-    strip_ratio, strip_max_growth, strip_gated
+    strip_ratio, strip_max_growth, strip_gated, cavity=false
 ))]
 fn refine<'py>(
     py: Python<'py>,
@@ -153,6 +156,7 @@ fn refine<'py>(
     strip_ratio: f64,
     strip_max_growth: f64,
     strip_gated: bool,
+    cavity: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let nodes = rows3(&nodes)?;
     let tets = rows_u32::<4>(&tets)?;
@@ -191,6 +195,7 @@ fn refine<'py>(
         max_depth,
         min_projected_volume,
         lepp_ratio,
+        cavity,
     };
 
     let pairs: Vec<(usize, u32, u32)> = rows_u32::<3>(&periodic_pairs)?
@@ -205,9 +210,17 @@ fn refine<'py>(
         global: improve_global,
     };
 
-    let (mut out, region, istats) = py.allow_threads(|| {
+    let mut region_in = region_in;
+    let mut faces = faces;
+    let (mut out, region, istats, n_wedge_flips) = py.allow_threads(|| {
+        // reflex edges of curved faces first, else their midpoints cannot be projected (dents)
+        let curve_set_in: HashSet<(u32, u32)> = curves.iter().map(|(e, _)| if e.0 < e.1 { *e } else { (e.1, e.0) }).collect();
+        let locked: HashSet<u32> = pairs.iter().flat_map(|p| [p.1, p.2]).collect();
+        let n_wedge_flips =
+            flip_concave_wedges(&nodes, &tets, &mut region_in, &mut faces, &curve_set_in, &locked, &brep);
         let mut r = Refiner::new(nodes, tets, error, &faces, &curves, &brep, params);
         r.set_periodic(&pairs);
+        r.set_regions(region_in.clone());
         let limit = |n: usize| (n as f64 * (1.0 + strip_max_growth)).round() as usize;
         if strip_ratio > 0.0 && !strip_gated {
             r.regularize_strips(strip_ratio, limit(tets_len));
@@ -221,7 +234,7 @@ fn refine<'py>(
         let mut out = r.finish();
         let region: Vec<i32> = out.tet_root.iter().map(|&i| region_in[i as usize]).collect();
         if iparams.sweeps == 0 {
-            return (out, region, Default::default());
+            return (out, region, Default::default(), n_wedge_flips);
         }
         let curve_set: HashSet<(u32, u32)> = out.curve_edges.iter().copied().collect();
         let tets = std::mem::take(&mut out.tets);
@@ -245,7 +258,7 @@ fn refine<'py>(
         out.tet_new = a;
         out.face_tris = faces.iter().map(|x| x.0).collect();
         out.face_tri_tags = faces.iter().map(|x| x.1).collect();
-        (out, r, istats)
+        (out, r, istats, n_wedge_flips)
     });
     let tet_new: Vec<bool> = std::mem::take(&mut out.tet_new);
 
@@ -274,6 +287,10 @@ fn refine<'py>(
     s.set_item("n_projection_reduced", out.stats.n_projection_reduced)?;
     s.set_item("n_projection_rejected", out.stats.n_projection_rejected)?;
     s.set_item("n_strip_splits", out.stats.n_strip_splits)?;
+    s.set_item("n_wedge_flips", n_wedge_flips)?;
+    s.set_item("n_cavity", out.stats.n_cavity)?;
+    s.set_item("n_cavity_tets", out.stats.n_cavity_tets)?;
+    s.set_item("n_cavity_failed", out.stats.n_cavity_failed)?;
     s.set_item("n_flip23", istats.n_flip23)?;
     s.set_item("n_flip32", istats.n_flip32)?;
     s.set_item("n_flip44", istats.n_flip44)?;

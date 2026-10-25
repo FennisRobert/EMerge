@@ -1385,6 +1385,7 @@ class Simulation:
         strip_max_growth: float = 2.0,
         strip_gated: bool = True,
         project_boundaries: bool = True,
+        cavity: bool = False,
     ) -> SimulationDataset:
         """Adaptive mesh refinement by local refinement of the existing mesh (AURA).
 
@@ -1421,6 +1422,9 @@ class Simulation:
             strip_gated: Regularise strips in every pass, but only next to high-error tets (default). If False, all
                 narrow strips are regularised once in step 0, before the first solve, regardless of the error.
             project_boundaries: Project new boundary nodes onto curved geometry.
+            cavity: hzAURA. Where bisection cannot move a new boundary node onto the curved geometry, put it
+                there anyway and re-mesh the tets around it (constrained Delaunay cavity), instead of leaving it
+                closer to the chord.
 
         Returns:
             SimulationDataset: The data set that was stashed before refinement.
@@ -1550,6 +1554,7 @@ class Simulation:
                 strip_max_growth=strip_max_growth,
                 strip_gated=True,
                 periodic=periodic,
+                cavity=cavity,
             )
             self._install_refined_mesh(new_mesh)
             logger.info(f"Pass {step}: mesh refinement done in {time.perf_counter() - t_ref:.2f} s")

@@ -42,7 +42,7 @@ from .bcs.mode_gauge import GAUGE_QUALITY_WARNING, canonical_mode_factor, port_f
 from .microwave_data import MWData
 from .adaptive_sweep import AdaptiveFrequencySampler
 from .assembly.assembler import Assembler
-from .port_functions import compute_avg_power_flux, compute_port_power_flux
+from .port_functions import compute_avg_power_flux, compute_port_power_flux, compute_cross_power_flux
 from .simjob import SimJob, CNOSDDSimJob
 
 from emsutil import Material
@@ -904,6 +904,80 @@ class Microwave3D(GenericPhysics3D):
 
         port.v_integration = True
 
+    # [Written by Claude]
+    def _orthogonalize_degenerate_modes(
+        self,
+        nlf,
+        eigen_values: np.ndarray,
+        eigen_modes: np.ndarray,
+        solve_ids: np.ndarray,
+        k0: float,
+        ur: np.ndarray,
+        inward_normal: np.ndarray,
+        rtol: float = 1e-6,
+    ) -> np.ndarray:
+        """Makes the port modes of one eigenvalue orthogonal in the power product.
+
+        Modes with the same propagation constant (for example the TEM modes of several conductors in a
+        homogeneous dielectric) are any basis of one eigenspace, and the eigen solver may return two almost
+        equal ones. A port with such modes cannot represent all fields of the eigenspace, and the power of
+        one mode leaks into the other. The modes of each eigenvalue are replaced by their symmetric
+        orthogonalization in the cross power P_ij = 1/2 ∬ (E_i × H_j*) · n dS: combinations that span the
+        same eigenspace and carry no cross power.
+
+        Args:
+            nlf: The port face field
+            eigen_values (np.ndarray): The eigenvalues (-beta²)
+            eigen_modes (np.ndarray): The eigenvectors, one column per mode
+            solve_ids (np.ndarray): The degrees of freedom of the eigenvectors
+            k0 (float): The free space propagation constant
+            ur (np.ndarray): The permeability tensors of the port triangles
+            inward_normal (np.ndarray): The inward normal of the port face
+            rtol (float): Relative difference of beta below which two modes are degenerate
+
+        Returns:
+            np.ndarray: The eigenvectors with the modes of each eigenvalue orthogonalized
+        """
+        betas = np.emath.sqrt(-eigen_values)
+        nmodes = betas.shape[0]
+        eigen_modes = eigen_modes.copy()
+        grouped = np.zeros(nmodes, dtype=bool)
+        for i in range(nmodes):
+            if grouped[i]:
+                continue
+            group = [j for j in range(i, nmodes)
+                     if not grouped[j] and abs(betas[j] - betas[i]) <= rtol * abs(betas[i])]
+            grouped[group] = True
+            if len(group) < 2:
+                continue
+
+            Efuncs = []
+            Hfuncs = []
+            for j in group:
+                Emode = np.zeros((nlf.n_field,), dtype=np.complex128)
+                Emode[solve_ids] = eigen_modes[:, j]
+                Emode[: nlf.n_xy] = Emode[: nlf.n_xy] / betas[j]
+                Emode[nlf.n_xy :] = Emode[nlf.n_xy :] * 1j
+                Efuncs.append(nlf.interpolate_Ef(Emode))
+                Hfuncs.append(nlf.interpolate_Hf(Emode, k0, ur, betas[j]))
+
+            P = np.array([[compute_cross_power_flux(nlf, Ea, Hb, inward_normal) for Hb in Hfuncs] for Ea in Efuncs])
+            # The new modes m'_k = sum_j T_jk m_j have the cross powers T^T P conj(T), which is the identity
+            # for T = conj(P)^(-1/2).
+            P = 0.5 * (P + P.conj().T).conj()
+            w, V = np.linalg.eigh(P)
+            if w[0] <= 1e-9 * abs(w[-1]):
+                # Evanescent modes, or modes with power against the normal: leave them as they are.
+                logger.debug(f"Degenerate modes {group} (beta = {betas[i]:.3f} rad/m) not orthogonalized, powers {w}")
+                continue
+            T = V @ np.diag(w**-0.5) @ V.conj().T
+            eigen_modes[:, group] = eigen_modes[:, group] @ T
+            logger.debug(
+                f"Orthogonalized degenerate modes {group} (beta = {betas[i]:.3f} rad/m), "
+                f"largest cross power before: {np.max(np.abs(P - np.diag(np.diag(P)))) / np.max(np.abs(np.diag(P))):.3f}"
+            )
+        return eigen_modes
+
     def _find_two_pec_islands(
         self, port: ModalPort, sigtri: np.ndarray
     ) -> tuple[list[int], list[int]]:
@@ -1398,6 +1472,11 @@ class Microwave3D(GenericPhysics3D):
             self.mesh.nodes,
             self.mesh.tris[:, itri_port],
             inward_normal,
+        )
+
+        # [Written by Claude] The eigen solver returns an arbitrary basis of the modes of one eigenvalue.
+        eigen_modes = self._orthogonalize_degenerate_modes(
+            nlf, eigen_values, eigen_modes, solve_ids, k0, ur[:, :, itri_port], inward_normal
         )
 
         # For each found mode

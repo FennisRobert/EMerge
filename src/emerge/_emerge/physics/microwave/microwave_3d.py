@@ -953,7 +953,13 @@ class Microwave3D(GenericPhysics3D):
 
             Efuncs = []
             Hfuncs = []
+            is_xy = solve_ids < nlf.n_xy
             for j in group:
+                # The eigenvectors have arbitrary phases. Taking out the phase of the largest transverse entry
+                # makes lossless modes real, so their combinations stay real modes (with a complex T a
+                # combination of two real modes is not real up to one phase).
+                v_xy = eigen_modes[is_xy, j]
+                eigen_modes[:, j] *= np.exp(-1j * np.angle(v_xy[np.argmax(np.abs(v_xy))]))
                 Emode = np.zeros((nlf.n_field,), dtype=np.complex128)
                 Emode[solve_ids] = eigen_modes[:, j]
                 Emode[: nlf.n_xy] = Emode[: nlf.n_xy] / betas[j]

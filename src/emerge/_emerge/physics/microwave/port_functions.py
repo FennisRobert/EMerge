@@ -64,3 +64,26 @@ def compute_avg_power_flux(
 
     Ptot = surface_integral(field.mesh.nodes, field.mesh.tris, S, None, 5)
     return Ptot
+
+
+# [Written by Claude]
+def compute_cross_power_flux(
+    field: NedelecLegrange2,
+    Efunc: Callable,
+    Hfunc: Callable,
+    inward_normal: np.ndarray,
+) -> complex:
+    """The complex cross power 1/2 ∬ (E × H*) · n dS of the E-field of one mode and the H-field of another."""
+    from ...mth.integrals import surface_integral
+
+    nx, ny, nz = inward_normal
+
+    def S(x, y, z):
+        Ex, Ey, Ez = Efunc(x, y, z)
+        Hx, Hy, Hz = Hfunc(x, y, z)
+        Sx = 1 / 2 * (Ey * np.conj(Hz) - Ez * np.conj(Hy))
+        Sy = 1 / 2 * (Ez * np.conj(Hx) - Ex * np.conj(Hz))
+        Sz = 1 / 2 * (Ex * np.conj(Hy) - Ey * np.conj(Hx))
+        return nx * Sx + ny * Sy + nz * Sz
+
+    return surface_integral(field.mesh.nodes, field.mesh.tris, S, None, 5)

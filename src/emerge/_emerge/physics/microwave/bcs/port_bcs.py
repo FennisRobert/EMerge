@@ -613,6 +613,13 @@ class ModalPort(PortBC, Saveable):
         self.available_modes = dict()
         self.initialized = False
 
+    # [Written by Claude]
+    def _discard_modes_at(self, k0: float) -> None:
+        """Removes the modes stored for k0, so a new modal analysis at k0 replaces them instead of adding to them."""
+        if k0 in self.available_modes:
+            logger.debug(f"{self}: replacing the {len(self.available_modes[k0])} modes stored for k0={k0:.3f} rad/m")
+            del self.available_modes[k0]
+
     def try_add_mode(
         self,
         field: np.ndarray,

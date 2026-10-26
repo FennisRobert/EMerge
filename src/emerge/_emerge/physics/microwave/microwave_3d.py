@@ -960,6 +960,8 @@ class Microwave3D(GenericPhysics3D):
                 # combination of two real modes is not real up to one phase).
                 v_xy = eigen_modes[is_xy, j]
                 eigen_modes[:, j] *= np.exp(-1j * np.angle(v_xy[np.argmax(np.abs(v_xy))]))
+            eigen_modes[:, group] = self._real_basis(eigen_modes[:, group])
+            for j in group:
                 Emode = np.zeros((nlf.n_field,), dtype=np.complex128)
                 Emode[solve_ids] = eigen_modes[:, j]
                 Emode[: nlf.n_xy] = Emode[: nlf.n_xy] / betas[j]
@@ -983,6 +985,29 @@ class Microwave3D(GenericPhysics3D):
                 f"largest cross power before: {np.max(np.abs(P - np.diag(np.diag(P)))) / np.max(np.abs(np.diag(P))):.3f}"
             )
         return eigen_modes
+
+    # [Written by Claude]
+    @staticmethod
+    def _real_basis(V: np.ndarray, rtol: float = 1e-6) -> np.ndarray:
+        """A real basis of the span of the eigenvectors V of one eigenvalue, if the span has one.
+
+        The eigenspace of a lossless port has a real basis, but the complex eigen solver may return complex
+        combinations of it (e.g. r1 + j r2), which no phase factor makes real. Their real and imaginary parts
+        then span the same space with rank len(V): the leading left singular vectors of [Re V, Im V] are a
+        real basis of it. A lossy eigenspace (rank above len(V)) is returned unchanged.
+
+        Args:
+            V (np.ndarray): The eigenvectors, one column per mode
+            rtol (float): Relative singular value below which [Re V, Im V] counts as rank deficient
+
+        Returns:
+            np.ndarray: The real basis (as complex array), or V
+        """
+        g = V.shape[1]
+        U, sv, _ = np.linalg.svd(np.concatenate([V.real, V.imag], axis=1), full_matrices=False)
+        if sv[g] > rtol * sv[0]:
+            return V
+        return U[:, :g].astype(np.complex128)
 
     def _find_two_pec_islands(
         self, port: ModalPort, sigtri: np.ndarray

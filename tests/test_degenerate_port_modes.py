@@ -46,5 +46,20 @@ def test_degenerate_modes_are_orthogonal():
     em.cleanup()
 
 
+def test_complex_combinations_of_real_modes_get_a_real_basis():
+    # The eigen solver may return complex combinations of two real modes; no phase factor makes them real.
+    from emerge._emerge.physics.microwave.microwave_3d import Microwave3D
+    rng = np.random.default_rng(1)
+    R = rng.standard_normal((50, 2))
+    V = R @ np.array([[1.0, 0.3 + 0.8j], [0.5j, 1.0 - 0.2j]])
+    B = Microwave3D._real_basis(V)
+    assert np.abs(B.imag).max() == 0.0
+    # same span as R
+    assert np.linalg.norm(R - B @ np.linalg.lstsq(B.real, R, rcond=None)[0]) < 1e-10
+    # a lossy eigenspace (complex vectors of rank 2 * 2 in real and imaginary part) stays as it is
+    C = rng.standard_normal((50, 2)) + 1j * rng.standard_normal((50, 2))
+    assert np.array_equal(Microwave3D._real_basis(C), C)
+
+
 if __name__ == "__main__":
     test_degenerate_modes_are_orthogonal()

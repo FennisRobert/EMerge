@@ -29,6 +29,7 @@ from ....bc import (
 )
 from .port_bcs import (
     WavePortIH,
+    MultiModeWavePort,
     ModalPort,
     PortBC,
     RectangularWaveguide,
@@ -81,6 +82,7 @@ class MWBoundaryConditionSet(BoundaryConditionSet):
         )
         self.CoaxPort: type[CoaxPort] = self._construct_bc(CoaxPort)
         self.WavePortIH: type[WavePortIH] = self._construct_bc(WavePortIH)
+        self.MultiModeWavePort: type[MultiModeWavePort] = self._construct_bc(MultiModeWavePort)
         self.ScatteredField: type[ScatteredField] = self._construct_bc(ScatteredField)
         self.ThinConductor: type[ThinConductor] = self._construct_bc(ThinConductor)
 

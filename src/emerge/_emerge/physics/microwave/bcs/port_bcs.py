@@ -853,6 +853,126 @@ class WavePortIH(ModalPort, Saveable):
         )
 
 
+# [Written by Claude]
+class MultiModeWavePort(WavePortIH, Saveable):
+    _name: str = "MultiModeWavePort"
+
+    def __init__(
+        self,
+        face: FaceSelection | GeoSurface,
+        port_number: int,
+        cs: CoordinateSystem | None = None,
+        power: float = 1,
+        number_of_modes: int = 2,
+        impedance_definition: Literal["PV", "PI", "VI"] = "PV",
+        modetype: Literal["TE", "TM", "TEM", "any"] | None = "TEM",
+    ):
+        """A wave port with several modes, each absorbed and excited with its own propagation constant.
+
+        ModalPort uses the propagation constant of the first mode for all modes of a port, and WavePortIH
+        projects on the first mode only. This port extends the dense wave port boundary condition of
+        WavePortIH to a sum over all port modes (one rank-1 term per mode):
+
+            n×∇×E = Σ_m w_m ∫E_t·w_m dS / ∫e_tm·w_m dS - 2 a_m w_m,    w_m = γ_m e_tm + ∇e_zm
+
+        Because w_m is proportional to h_tm × n, ∫e_tn·w_m dS is the modal orthogonality integral
+        ∫(e_n × h_m)·n dS, which vanishes for n ≠ m. Every mode is therefore terminated without reflection,
+        also when the modes have different propagation constants (the even and odd mode of coupled
+        microstrip lines). The S-parameters are extracted with the same projection on w_m.
+
+        The modes are recomputed at every frequency, like WavePortIH.
+
+        Args:
+            face (FaceSelection | GeoSurface): The port mode face
+            port_number (int): The port number as an integer
+            cs (CoordinateSystem | None, optional): The local coordinate system of the port face. Defaults to None.
+            power (float, optional): The radiated power. Defaults to 1.
+            number_of_modes (int, optional): The number of port modes. Defaults to 2.
+            impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed:
+                from power and voltage, power and current, or voltage and current. Defaults to "PV".
+            modetype (Literal["TE", "TM", "TEM", "any"] | None, optional): Only accept port modes of this type
+                (None or "any" accepts all, e.g. TE modes of a waveguide). Defaults to "TEM", like WavePortIH.
+        """
+        super().__init__(face, port_number, cs, power, number_of_modes, impedance_definition)
+        self.forced_modetype = modetype
+
+    # [Written by Claude]
+    def _check_mode_betas(self) -> None:
+        """Modes with different propagation constants are supported by this port."""
+        return
+
+    # [Written by Claude]
+    def get_beta(self, k0: float, mode_nr: int = 1) -> float:
+        """The propagation constant of port mode mode_nr (1-based) at k0."""
+        modes = self.get_modes(k0)
+        mode = modes[min(mode_nr, len(modes)) - 1]
+        if mode.modetype == "TEM":
+            return mode.beta / mode.k0 * k0
+        freq = k0 * 299792458 / (2 * np.pi)
+        return np.sqrt(mode.beta**2 + k0**2 * (1 - ((mode.freq / freq) ** 2)))
+
+    # [Written by Claude]
+    def get_modepf_kappa_all(
+        self, k0: float, nodes: np.ndarray, tris: np.ndarray
+    ) -> list[tuple[int | float, Callable, complex]]:
+        """The S-matrix index, the mode profile function γ_m e_tm + ∇e_zm and kappa_m of every port mode.
+
+        Args:
+            k0 (float): The free space propagation constant
+            nodes (np.ndarray): The mesh node coordinates
+            tris (np.ndarray): The port face triangle node indices
+
+        Returns:
+            list[tuple[int | float, Callable, complex]]: One (S-matrix index, mode profile, kappa) per mode
+        """
+        modes = self.get_modes(k0)
+        out = []
+        for (number, mode_nr), mode in zip(self._iter_port_numbers(), modes):
+            def fmp(x, y, z, mode=mode):
+                return mode.E_function.calc_eff_modeprofile(x, y, z)
+
+            out.append((number, fmp, mode.compute_kappa(nodes, tris)))
+        return out
+
+    # [Written by Claude]
+    def sparam_projection(
+        self,
+        nodes: np.ndarray,
+        tri_vertices: np.ndarray,
+        mode_nr: int,
+        active: bool,
+        k0: float,
+        fieldf: Callable,
+        gq_order: int = 5,
+    ) -> tuple[complex, complex]:
+        """The outgoing amplitude of mode mode_nr, as the pair (∫(E - Q e_m)·w_m dS, ∫e_tm·w_m dS).
+
+        Their ratio is the amplitude of mode m in the field E (Q = 1 removes the incident mode of the
+        active port). Unlike the conjugate projection ∫E·e_m* of ModalPort, this projection separates
+        modes that are orthogonal in power but not in E_t (coupled microstrip lines).
+        """
+        from ....mth.integrals import surface_integral
+
+        Q = 1 if active else 0
+        const = np.ones((tri_vertices.shape[1],), dtype=np.complex128)
+
+        def field_dot_w(x, y, z):
+            w = self.port_mode_3d_global(x, y, z, k0, which="modprof", mode_nr=mode_nr)
+            e = self.port_mode_3d_global(x, y, z, k0, which="Exy", mode_nr=mode_nr)
+            E = fieldf(x, y, z) - Q * e
+            return E[0] * w[0] + E[1] * w[1] + E[2] * w[2]
+
+        def mode_dot_w(x, y, z):
+            w = self.port_mode_3d_global(x, y, z, k0, which="modprof", mode_nr=mode_nr)
+            e = self.port_mode_3d_global(x, y, z, k0, which="Exy", mode_nr=mode_nr)
+            return e[0] * w[0] + e[1] * w[1] + e[2] * w[2]
+
+        return (
+            surface_integral(nodes, tri_vertices, field_dot_w, const, gq_order=gq_order),
+            surface_integral(nodes, tri_vertices, mode_dot_w, const, gq_order=gq_order),
+        )
+
+
 class FloquetPort(PortBC, Saveable):
     _include_stiff: bool = True
     _include_mass: bool = False

@@ -71,7 +71,25 @@ def test_two_wires_degenerate_modes():
     assert np.abs(S[:2, :2]).max() < 0.03, S  # mesh error of the faceted wires
 
 
+def test_waveguide_te10_and_te20():
+    # 40 x 15 mm rectangular waveguide at 9 GHz: TE10 and TE20 propagate, their betas differ by 40 %.
+    em.cleanup()
+    sim = em.Simulation("waveguide")
+    box = em.geo.Box(40 * mm, 15 * mm, 30 * mm)
+    sim.commit_geometry()
+    sim.mw.set_frequency(9e9)
+    sim.mw.set_resolution(0.05)
+    sim.generate_mesh()
+    sim.mw.bc.MultiModeWavePort(box.face("-z"), 1, number_of_modes=2, modetype=None)
+    sim.mw.bc.MultiModeWavePort(box.face("+z"), 2, number_of_modes=2, modetype=None)
+    S = sim.mw.run_sweep().scalar.grid.Sp[0]
+    em.cleanup()
+    assert np.abs(S.conj().T @ S - np.eye(4)).max() < 1e-2
+    assert 20 * np.log10(np.abs(S[:2, :2]).max()) < -50, S
+
+
 if __name__ == "__main__":
+    test_waveguide_te10_and_te20()
     test_two_wires_degenerate_modes()
     test_coupled_microstrip_even_and_odd_mode_without_reflection()
     test_modal_port_reflects_the_mode_of_the_other_propagation_constant()

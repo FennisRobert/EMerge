@@ -865,6 +865,7 @@ class MultiModeWavePort(WavePortIH, Saveable):
         power: float = 1,
         number_of_modes: int = 2,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
+        modetype: Literal["TE", "TM", "TEM", "any"] | None = "TEM",
     ):
         """A wave port with several modes, each absorbed and excited with its own propagation constant.
 
@@ -879,8 +880,7 @@ class MultiModeWavePort(WavePortIH, Saveable):
         also when the modes have different propagation constants (the even and odd mode of coupled
         microstrip lines). The S-parameters are extracted with the same projection on w_m.
 
-        The modes are recomputed at every frequency, like WavePortIH. All arguments are the same as for
-        WavePortIH.
+        The modes are recomputed at every frequency, like WavePortIH.
 
         Args:
             face (FaceSelection | GeoSurface): The port mode face
@@ -890,8 +890,11 @@ class MultiModeWavePort(WavePortIH, Saveable):
             number_of_modes (int, optional): The number of port modes. Defaults to 2.
             impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed:
                 from power and voltage, power and current, or voltage and current. Defaults to "PV".
+            modetype (Literal["TE", "TM", "TEM", "any"] | None, optional): Only accept port modes of this type
+                (None or "any" accepts all, e.g. TE modes of a waveguide). Defaults to "TEM", like WavePortIH.
         """
         super().__init__(face, port_number, cs, power, number_of_modes, impedance_definition)
+        self.forced_modetype = modetype
 
     # [Written by Claude]
     def _check_mode_betas(self) -> None:

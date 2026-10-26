@@ -36,7 +36,7 @@ from ..physics_generic import GenericPhysics3D
 
 from .bcs.boundary_condition_set import MWBoundaryConditionSet
 from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
-from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePortIH, UserDefinedPort
+from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePortIH, UserDefinedPort, MultiModeWavePort
 from .bcs.mode_gauge import GAUGE_QUALITY_WARNING, canonical_mode_factor, port_face_quadrature
 
 from .microwave_data import MWData
@@ -2730,6 +2730,10 @@ class Microwave3D(GenericPhysics3D):
             tuple[complex, complex]: _description_
         """
         from .sparam import sparam_field_power, sparam_mode_power
+
+        if isinstance(bc, MultiModeWavePort) and not bc.v_integration:
+            # [Written by Claude] projection on γ_m e_tm + ∇e_zm, which separates modes of different γ
+            return bc.sparam_projection(self.mesh.nodes, tri_vertices, mode_nr, active, k0, fieldfunction)
 
         if bc.v_integration:
             if bc.voltage_integration_line is None:

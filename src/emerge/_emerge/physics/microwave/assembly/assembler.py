@@ -26,6 +26,7 @@ from ..bcs import (
     MWBoundaryConditionSet,
     SurfaceImpedance,
     WavePortIH,
+    MultiModeWavePort,
     Void,
 )
 from ...material_assignment import MaterialAssignment
@@ -502,7 +503,14 @@ class Assembler:
 
             wpbc_bvec = None
             if bc_has_matrix_term(bc):
-                if isinstance(bc, WavePortIH):
+                if isinstance(bc, MultiModeWavePort):
+                    # [Written by Claude] one dense WPBC term per port mode
+                    from .wpbc_multimode import assemble_wpbc_multimode
+                    logger.debug("    - Assembling dense Wave Port Boundary Condition of all port modes.")
+                    modes = bc.get_modepf_kappa_all(K0, mesh.nodes, mesh.tris[:, tri_ids])
+                    values, wpbc_bvec = assemble_wpbc_multimode(field, tri_ids, system.wave_port_dofs(bc), modes, K0)
+                    system.add_wave_port_term(out, bc, values, scale)
+                elif isinstance(bc, WavePortIH):
                     logger.debug("    - Assembling dense Wave Port Boundary Condition.")
                     mprof, mode_xy, kappa_m = bc.get_modepf_kappa(K0, mesh.nodes, mesh.tris[:, tri_ids])
                     values, wpbc_bvec = assemble_wpbc(
@@ -528,12 +536,16 @@ class Assembler:
         tri_ids: np.ndarray,
         K0: float,
         port_vectors: dict[int | float, np.ndarray],
-        wpbc_bvec: np.ndarray | None = None,
+        wpbc_bvec: np.ndarray | dict[int | float, np.ndarray] | None = None,
     ) -> None:
         """Adds the driven-port excitation of bc into port_vectors (in place)."""
         from .emr_microwave import assemble_robin_bc_bvec
 
         if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
+            return
+        if isinstance(wpbc_bvec, dict):  # [Written by Claude] MultiModeWavePort: one vector per mode
+            for number, vec in wpbc_bvec.items():
+                port_vectors[number] += vec
             return
         if wpbc_bvec is not None:
             port_vectors[bc.port_number] += wpbc_bvec

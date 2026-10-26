@@ -15,6 +15,7 @@ from .port_bcs import (
     CoaxPort,
     PortBC,
     WavePortIH,
+    MultiModeWavePort,
     ModalPort,
     LumpedPort,
 )

@@ -1400,6 +1400,9 @@ class Microwave3D(GenericPhysics3D):
             inward_normal,
         )
 
+        # [Written by Claude] A repeated analysis at the same frequency replaces the modes found before.
+        port._discard_modes_at(k0)
+
         # For each found mode
         for i in range(nmodes_found):
             # The E-field must

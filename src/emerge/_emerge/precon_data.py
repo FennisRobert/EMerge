@@ -46,12 +46,32 @@ class PreconData:
         dof_entity (np.ndarray): The (n_field,) edge index (edge DoFs) or triangle index (face DoFs) of
             every global DoF.
         dof_kind (np.ndarray): The (n_field,) kind of every global DoF (EDGE_WHITNEY, EDGE_OTHER or FACE).
+        nodes (np.ndarray): The (3, V) node coordinates, used to locate coarsely meshed metal walls.
     """
 
     edges: np.ndarray
     tris: np.ndarray
     dof_entity: np.ndarray
     dof_kind: np.ndarray
+    nodes: np.ndarray
+
+    def wall_vertices(self, solve_ids: np.ndarray) -> np.ndarray:
+        """The mesh vertices of the eliminated (not solved) DoFs, which are the metal (PEC) walls.
+
+        Args:
+            solve_ids (np.ndarray): The solved global DoFs
+
+        Returns:
+            np.ndarray: A boolean mask over the vertices used by the edges and triangles
+        """
+        eliminated = np.ones(self.dof_entity.shape[0], dtype=bool)
+        eliminated[solve_ids] = False
+        entity, kind = self.dof_entity[eliminated], self.dof_kind[eliminated]
+        n_vertices = int(max(self.edges.max(initial=-1), self.tris.max(initial=-1))) + 1
+        wall = np.zeros(n_vertices, dtype=bool)
+        wall[self.edges[:, entity[kind != FACE]].ravel()] = True
+        wall[self.tris[:, entity[kind == FACE]].ravel()] = True
+        return wall
 
     @classmethod
     def from_field(cls, field) -> PreconData | None:
@@ -87,4 +107,4 @@ class PreconData:
             logger.debug("No preconditioner data: some DoFs are not tied to an edge or triangle.")
             return None
 
-        return cls(field.mesh.edges, field.mesh.tris, dof_entity, dof_kind)
+        return cls(field.mesh.edges, field.mesh.tris, dof_entity, dof_kind, field.mesh.nodes)

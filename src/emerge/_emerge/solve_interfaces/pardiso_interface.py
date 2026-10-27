@@ -307,20 +307,81 @@ class PardisoInterface:
         self.matrix: SolveMatrix = None
         self.factored_matrix: SolveMatrix = None
 
+        # Set by `symbolic`: whether A == A.T, which selects the LDL^T path.
+        self.symmetric: bool = False
+        # The upper triangle handed to PARDISO on the symmetric path, and the
+        # matrix it was cut from, so every solve reuses it.
+        self._upper: sparse.csr_matrix | None = None
+        self._upper_source = None
+
         self.configure_solver()
+
+    @staticmethod
+    def _is_symmetric(A: sparse.spmatrix, rtol: float = 1e-12) -> bool:
+        """Checks whether A equals its (non-conjugated) transpose.
+
+        Args:
+            A (sparse.spmatrix): The square sparse matrix to test
+            rtol (float): Largest entry of A - A.T allowed, relative to the largest entry of A
+
+        Returns:
+            bool: True when A is (complex) symmetric
+        """
+        diff = (A - A.T).tocoo()
+        if diff.nnz == 0:
+            return True
+        scale = abs(A).max()
+        return bool(abs(diff.data).max() <= rtol * scale)
 
     def _configure(self, A: sparse.csr_matrix) -> None:
         """Configures the solver for the appropriate data type (float/complex)
+        and symmetry, as decided by the last `symbolic` call.
+
+        A symmetric matrix is factored as LDL^T (types 6 and -2) on its upper
+        triangle with explicit IPARM settings; any other matrix keeps the
+        structurally symmetric LU (types 3 and 1) with MKL's default IPARM.
 
         Args:
             A (sparse.csr_matrix): The sparse matrix to solve
         """
-        if np.iscomplexobj(A):
-            self.MATRIX_TYPE = PARDISOMType.COMP_SYM_STRUCT
-            self.complex = True
+        self.complex = bool(np.iscomplexobj(A))
+        if self.symmetric:
+            self.MATRIX_TYPE = PARDISOMType.COMP_SYM if self.complex else PARDISOMType.REAL_SYM_INDEF
+            self.IPARM[0] = 1    # use the values below instead of MKL's defaults
+            self.IPARM[1] = 3    # parallel nested dissection ordering
+            self.IPARM[7] = 2    # up to two iterative refinement steps
+            self.IPARM[9] = 8    # pivot perturbation 1e-8
+            self.IPARM[10] = 1   # scaling        } recommended for
+            self.IPARM[12] = 1   # weighted matching } symmetric indefinite
+            self.IPARM[20] = 1   # Bunch-Kaufman 1x1 and 2x2 pivoting
+            self.IPARM[34] = 1   # zero-based indices
         else:
-            self.MATRIX_TYPE = PARDISOMType.REAL_SYM_STRUCT
-            self.complex = False
+            self.MATRIX_TYPE = PARDISOMType.COMP_SYM_STRUCT if self.complex else PARDISOMType.REAL_SYM_STRUCT
+            self.IPARM[0] = 0    # MKL defaults, as before
+            self.IPARM[34] = 0
+
+    def _prepare_A(self, A: sparse.spmatrix) -> sparse.spmatrix:
+        """Returns the matrix in the form PARDISO takes for the current type.
+
+        On the symmetric path that is the upper triangle in sorted CSR with
+        int32 indices, built once per matrix and reused by later solves. Other
+        matrices are passed through unchanged.
+
+        Args:
+            A (sparse.spmatrix): The full matrix
+
+        Returns:
+            sparse.spmatrix: The matrix to hand to PARDISO
+        """
+        if not self.symmetric:
+            return A
+        if self._upper_source is not A:
+            U = sparse.triu(A, format="csr")
+            U.sort_indices()
+            U.indptr = U.indptr.astype(np.int32)
+            U.indices = U.indices.astype(np.int32)
+            self._upper, self._upper_source = U, A
+        return self._upper
 
     def _prepare_B(self, b: np.ndarray | sparse.sparray) -> np.ndarray:
         """Fixes the forcing-vector for the solution process
@@ -346,10 +407,11 @@ class PardisoInterface:
         Returns:
             int: The error code
         """
-        
+
+        self.symmetric = self._is_symmetric(A)
         self._configure(A)
         zerovec = np.zeros((A.shape[0], 1), dtype=A.dtype)
-        _, error = self._call_solver(A, zerovec, phase=PARDISOPhase.SYMBOLIC_FACTOR)
+        _, error = self._call_solver(self._prepare_A(A), zerovec, phase=PARDISOPhase.SYMBOLIC_FACTOR)
         return error
 
     def numeric(self, A: sparse.csr_matrix) -> int:
@@ -361,7 +423,7 @@ class PardisoInterface:
 
         self._configure(A)
         zerovec = np.zeros((A.shape[0], 1), dtype=A.dtype)
-        _, error = self._call_solver(A, zerovec, phase=PARDISOPhase.NUMERIC_FACTOR)
+        _, error = self._call_solver(self._prepare_A(A), zerovec, phase=PARDISOPhase.NUMERIC_FACTOR)
         return error
         
     def solve(self, A: sparse.csr_matrix, b: np.ndarray) -> tuple[np.ndarray, int]:
@@ -376,7 +438,7 @@ class PardisoInterface:
         """
         self._configure(A)
         b = self._prepare_B(b)
-        x, error = self._call_solver(A, b, phase=PARDISOPhase.NUMERIC_SOLVE)
+        x, error = self._call_solver(self._prepare_A(A), b, phase=PARDISOPhase.NUMERIC_SOLVE)
         return x, error
 
     def configure_solver(self, 
@@ -422,9 +484,13 @@ class PardisoInterface:
         x = np.zeros_like(b)
         error = ctypes.c_int32(0)
         
-        # Up the pointers as PARDISO uses [1,...] indexing
-        A_index_pointers = A.indptr + 1
-        A_indices = A.indices + 1
+        # PARDISO uses [1,...] indexing unless IPARM[34] selects zero-based
+        if self.IPARM[34] == 1:
+            A_index_pointers = np.ascontiguousarray(A.indptr, dtype=np.int32)
+            A_indices = np.ascontiguousarray(A.indices, dtype=np.int32)
+        else:
+            A_index_pointers = A.indptr + 1
+            A_indices = A.indices + 1
 
         # Define the appropriate data type (complex vs real)
 
@@ -478,4 +544,5 @@ class PardisoInterface:
         A = sparse.csr_matrix((0,0), dtype=np.complex128)
         b = np.zeros(0, dtype=np.complex128)
         _, error = self._call_solver(A, b, phase=PARDISOPhase.CLEAR)
+        self._upper, self._upper_source = None, None
         

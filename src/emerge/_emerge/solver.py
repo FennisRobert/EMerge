@@ -1658,26 +1658,61 @@ class SolverPardiso(Solver):
         self.B = None
         if self.solver is not None:
             self.solver.clear_memory()
+        # Clearing PARDISO drops the symbolic factorization too.
+        self.fact_symb = False
+
+    def _check(self, error: int, id: int, phase: str) -> None:
+        """Raises a SimulationError when a PARDISO phase reported an error.
+
+        Args:
+            error (int): The PARDISO error code, 0 on success
+            id (int): The job id used in log prefixes
+            phase (str): Name of the phase, for the message
+        """
+        if error != 0:
+            try:
+                reason = self.solver.get_error(error)
+            except KeyError:
+                reason = "Unknown error."
+            logger.error(f"{_pfx(self.pre, id)} PARDISO {phase} failed with error code {error}: {reason}")
+            raise SimulationError(
+                f"{_pfx(self.pre, id)} PARDISO {phase} terminated with error code {error}"
+            )
 
     def solve(
         self, A: csc_matrix, b, precon, id: int = -1
     ) -> tuple[np.ndarray, SolveReport]:
+        import time
 
         logger.info(f"{_pfx(self.pre, id)} Calling Pardiso Solver")
+        t_symb = 0.0
         if self.fact_symb is False:
             logger.trace(f"{_pfx(self.pre, id)} Executing symbollic factorization.")
-            self.solver.symbolic(A)
+            t0 = time.perf_counter()
+            self._check(self.solver.symbolic(A), id, "symbolic factorization")
+            t_symb = time.perf_counter() - t0
             self.fact_symb = True
 
         logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
-        self.solver.numeric(A)
+        t0 = time.perf_counter()
+        self._check(self.solver.numeric(A), id, "numeric factorization")
+        t_num = time.perf_counter() - t0
         self.A = A
 
         logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
+        t0 = time.perf_counter()
         x = np.zeros_like(b)
+        error = 0
         for i in range(x.shape[1]):
             logger.trace(f"{_pfx(self.pre, id)} Solving RHS {i}")
             x[:, i], error = self.solver.solve(A, b[:, i])
+            if error != 0:
+                break
+        t_solve = time.perf_counter() - t0
+        logger.info(
+            f"{_pfx(self.pre, id)} PARDISO {'LDLT (symmetric)' if self.solver.symmetric else 'LU'}: "
+            f"symbolic {t_symb:.3f}s, numeric {t_num:.3f}s, solve {t_solve:.3f}s"
+        )
 
         if error != 0:
             logger.error(f"{_pfx(self.pre, id)} Terminated with error code {error}")

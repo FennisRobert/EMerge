@@ -96,6 +96,7 @@ model.view(plot_mesh=True, volume_mesh=False)
 
 # --- Run frequency-domain solver ----------------------------------------
 model.view(plot_mesh=True)
+
 data = model.mw.run_sweep()
 
 # --- Extract and plot S-parameters ---------------------------------------

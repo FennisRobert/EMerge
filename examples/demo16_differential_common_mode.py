@@ -48,7 +48,6 @@ model.generate_mesh()  # build volume mesh
 
 model.view()  # optional mesh preview
 
-
 data = model.mw.run_sweep(True, 4)  # frequency sweep, parallel workers=4
 
 g = data.scalar.grid  # reshape scalar results to an N-D grid helper

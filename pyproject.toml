@@ -1,6 +1,6 @@
 [project]
 name = "emerge"
-version = "3.0.0b6"
+version = "3.0.0b7"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"

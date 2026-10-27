@@ -91,7 +91,6 @@ model.mesher.set_face_size(p2, 1.0 * mm)
 # Finally we generate our mesh and view it
 model.generate_mesh()
 model.view(bc=True)
-
 # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
 sol = model.mw.run_adaptive_sweep()
 

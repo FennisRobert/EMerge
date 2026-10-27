@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b6 — changes since 2.8.9
+## 3.0.0b7 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus

@@ -72,7 +72,7 @@ air, *pmls = em.geo.pmlbox(
     rat * WH / 2,  # half-height in Y
     rat * HH / 2,  # half-width in Z
     (Lhorn - dx, 0, 0),  # PML origin offset along X
-    thickness=4 * mm,
+    thickness=2 * mm,
     N_mesh_layers=4,
     sides="TRA",  # [T]op, [R]ight, B[A]ck
 )
@@ -81,7 +81,7 @@ air2 = em.geo.subtract(air, horn_out)
 
 # --- Solver parameters --------------------------------------------------
 model.mw.set_frequency_range(90e9, 110e9, 11)  # 90–110 GHz sweep
-model.mw.set_resolution(0.3)  # mesh resolution fraction
+model.mw.set_resolution(0.2)  # mesh resolution fraction
 
 # --- Assemble geometry and mesh -----------------------------------------
 model.generate_mesh()
@@ -100,7 +100,7 @@ abc = model.mw.bc.AbsorbingBoundary(
 model.view(selections=[radiation_boundary], bc=True)
 
 # --- Run frequency-domain solver ----------------------------------------
-data = model.mw.run_sweep()
+data = model.mw.run_sweep(frequency_groups=1)
 
 # --- Plot return loss ---------------------------------------------------
 scal = data.scalar.grid

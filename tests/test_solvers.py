@@ -110,6 +110,21 @@ def test_physics_share_one_routine():
     em.cleanup()
 
 
+# [Written by Claude]
+def test_pardiso_non_symmetric_csc():
+    """PARDISO solves A x = b (not A^T x = b) for a non-symmetric CSC matrix, as periodic boundaries give."""
+    from emerge._emerge.solver import SolverPardiso
+    A = csc_matrix(np.array([[4, 1, 0], [3, 5, 2], [0, 1, 6]], dtype=np.complex128))
+    rhs = np.array([[1], [2], [3]], dtype=np.complex128)
+    solver = SolverPardiso("")
+    solver.initialize()
+    x, report = solver.solve(A, rhs, None)
+    solver.reset()
+    assert report.exit_code == 0
+    assert np.allclose(A @ x, rhs)
+    cleanup()
+
+
 if __name__ == "__main__":
     test_solver_choice()
     test_basic_function()

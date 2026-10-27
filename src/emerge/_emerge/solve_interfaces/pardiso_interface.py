@@ -421,7 +421,13 @@ class PardisoInterface:
         # Declare the empty vector
         x = np.zeros_like(b)
         error = ctypes.c_int32(0)
-        
+
+        # [Written by Claude] PARDISO reads the arrays as CSR. The arrays of a CSC matrix are the CSR
+        # arrays of its transpose, so for CSC input PARDISO is told to solve with the transposed matrix
+        # (iparm(12) = 2), which is A again. Without this a non-symmetric CSC matrix (periodic
+        # boundaries) is solved as A^T x = b.
+        self.IPARM[11] = 2 if getattr(A, "format", "") == "csc" else 0
+
         # Up the pointers as PARDISO uses [1,...] indexing
         A_index_pointers = A.indptr + 1
         A_indices = A.indices + 1

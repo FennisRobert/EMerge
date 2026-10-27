@@ -175,7 +175,7 @@ class HeatConduction3D(GenericPhysics3D):
         self.T_initial_K = temp_K
 
     def run_steady_state(
-        self, direct_solver: bool = True, preconditioner: bool = False
+        self, direct_solver: bool = True, preconditioner: bool = False, nthreads: int | None = None
     ) -> HCData:
         """Run a steady state thermal analysis (Linear).
 
@@ -186,6 +186,8 @@ class HeatConduction3D(GenericPhysics3D):
         Args:
             direct_solver (bool, optional): If a direct solver is to be used. Defaults to True.
             preconditioner (bool, optional): If a preconditioner is to be used in case of Iterative solvers. Defaults to False.
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
 
         Returns:
             HCData: The Heat Conduction Data object.
@@ -244,7 +246,7 @@ class HeatConduction3D(GenericPhysics3D):
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, id=job.id, direct=direct_solver
+                A, bmat, ids, id=job.id, direct=direct_solver, nthreads=nthreads
             )
             report.add(**aux)
             job.submit_solution(solution, report)
@@ -294,6 +296,7 @@ class HeatConduction3D(GenericPhysics3D):
         direct_solver: bool = True,
         preconditioner: bool = False,
         stepping_algorithm: Literal["BackwardEuler", "CrankNicolson"] = "CrankNicolson",
+        nthreads: int | None = None,
     ) -> HCData:
         """Run a transient simulation with a given total runtime and time step
 
@@ -310,6 +313,8 @@ class HeatConduction3D(GenericPhysics3D):
             direct_solver (bool, optional): If a direct solver is to be used. Defaults to True.
             preconditioner (bool, optional): If a preconditioner is to be used in case of Iterative solvers. Defaults to False.
             stepping_algorithm (Literal['BackwardEuler','CrankNicolson']): The time stepping algorithm to use
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
 
         Returns:
             HCData: The Heat Conduction Data object.
@@ -393,6 +398,7 @@ class HeatConduction3D(GenericPhysics3D):
                 id=job.id,
                 direct=direct_solver,
                 matrix_type=MatrixType.SPD,
+                nthreads=nthreads,
             )
 
             solution = solution.ravel()
@@ -432,6 +438,7 @@ class HeatConduction3D(GenericPhysics3D):
         anderson_m: int = 5,
         anderson_beta: float = 1.0,
         anderson_reg: float = 0.0,
+        nthreads: int | None = None,
     ):
         """Run a non linear steady state thermal analysis.
 
@@ -446,6 +453,8 @@ class HeatConduction3D(GenericPhysics3D):
             anderson_m (int, optional): The window size for the Anderson update calculation.
             anderson_beta (float, optional): The Anderson mixing parameter. Defaults to 1.0.
             anderson_reg (float, optional): The Anderson regularization parameter. Defaults to 0.0.
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
 
         Copyright clarification:
         The logic of the solve loop including the Anderson update is a mix of hand written code
@@ -488,6 +497,7 @@ class HeatConduction3D(GenericPhysics3D):
                 id=job.id,
                 direct=direct_solver,
                 matrix_type=MatrixType.SYMMETRIC,
+                nthreads=nthreads,
             )
             report.add(**aux)
             job.submit_solution(solution, report)

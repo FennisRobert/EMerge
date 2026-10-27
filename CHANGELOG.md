@@ -130,7 +130,19 @@
 
 - `EMSolver.RSLAB` (`rslab` package) is a direct solver.
 - `EMSolver.SPARTA` (`sparta>=0.2.0`) is a direct solver with GPU, CPU and hybrid modes
-  (`set_options()`).
+  (`set_options()`). With multiprocessing it is now picked automatically when installed, before
+  the Apple Accelerate solver.
+- **Thread count per solve.** `run_sweep()`, `run_scattered()`, `run_adaptive_sweep()`,
+  `adaptive_mesh_refinement()` and the thermal `run_steady_state()`, `run_transient()` and
+  `run_steady_state_nl()` take `nthreads=`. It is passed to the solver, which can also be set
+  directly with `Solver.set_nthreads(n)`. `None` keeps the solver's own setting.
+  - PARDISO sets the count for PARDISO only, through MKL, instead of reading `MKL_NUM_THREADS`.
+    `PardisoInterface(nthreads=...)` and `set_threads()` do the same.
+  - SPARTA (`sparta>=0.3.0`) gives the solver a thread pool of its own. A different count
+    repeats the symbolic analysis.
+  - Other solvers ignore it (logged at trace level).
+- `Solver.set_options()` and `set_nthreads()` return the solver, so calls can be chained:
+  `model.set_solver(EMSolver.SPARTA).set_options(mode='CPU').set_nthreads(4)`.
 - `SolverCuDSS.set_precision('auto'|'single'|'double')`. `'auto'` uses single precision on GPUs
   with slow double precision.
 - `Simulation.get_solver(solver)`; `set_solver()` returns the solver.
@@ -263,6 +275,7 @@
 
 - `Settings.qtem_limit` 0.05 → 0.1: more quasi-TEM modes are treated as TEM.
 - `run_sweep()`/`run_scattered()`: `harddisc_path` is relative to the model directory.
+- `pmlbox()`: the PML grading `exponent` 1.5 → 0.5 and `deltamax` 8.0 → 2.0.
 
 ### Migrating a 2.8.9 script
 
@@ -310,7 +323,22 @@
 - **`HexCell`** used `max(z2, z2)` for the cell height.
 - **Periodic face pairing** also compares face areas, so faces with the same centre are no longer
   mispaired.
-- **Pardiso:** the zero right-hand-side vector had the wrong shape.
+- **Pardiso:**
+  - The zero right-hand-side vector had the wrong shape.
+  - `IPARM[0]` was never set, so MKL ignored every other IPARM value and ran on its defaults.
+  - Errors in the symbolic and numeric factorization were discarded. They now raise a
+    `SimulationError`, and the symbolic phase is redone after `reset()`.
+  - `nthreads` was written to `IPARM[2]`, which MKL does not use.
+- **Degenerate port modes:** the eigen solver returns an arbitrary basis of modes that share one
+  propagation constant, which could mix the modes and make lossless modes complex. Those modes
+  are now orthogonalized in the cross power and given a real basis.
+- **Modal analysis:** running it again at the same frequency added a second set of modes. It now
+  replaces the modes found before.
+- **AURA:** new nodes on a curved face could stay on the chord where the surface mesh ran over a
+  concave diagonal, leaving dents in the refined surface (up to 14 mm on a 250 mm sphere). Such
+  wedges are now flipped to the convex diagonal before refinement.
+- **SPARTA:** with a multithreaded sweep, worker threads lost the mode set with `set_options()`
+  and used the GPU.
 - **`XYPolygon` fillets** were inserted at shifted positions when more than one fillet was used.
 - **STEP import:** integer values were rejected where floats were expected.
 - **`Curve`** no longer opens the FLTK GUI.
@@ -349,6 +377,9 @@
   - Tetrahedra inside PEC or highly conducting volumes are skipped.
 - Lower memory use in Robin boundary condition assembly.
 - SuperLU solves several right-hand sides in one call.
+- PARDISO factors complex-symmetric systems (most models) as LDLᵀ instead of LU, with explicit
+  settings for ordering, pivoting, scaling and refinement. About 30% faster numeric factorization
+  on an 84k system.
 - ARPACK uses an explicit shift-invert LU with an oversampled Krylov space. `SolverARPACK_BMA`
   filters modes with a cross-modal assurance criterion.
 - With multiprocessing, the worker pool and each worker's solver state are reused across

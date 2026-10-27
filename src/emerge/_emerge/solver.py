@@ -1395,6 +1395,7 @@ class SolverCorvid(Solver):
         self.restart: int = 100
         self._topology = None
         self._topology_key: tuple | None = None
+        self._k0: float | None = None
 
     def set_options(
         self,
@@ -1424,13 +1425,18 @@ class SolverCorvid(Solver):
         # COCG stores no Krylov basis but requires a complex symmetric matrix
         self.method = "cocg" if complex_symmetric else "gmres"
 
-    def set_precon_data(self, precon_dataset: PreconData, solve_ids: np.ndarray) -> None:
+    def set_precon_data(self, precon_dataset: PreconData, solve_ids: np.ndarray, k0: float | None = None) -> None:
         """Build (or reuse) the CORVID topology of the solved DoFs.
+
+        With the node coordinates and k0, CORVID also solves the unknowns next to coarsely meshed metal walls
+        exactly (its wall rule), which strongly reduces the iterations on coarse meshes.
 
         Args:
             precon_dataset (PreconData): The mesh topology per global DoF
             solve_ids (np.ndarray): The solved global DoFs, in the row order of the solved system
+            k0 (float | None, optional): The free space wave number of this solve. Defaults to None.
         """
+        self._k0 = k0
         key = (id(precon_dataset.dof_entity), solve_ids.shape[0], hash(solve_ids.tobytes()))
         if key == self._topology_key:
             return
@@ -1440,12 +1446,15 @@ class SolverCorvid(Solver):
             precon_dataset.dof_kind[solve_ids],
             precon_dataset.edges,
             precon_dataset.tris,
+            wall_vertices=precon_dataset.wall_vertices(solve_ids),
+            coords=precon_dataset.nodes,
         )
         self._topology_key = key
 
     def reset(self) -> None:
         self._topology = None
         self._topology_key = None
+        self._k0 = None
 
     def duplicate(self) -> Solver:
         new_solver = self.__class__(self.pre)
@@ -1463,15 +1472,23 @@ class SolverCorvid(Solver):
             rtol=self.rtol,
             maxiter=self.maxiter,
             restart=self.restart,
-        ).factorize(A)
+        ).factorize(A, k0=self._k0)
         x = sol.solve(b)
         iterations = [info["iterations"] for info in sol.info]
+        residuals = [info["residual"] for info in sol.info]
         converged = all(info["converged"] for info in sol.info)
-        logger.info(f"{_pfx(self.pre, id)} CORVID {self.method}: iterations {iterations}")
+        logger.info(
+            f"{_pfx(self.pre, id)} CORVID {self.method}: iterations {iterations} ({sol.n_exact} extra exact rows)"
+        )
         return x, SolveReport(
             solver=str(self),
             exit_code=0 if converged else 1,
-            aux={"iterations": iterations, "memory_bytes": sol.memory_bytes},
+            aux={
+                "iterations": iterations,
+                "residuals": residuals,
+                "n_exact": sol.n_exact,
+                "memory_bytes": sol.memory_bytes,
+            },
         )
 
 
@@ -2532,6 +2549,7 @@ class SolveRoutine:
         id: int = -1,
         matrix_type: MatrixType = MatrixType.UNKNOWN,
         precon_dataset: PreconData | None = None,
+        k0: float | None = None,
     ) -> tuple[np.ndarray, SolveReport]:
         """Solve the system of equations defined by Ax=b for x.
 
@@ -2548,6 +2566,7 @@ class SolveRoutine:
             matrix_type (MatrixType, optional): The matrix type. Classified from A if UNKNOWN. Defaults to MatrixType.UNKNOWN.
             precon_dataset (PreconData | None, optional): The mesh topology needed by preconditioned iterative
                 solvers such as CORVID. Defaults to None.
+            k0 (float | None, optional): The free space wave number of this system, used by CORVID. Defaults to None.
 
         Returns:
             tuple[np.ndarray, SolveReport]: The solution and the solve report.
@@ -2591,7 +2610,7 @@ class SolveRoutine:
                 )
                 solver = self.pick_solver(A, b, matrix_type, direct=True)
             else:
-                solver.set_precon_data(precon_dataset, solve_ids)
+                solver.set_precon_data(precon_dataset, solve_ids, k0=k0)
 
         start = time.time()
         x, report, sorter, precon, Asorted = self._solve_with(solver, Asel, bsel, matrix_type, id)

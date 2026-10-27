@@ -150,7 +150,7 @@ def run_job_multi(job: SimJob) -> SimJob:
         _worker_routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
     solution, report = _worker_routine.solve(
-        A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon
+        A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0
     )
     report.add(**aux)
     job.submit_solution(solution, report)
@@ -1146,7 +1146,7 @@ class Microwave3D(GenericPhysics3D):
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, direct=self._direct
+                A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0, direct=self._direct
             )
             report.add(**aux)
             job.submit_solution(solution, report)
@@ -1171,7 +1171,7 @@ class Microwave3D(GenericPhysics3D):
                 routine = get_routine()
                 A, bmat, ids, aux = job.get_Ab()
                 solution, report = routine.solve(
-                    A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon
+                    A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0
                 )
                 report.add(**aux)
                 job.submit_solution(solution, report)

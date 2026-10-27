@@ -46,7 +46,7 @@ class _Parent:
 
 class _Job:
     def __init__(self, i, A="ok"):
-        self.id, self.mtype, self._precon, self.A = i, None, None, A
+        self.id, self.mtype, self._precon, self.k0, self.A = i, None, None, None, A
 
     def get_Ab(self):
         return self.A, self.id, None, {}

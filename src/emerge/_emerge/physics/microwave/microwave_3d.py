@@ -50,6 +50,7 @@ from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from typing import Callable, Literal, Any
 from contextlib import nullcontext
+from functools import partial
 import multiprocessing as mp
 from cmath import sqrt as csqrt
 from itertools import product
@@ -130,7 +131,7 @@ def _solve_krylov(
 _worker_routine: SolveRoutine | None = None
 
 
-def run_job_multi(job: SimJob) -> SimJob:
+def run_job_multi(job: SimJob, nthreads: int | None = None) -> SimJob:
     """The job launcher for Multi-Processing environements
 
     The solve routine (and the solver objects it owns, e.g. SolverSuperLU's
@@ -140,6 +141,7 @@ def run_job_multi(job: SimJob) -> SimJob:
 
     Args:
         job (SimJob): The Simulation Job
+        nthreads (int | None, optional): The preferred number of CPU threads of the solver. Defaults to None.
 
     Returns:
         SimJob: The solved SimJob
@@ -150,7 +152,7 @@ def run_job_multi(job: SimJob) -> SimJob:
         _worker_routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
     A, bmat, ids, aux = job.get_Ab()
     solution, report = _worker_routine.solve(
-        A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0
+        A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0, nthreads=nthreads
     )
     report.add(**aux)
     job.submit_solution(solution, report)
@@ -1130,6 +1132,7 @@ class Microwave3D(GenericPhysics3D):
         multi_processing: bool,
         n_workers: int,
         pool: "mp.pool.Pool | None" = None,
+        nthreads: int | None = None,
     ) -> list[SimJob]:
         """Runs a batch of already-assembled SimJobs, choosing between
         single-threaded, multi-threaded, and multi-process dispatch. This is
@@ -1146,7 +1149,8 @@ class Microwave3D(GenericPhysics3D):
         def run_job_single(job: SimJob) -> SimJob:
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0, direct=self._direct
+                A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0, direct=self._direct,
+                nthreads=nthreads,
             )
             report.add(**aux)
             job.submit_solution(solution, report)
@@ -1171,7 +1175,8 @@ class Microwave3D(GenericPhysics3D):
                 routine = get_routine()
                 A, bmat, ids, aux = job.get_Ab()
                 solution, report = routine.solve(
-                    A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0
+                    A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0,
+                    nthreads=nthreads,
                 )
                 report.add(**aux)
                 job.submit_solution(solution, report)
@@ -1205,11 +1210,12 @@ class Microwave3D(GenericPhysics3D):
         logger.info(
             f"Starting distributed solve of {len(jobs)} jobs with {n_workers} processes in parallel"
         )
+        run_job = partial(run_job_multi, nthreads=nthreads)
         if pool is not None:
-            return pool.map(run_job_multi, jobs)
+            return pool.map(run_job, jobs)
 
         with self._open_worker_pool(n_workers) as owned_pool:
-            return owned_pool.map(run_job_multi, jobs)
+            return owned_pool.map(run_job, jobs)
 
     def _open_worker_pool(self, n_workers: int) -> "mp.pool.Pool":
         """Opens a multiprocessing pool for solving SimJobs.
@@ -1239,6 +1245,7 @@ class Microwave3D(GenericPhysics3D):
         cache_harddisk: bool,
         multi_processing: bool,
         automatic_modal_analysis: bool,
+        nthreads: int | None = None,
     ) -> tuple[list[SimJob], list[tuple[np.ndarray, np.ndarray, np.ndarray]]]:
         """Shared assemble-then-solve loop used by run_sweep and run_scattered.
 
@@ -1303,7 +1310,7 @@ class Microwave3D(GenericPhysics3D):
                     material_set.append(mats)
 
                 group_results = self._dispatch_jobs(
-                    jobs, parallel, multi_processing, n_workers, pool=pool
+                    jobs, parallel, multi_processing, n_workers, pool=pool, nthreads=nthreads
                 )
                 simulation_jobs.extend(group_results)
 
@@ -1755,6 +1762,7 @@ class Microwave3D(GenericPhysics3D):
         cache_harddisk: bool = False,
         multi_processing: bool = False,
         automatic_modal_analysis: bool = True,
+        nthreads: int | None = None,
         _reset_solvers: bool = True,
     ) -> MWData:
         """Executes a frequency domain study
@@ -1775,6 +1783,8 @@ class Microwave3D(GenericPhysics3D):
             cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
             multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines). Defaults to False.
             automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
 
         Raises:
             SimulationError: An error associated witha a problem during the simulation.
@@ -1819,6 +1829,7 @@ class Microwave3D(GenericPhysics3D):
             cache_harddisk,
             multi_processing,
             automatic_modal_analysis,
+            nthreads,
         )
 
         if _reset_solvers:
@@ -2077,6 +2088,7 @@ class Microwave3D(GenericPhysics3D):
         cache_harddisk: bool = False,
         multi_processing: bool = False,
         automatic_modal_analysis: bool = True,
+        nthreads: int | None = None,
     ) -> MWData:
         """Executes an adaptive frequency domain study over the range of the set frequencies.
 
@@ -2099,6 +2111,8 @@ class Microwave3D(GenericPhysics3D):
             cache_harddisk (bool, optional): Cache the matrices on the hard disk. Defaults to False.
             multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines).
             automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
 
         Returns:
             MWData: The dataset.
@@ -2125,6 +2139,7 @@ class Microwave3D(GenericPhysics3D):
                 cache_harddisk=cache_harddisk,
                 multi_processing=multi_processing,
                 automatic_modal_analysis=automatic_modal_analysis,
+                nthreads=nthreads,
                 _reset_solvers=False,
             )
             entries = list(self.data.scalar.iter())[n_before:]
@@ -2146,6 +2161,7 @@ class Microwave3D(GenericPhysics3D):
         frequency_groups: int = -1,
         multi_processing: bool = False,
         automatic_modal_analysis: bool = True,
+        nthreads: int | None = None,
         _reset_solvers: bool = True,
     ) -> MWData:
         """Executes a Scattered field simulation
@@ -2166,6 +2182,8 @@ class Microwave3D(GenericPhysics3D):
             frequency_groups (int, optional): The number of frequency points in a solve group. Defaults to -1.
             multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines). Defaults to False.
             automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
 
         Raises:
             SimulationError: An error associated witha a problem during the simulation.
@@ -2209,6 +2227,7 @@ class Microwave3D(GenericPhysics3D):
             cache_harddisk,
             multi_processing,
             automatic_modal_analysis,
+            nthreads,
         )
 
         if _reset_solvers:
@@ -2225,7 +2244,7 @@ class Microwave3D(GenericPhysics3D):
         return self.data
 
     def _run_adaptive_mesh(
-        self, iteration: int, frequency: float, automatic_modal_analysis: bool = True
+        self, iteration: int, frequency: float, automatic_modal_analysis: bool = True, nthreads: int | None = None
     ) -> tuple[MWData, list[int]]:
         """Executes a frequency domain study
 
@@ -2241,6 +2260,7 @@ class Microwave3D(GenericPhysics3D):
         Args:
             iteration (int): The iteration number
             frequency (float): The simulation frequency
+            nthreads (int | None, optional): The preferred number of CPU threads of the solver. Defaults to None.
 
         Raises:
             SimulationError: An error associated witha a problem during the simulation.
@@ -2293,7 +2313,7 @@ class Microwave3D(GenericPhysics3D):
         def run_job_single(job: SimJob):
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id
+                A, bmat, ids, matrix_type=job.mtype, id=job.id, nthreads=nthreads
             )
             report.add(**aux)
             job.submit_solution(solution, report)

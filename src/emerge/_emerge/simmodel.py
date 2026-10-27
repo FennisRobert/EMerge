@@ -123,7 +123,7 @@ class Simulation:
         Args:
             modelname (str): The name of the simulation model. This will be used for filenames and path names when saving data.
             loglevel (Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"], optional): The loglevel to use for loguru. Defaults to 'INFO'.
-            load_file (bool, optional): If the simulatio model should be loaded from a file. Defaults to False.
+            load_file (bool, optional): If the simulation model should be loaded from a file. Defaults to False.
             save_file (bool, optional): if the simulation file should be stored to a file. Defaults to False.
             write_log (bool, optional): If a file should be created that contains the entire log of the simulation. Defaults to False.
             path_suffix (str, optional): The suffix that will be added to the results directory. Defaults to ".EMResults".
@@ -1385,6 +1385,7 @@ class Simulation:
         strip_max_growth: float = 2.0,
         strip_gated: bool = True,
         project_boundaries: bool = True,
+        nthreads: int | None = None,
     ) -> SimulationDataset:
         """Adaptive mesh refinement by local refinement of the existing mesh (AURA).
 
@@ -1421,6 +1422,8 @@ class Simulation:
             strip_gated: Regularise strips in every pass, but only next to high-error tets (default). If False, all
                 narrow strips are regularised once in step 0, before the first solve, regardless of the error.
             project_boundaries: Project new boundary nodes onto curved geometry.
+            nthreads: The preferred number of CPU threads of the solver, for solvers that support it. None keeps
+                the solver's own setting.
 
         Returns:
             SimulationDataset: The data set that was stashed before refinement.
@@ -1480,7 +1483,7 @@ class Simulation:
 
             fields, Smats = [], []
             for sf in sim_freqs:
-                data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
+                data, solve_ids = self.mw._run_adaptive_mesh(step, sf, nthreads=nthreads)
                 fields.append(data.field[-1])
                 Smats.append(data.scalar[-1].Sp)
             S_matrices.append(Smats)

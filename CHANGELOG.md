@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b8 — changes since 2.8.9
+## 3.0.0b9 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus
@@ -162,6 +162,8 @@
 - **The Apple Accelerate solver is installed automatically on macOS.** `emerge-aasds` is now a
   precompiled PyPI package and a dependency of EMerge on macOS, so the fast Accelerate direct
   solver works out of the box.
+- **macOS wheels are universal2**, one wheel with both Apple Silicon and Intel code, so Intel Macs
+  install a precompiled wheel instead of building from source.
 - `pip install emerge[spyder]` installs the packages needed to use EMerge in Spyder.
 
 ### Experimental
@@ -331,6 +333,9 @@
   - Errors in the symbolic and numeric factorization were discarded. They now raise a
     `SimulationError`, and the symbolic phase is redone after `reset()`.
   - `nthreads` was written to `IPARM[2]`, which MKL does not use.
+  - Non-symmetric systems (periodic boundaries) were solved as Aᵀx = b instead of Ax = b, because
+    PARDISO read the CSC matrix as CSR. A lossless dielectric slab in a Floquet cell at 30° lost
+    31 % of its power. Symmetric systems were not affected.
 - **Degenerate port modes:** the eigen solver returns an arbitrary basis of modes that share one
   propagation constant, which could mix the modes and make lossless modes complex. Those modes
   are now orthogonalized in the cross power and given a real basis.

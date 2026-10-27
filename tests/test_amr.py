@@ -108,3 +108,35 @@ def test_amr_periodic():
     assert abs(abs(powers[1]) - 1.0) < 1e-4
     assert abs(abs(powers[2]) - 1.0) < 1e-4
     em.cleanup()
+
+
+# [Written by Claude]
+def test_aura_reflex_edge_on_sphere():
+    """A surface triangulation over the reflex diagonal of four sphere points leaves an air wedge tet on the
+    concave side. Its edge midpoint cannot be projected onto the sphere without inverting the wedge, which left
+    the new node on the chord (a dent). AURA moves the wedge to the other region first, so no node of the
+    refined sphere surface lies off the sphere."""
+    import numpy as np
+    from emerge._emerge.aura import refine
+    from emerge._emerge.aura.brep import SURF_SPHERE, BrepSnapshot
+
+    s, t = 0.3, 0.5
+    c, d = np.sqrt(1 - s * s), np.sqrt(1 - t * t)
+    nodes = np.array([[s, 0, c], [-s, 0, c], [0, t, d], [0, -t, d], [0, 0, 0.3], [0, 0, 3.0]])
+    # wedge (0, 1, 2, 3) in the air (region 1), the sphere surface over the reflex diagonal (2, 3)
+    tets = np.array([[0, 1, 2, 3], [0, 2, 3, 4], [1, 2, 3, 4], [0, 1, 2, 5], [0, 1, 3, 5]])
+    region = np.array([1, 2, 2, 1, 1], dtype=np.int32)
+    face_tris = np.array([[0, 2, 3], [1, 2, 3]])
+    face_tags = np.array([7, 7], dtype=np.int32)
+    brep = BrepSnapshot.empty()
+    brep.surf_tags = np.array([7], dtype=np.int32)
+    brep.surf_kind = np.array([SURF_SPHERE], dtype=np.int32)
+    brep.surf_params = np.array([[0, 0, 0, 1, 0, 0, 0]], dtype=np.float64)
+    error = np.array([1.0, 0.1, 0.1, 0.0, 0.0])
+    res = refine(nodes, tets, error, tet_region=region, face_tris=face_tris, face_tri_tags=face_tags, brep=brep,
+                 growth=0.5, improve_sweeps=0)
+    assert res.stats["n_wedge_flips"] == 1
+    assert res.stats["n_projection_reduced"] == 0 and res.stats["n_projection_rejected"] == 0
+    on = np.unique(np.asarray(res.face_tris)[np.asarray(res.face_tri_tags) == 7])
+    r = np.linalg.norm(np.asarray(res.nodes)[on], axis=1)
+    assert np.allclose(r, 1.0, atol=1e-12), r

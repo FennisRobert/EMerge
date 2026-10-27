@@ -238,6 +238,10 @@ class PARDISOMType(Enum):
     REAL_NONSYM = 11
     COMP_NONSYM = 13
 
+#: MKL's thread domain for PARDISO, for MKL_Domain_Set_Num_Threads
+MKL_DOMAIN_PARDISO = 4
+
+
 class PARDISOPhase(Enum):
     CLEAR = -1
     NONE = 0
@@ -288,14 +292,25 @@ class SolveMatrix:
 
 class PardisoInterface:
 
-    def __init__(self):
+    def __init__(self, nthreads: int | None = None):
+        """Loads MKL and prepares a PARDISO handle.
 
+        Args:
+            nthreads (int | None, optional): The number of CPU threads PARDISO uses; see
+                `set_threads`. None leaves it to MKL_NUM_THREADS. Defaults to None.
+        """
         self.libmkl: ctypes.CDLL = load_mkl()
         self._pardiso_interface = self.libmkl.pardiso
 
         self._pardiso_interface.restype = None
         self._pardiso_interface.argtypes = PARDISO_ARG_TYPES
-        
+
+        # C interface (by value); the lowercase name is the Fortran one, by reference
+        self._set_domain_threads = self.libmkl.MKL_Domain_Set_Num_Threads
+        self._set_domain_threads.restype = ctypes.c_int
+        self._set_domain_threads.argtypes = (ctypes.c_int, ctypes.c_int)
+        self.nthreads: int | None = None
+
         self.PT = np.zeros(64, dtype=PT_B)
         self.IPARM = np.zeros(64, dtype=np.int32)
         self.PERM = np.zeros(0, dtype=np.int32)
@@ -314,7 +329,7 @@ class PardisoInterface:
         self._upper: sparse.csr_matrix | None = None
         self._upper_source = None
 
-        self.configure_solver()
+        self.configure_solver(nthreads=nthreads)
 
     @staticmethod
     def _is_symmetric(A: sparse.spmatrix, rtol: float = 1e-12) -> bool:
@@ -452,21 +467,49 @@ class PardisoInterface:
 
         Args:
             perm_algo (int, optional): The permutation algorithm. Defaults to 3.
-            nthreads (int, optional): The number of threads (Must be greater than OMP_NUM_THREADS). Defaults to None.
+            nthreads (int, optional): The number of CPU threads PARDISO uses; see `set_threads`. None leaves
+                the current setting. Defaults to None.
             user_perm (int, optional): 1, if a user permuation is provided (not supported yet). Defaults to 0.
             n_refine_steps (int, optional): Number of refinement steps. Defaults to 0.
             pivot_pert (int, optional): _description_. Defaults to 13.
             weighted_matching (int, optional): weighted matching mode. Defaults to 2.
         """
-        if nthreads is None:
-            nthreads = int(os.environ.get('OMP_NUM_THREADS', default="4"))
+        if nthreads is not None:
+            self.set_threads(nthreads)
 
         self.IPARM[1] = perm_algo
-        self.IPARM[2] = nthreads
         self.IPARM[4] = user_perm
         self.IPARM[7] = n_refine_steps
         self.IPARM[9] = pivot_pert
         self.IPARM[12] = weighted_matching
+
+    def set_threads(self, nthreads: int | None) -> None:
+        """Sets the number of CPU threads PARDISO uses.
+
+        The count applies to PARDISO only; MKL's other routines keep their own. It replaces the
+        MKL_NUM_THREADS environment variable for PARDISO and can be changed at any time.
+
+        Args:
+            nthreads (int | None): The number of threads, at least 1. None returns the choice to
+                MKL, which then follows MKL_NUM_THREADS.
+        """
+        if nthreads is None:
+            self.nthreads = None
+            # 0 returns PARDISO's thread count to MKL's own choice
+            self._set_domain_threads(0, MKL_DOMAIN_PARDISO)
+            return
+        if int(nthreads) < 1:
+            raise ValueError(f"PARDISO needs at least one thread, got {nthreads}")
+        self.nthreads = int(nthreads)
+        self._apply_threads()
+
+    def _apply_threads(self) -> None:
+        """Hands the thread count to MKL, if one was set. The setting is process-wide, so it is
+        reapplied before every PARDISO call in case something else in the process changed it."""
+        if self.nthreads is None:
+            return
+        if self._set_domain_threads(self.nthreads, MKL_DOMAIN_PARDISO) == 0:
+            raise ValueError(f"MKL refused {self.nthreads} threads for PARDISO")
 
     def _call_solver(self, A: sparse.csr_matrix, b: np.ndarray, phase: PARDISOPhase) -> tuple[np.ndarray, int]:
         """Calls the PARDISO solver on linear problem Ax=b
@@ -479,6 +522,8 @@ class PardisoInterface:
         Returns:
             tuple[np.ndarray, int]: The solution vector x and error code.
         """
+
+        self._apply_threads()
 
         # Declare the empty vector
         x = np.zeros_like(b)

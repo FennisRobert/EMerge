@@ -102,7 +102,7 @@ def farfield_ports(
     theta, phi = T.flatten(), P.flatten()
 
     surface = field._integration_surface(faces, origin)
-    xs, ys, zs = surface.exyz
+    xs, ys, zs = field._surface_samples(surface)
     mapping = field.basis.interpolate_index(xs.flatten(), ys.flatten(), zs.flatten(), usenan=True)
 
     excitation = field.excitation

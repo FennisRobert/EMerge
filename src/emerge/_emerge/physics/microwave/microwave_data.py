@@ -1650,7 +1650,7 @@ class MWField(Saveable):
         from .sc import stratton_chu
 
         surface = self._integration_surface(faces, origin)
-        ehfield = self.interpolate(*surface.exyz)
+        ehfield = self.interpolate(*self._surface_samples(surface))
 
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
 
@@ -1669,6 +1669,21 @@ class MWField(Saveable):
 
         return Eff * factor, Hff * factor, Ptot  # [Written by Claude] Ptot of the simulated part already is the power of the full structure at 1 W
 
+    # [Written by Claude]
+    def _surface_samples(self, surface: SurfaceMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The points where the fields of an integration surface are sampled: its edge centres, moved a tiny
+        distance (1e-5 of the surface size) against the outward normal. A point exactly on a face inside the
+        mesh can be located in the tetrahedron on the outside, which for a PML interface gives the PML fields
+        and too much radiated power."""
+        from .sc import _weighted_normals
+
+        xyz = np.array(surface.exyz)
+        normals = _weighted_normals(surface)
+        normals = normals / np.maximum(np.linalg.norm(normals, axis=0), 1e-300)
+        size = np.linalg.norm(xyz.max(axis=1) - xyz.min(axis=1))
+        x, y, z = xyz - 1e-5 * size * normals
+        return x, y, z
+
     def _integration_surface(
         self, faces: FaceSelection | GeoSurface, origin: tuple[float, float, float] | None
     ) -> SurfaceMesh:
@@ -1676,11 +1691,11 @@ class MWField(Saveable):
         if self._cache_mapping:
             if self._cache_surface is None:
                 self._cache_surface = self.basis.mesh.boundary_surface(
-                    faces.tags, inward_normal=False, origin=origin
+                    faces.tags, inward_normal=False, origin=origin, consistent=True
                 )
             return self._cache_surface
         return self.basis.mesh.boundary_surface(
-            faces.tags, inward_normal=False, origin=origin
+            faces.tags, inward_normal=False, origin=origin, consistent=True
         )
 
     # [Written by Claude]
@@ -1767,7 +1782,7 @@ class MWField(Saveable):
         from .sc import stratton_chu_near
 
         surface = self._integration_surface(faces, origin)
-        ehfield = self.interpolate(*surface.exyz)
+        ehfield = self.interpolate(*self._surface_samples(surface))
 
         Enf, Hnf = stratton_chu_near(ehfield.E, ehfield.H, surface, xyz, self.k0)
 

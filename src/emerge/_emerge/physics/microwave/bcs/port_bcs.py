@@ -69,8 +69,11 @@ class PortBC(RobinBC, Saveable):
     def _gen_port_number(self, mode_nr: int) -> int | float:
         if len(self.port_modes) == 1:
             return self.port_number
-        else:
-            return float(f"{self.port_number}.{mode_nr}")
+        # [Written by Claude] Zero-pad the mode number when the port has 10 or more modes: otherwise mode 10 gives
+        # float("1.10") == 1.1, the label of mode 1 (20 gives 1.2, ...), and the S-matrix silently overwrites the
+        # entries of those modes. Ports with up to 9 modes keep the labels 1.1 ... 1.9. (From asirinelli's 2.8.9 patch)
+        width = len(str(max(self.port_modes)))
+        return float(f"{self.port_number}.{mode_nr:0{width}d}")
 
     def _iter_port_numbers(self) -> Generator[tuple[int | float, int], None, None]:
         """Iterates over all the mode/port numbers to include.

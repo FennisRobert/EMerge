@@ -301,6 +301,18 @@
 
 ### Bug fixes
 
+- **Far field on a surface inside the mesh** (e.g. the air/PML interface):
+  - The normals of the integration surface pointed into the PML side on each triangle that has a
+    tetrahedron on both sides. Ptot (radiated power) came out negative, or near zero when only
+    some faces flipped, so directivity read far too high or NaN while the pattern looked right.
+    The normals are now oriented consistently over the surface and outward.
+  - The fields on the surface were sampled in the PML tetrahedra, which overestimated the radiated
+    power (by 46 % for a test dipole). They are now sampled just inside the integration surface.
+    This applies to `farfield*`, `nearfield` and `farfield_3d_ports`.
+- **Ports with 10 or more modes:** mode labels collided (mode 10 → `1.10` == `1.1`, the label of
+  mode 1), so the S-parameters of those modes silently overwrote each other. On such ports the
+  mode number is now zero-padded (`1.01` … `1.12`), so mode 1 is `S(1.01, …)`. Ports with up to 9
+  modes keep `1.1` … `1.9`. (Found by asirinelli.)
 - **`ThinConductor`:** the two sides of a thin conductor sheet were not separated in the solve.
   The volume was assembled with the unsplit numbering, only one tet per sheet triangle got the
   copied DoFs (not the tets that touch the sheet through an edge), and the copied side was picked

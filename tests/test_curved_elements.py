@@ -56,3 +56,51 @@ def test_zero_displacement_gives_straight_matrices():
                                  np.zeros((len(ids), 6, 3)), field.dofcodes3d, quadrature_rule(4))
     assert np.allclose(E1, E0, rtol=0, atol=1e-9 * np.abs(E0).max())
     assert np.allclose(B1, B0, rtol=0, atol=1e-9 * np.abs(B0).max())
+
+
+def _post_in_box(top_bc: str):
+    em.cleanup()
+    m = em.Simulation("CurvedRim", loglevel="ERROR")
+    m.settings.mw_curved_elements = True
+    a, b, L = 0.02286, 0.01016, 0.04
+    box = em.geo.Box(a, L, b)
+    post = em.geo.Cylinder(0.004, b, em.ZAX.construct_cs((a / 2, L / 2, 0)))
+    wg = em.geo.subtract(box, post)
+    m.commit_geometry()
+    m.mw.set_frequency(10e9)
+    m.mw.set_resolution(0.2)
+    m.generate_mesh()
+    top = wg.face("top", tool=box)
+    if top_bc == "abc":
+        m.mw.bc.AbsorbingBoundary(top)
+    else:
+        m.mw.bc.ModalPort(top, 1)
+    return m
+
+
+@pytest.mark.filterwarnings("ignore")
+def test_absorbing_boundary_keeps_touching_curved_faces_curved():
+    # the post ends on the absorbing top face: only the edges on that face stay straight, the post is curved
+    from emerge._emerge.physics.microwave.assembly.curvilinear import curved_data_bcs, exclude_tags
+
+    m = _post_in_box("abc")
+    bcs = m.mw.bc.boundary_conditions
+    cd = curved_data_bcs(m.mesh, bcs)
+    assert cd is not None and len(cd[0]) > 10
+    tets, edges = np.asarray(m.mesh.tets), np.asarray(m.mesh.edges)
+    keys = {tuple(sorted(edges[:, e])) for t in exclude_tags(bcs) for e in m.mesh.ftag_to_edge[t]}
+    from emerge._emerge.physics.microwave.assembly.curvilinear import _PAIRS
+    for t, d in zip(*cd):
+        for k, (i, j) in enumerate(_PAIRS):
+            if tuple(sorted((tets[i, t], tets[j, t]))) in keys:
+                assert not np.any(d[k])
+    em.cleanup()
+
+
+@pytest.mark.filterwarnings("ignore")
+def test_wave_port_keeps_touching_curved_faces_straight():
+    from emerge._emerge.physics.microwave.assembly.curvilinear import curved_data_bcs
+
+    m = _post_in_box("port")
+    assert curved_data_bcs(m.mesh, m.mw.bc.boundary_conditions) is None
+    em.cleanup()

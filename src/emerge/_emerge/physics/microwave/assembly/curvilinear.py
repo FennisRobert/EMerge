@@ -13,8 +13,8 @@ those tetrahedra are then recomputed with point-wise effective materials (emr/sr
 all other tetrahedra keep the matrices of `curlcurl._matrix_builder`.
 
 Faces with surface integrals (ports, absorbing boundaries, lumped elements, impedance sheets, periodic faces)
-and every curved face connected to them stay straight, so nothing changes in the boundary terms and the port
-modes are solved on the same facets as the volume.
+stay straight, so nothing changes in the boundary terms. Every curved face connected to a wave port stays
+straight as well, so the port modes are solved on the same facets as the line behind the port.
 """
 from __future__ import annotations
 
@@ -49,6 +49,21 @@ def curvable(bc) -> bool:
 def exclude_tags(bcs) -> frozenset:
     """Face tags with surface integrals: they stay straight."""
     return frozenset(int(t) for bc in bcs if not curvable(bc) for t in (getattr(bc, "tags", None) or []))
+
+
+def spread_tags(bcs) -> frozenset:
+    """Wave port faces: every curved face connected to them stays straight. The port mode is solved on the
+    straight facets, and a curved line behind a straight port would be an impedance step (coax, circular
+    waveguide). Absorbing boundaries, lumped ports and other surface terms only keep their own edges straight."""
+    from ..bcs.port_bcs import FloquetPort, LumpedPort, PortBC
+
+    return frozenset(int(t) for bc in bcs if isinstance(bc, PortBC) and not isinstance(bc, (LumpedPort, FloquetPort))
+                     for t in (getattr(bc, "tags", None) or []))
+
+
+def curved_data_bcs(mesh, bcs) -> tuple[np.ndarray, np.ndarray] | None:
+    """curved_data for the boundary conditions bcs: the curved tets the assembly uses."""
+    return curved_data(mesh, exclude_tags(bcs), spread_tags(bcs))
 
 
 def quadrature_rule(n: int = 4) -> np.ndarray:
@@ -124,11 +139,14 @@ def _closest(dim: int, tag: int, pts: np.ndarray) -> np.ndarray:
     return q if q.shape == pts.shape else pts
 
 
-def curved_data(mesh, exclude: frozenset = frozenset()) -> tuple[np.ndarray, np.ndarray] | None:
+def curved_data(mesh, exclude: frozenset = frozenset(),
+                spread: frozenset | None = None) -> tuple[np.ndarray, np.ndarray] | None:
     """The curved tets of a mesh: (tet ids, edge midpoint displacements (nc, 6, 3) in _PAIRS order), or None.
 
-    Needs the gmsh model the mesh was generated from.
+    exclude: faces that stay straight. spread: faces whose connected curved faces stay straight too
+    (default: all of exclude; see spread_tags). Needs the gmsh model the mesh was generated from.
     """
+    spread = exclude if spread is None else spread
     import gmsh
 
     nodes = np.asarray(mesh.nodes, float)
@@ -136,7 +154,7 @@ def curved_data(mesh, exclude: frozenset = frozenset()) -> tuple[np.ndarray, np.
     edges = np.asarray(mesh.edges, np.int64)
     nn, nt, ne = nodes.shape[1], tets.shape[1], edges.shape[1]
     fp = (id(mesh), nn, nt, ne, float(nodes[:, :: max(1, nn // 97)].sum()), int(tets[:, :: max(1, nt // 97)].sum()),
-          tuple(sorted(exclude)))
+          tuple(sorted(exclude)), tuple(sorted(spread)))
     if fp in _CACHE:
         return _CACHE[fp]
     _CACHE.clear()
@@ -148,11 +166,11 @@ def curved_data(mesh, exclude: frozenset = frozenset()) -> tuple[np.ndarray, np.
     try:
         curves = [t for _, t in gmsh.model.getEntities(1) if _curved_type(1, t)]
         faces = [t for _, t in gmsh.model.getEntities(2) if _curved_type(2, t)]
-        # A curved surface that meets a port (or another face with surface integrals) stays straight as a
-        # whole: the port mode is solved on the straight facets, and a curved line behind a straight port
-        # would be an impedance step (coax, circular waveguide). Curves on such faces stay straight too.
+        # A curved surface that meets a wave port (a face in spread) stays straight as a whole: the port mode
+        # is solved on the straight facets, and a curved line behind a straight port would be an impedance
+        # step (coax, circular waveguide). Curves on such faces stay straight too.
         rim = set()
-        for t in exclude:
+        for t in spread:
             rim.update(abs(c) for _, c in gmsh.model.getBoundary([(2, int(t))], False, False, False))
         bnd = {f: {abs(c) for _, c in gmsh.model.getBoundary([(2, f)], False, False, False)} for f in faces}
         changed = True
@@ -233,7 +251,7 @@ def apply_curved(field, er: np.ndarray, ur: np.ndarray, conductor_tets: np.ndarr
     from emr.curlcurl_iso import _matrix_builder_iso
 
     mesh = field.mesh
-    cd = curved_data(mesh, exclude_tags(bcs))
+    cd = curved_data_bcs(mesh, bcs)
     if cd is None:
         return 0
     ctets, disp = cd

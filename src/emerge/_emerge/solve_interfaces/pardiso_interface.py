@@ -348,7 +348,7 @@ class PardisoInterface:
         scale = abs(A).max()
         return bool(abs(diff.data).max() <= rtol * scale)
 
-    def _configure(self, A: sparse.csr_matrix) -> None:
+    def _configure(self, A: sparse.csr_matrix, symbolic: bool = False) -> None:
         """Configures the solver for the appropriate data type (float/complex)
         and symmetry, as decided by the last `symbolic` call.
 
@@ -372,7 +372,12 @@ class PardisoInterface:
             self.IPARM[34] = 1   # zero-based indices
         else:
             self.MATRIX_TYPE = PARDISOMType.COMP_SYM_STRUCT if self.complex else PARDISOMType.REAL_SYM_STRUCT
-            self.IPARM[0] = 0    # MKL defaults, as before
+            # [Written by Claude] MKL's defaults are loaded once, in the symbolic phase: with IPARM[0] = 0
+            # MKL overwrites IPARM with its defaults (and sets IPARM[0] = 1). Doing that again before the
+            # numeric phase and the solve also clears IPARM[11], which _call_solver sets for CSC input, so
+            # a non-symmetric CSC matrix would be solved as A^T x = b.
+            if symbolic:
+                self.IPARM[0] = 0
             self.IPARM[34] = 0
 
     def _prepare_A(self, A: sparse.spmatrix) -> sparse.spmatrix:
@@ -424,7 +429,7 @@ class PardisoInterface:
         """
 
         self.symmetric = self._is_symmetric(A)
-        self._configure(A)
+        self._configure(A, symbolic=True)
         zerovec = np.zeros((A.shape[0], 1), dtype=A.dtype)
         _, error = self._call_solver(self._prepare_A(A), zerovec, phase=PARDISOPhase.SYMBOLIC_FACTOR)
         return error

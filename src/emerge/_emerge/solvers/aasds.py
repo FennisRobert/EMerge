@@ -62,7 +62,6 @@ class AASDSInterface:
         - Complex symmetric: factorization='lu', symmetry='nonsymmetric'
         - Real SPD: factorization='cholesky', symmetry='symmetric'
     """
-    _fact: type[Factorization] = Factorization
     def __init__(self, verbose=0):
         self._solver = None
         self._factorization = Factorization.LU
@@ -315,8 +314,8 @@ class SolverAASDS(Solver):
         self.initalized = True
 
     def configure(self):
-        self.aasds._factorization = self.aasds._fact(self.sym_fact)
-        self.aasds._usfactorization = self.aasds._fact(self.unsym_fact)
+        self.aasds._factorization = Factorization(self.sym_fact)
+        self.aasds._usfactorization = Factorization(self.unsym_fact)
 
     def reset(self) -> None:
         logger.trace(self.pre + " Resetting Apple Accelerate solver state")

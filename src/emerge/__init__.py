@@ -34,7 +34,7 @@ warnings.filterwarnings(
 
 import os
 
-__version__ = "3.0.0b9"
+__version__ = "3.0.0b10"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -63,7 +63,9 @@ if _is_main_process:
 import gmsh
 from ._emerge.simmodel import Simulation
 from ._emerge import bc
-from ._emerge.solver import SolverBicgstab, SolverGMRES, SolveRoutine, ReverseCuthillMckee, Sorter, SolverPardiso, SolverUMFPACK, SolverSuperLU, EMSolver
+from ._emerge.solvers import SolverBicgstab, SolverGMRES, ReverseCuthillMckee, Sorter, SolverPardiso, SolverUMFPACK, SolverSuperLU, EMSolver
+from . import solvers
+from ._emerge.solveroutine import SolveRoutine
 from ._emerge.cs import CoordinateSystem, CS, GCS, Plane, Axis, XAX, YAX, ZAX, XYPLANE, XZPLANE, YZPLANE, YXPLANE, ZXPLANE, ZYPLANE, cs, Anchor
 from ._emerge.coord import Line
 from ._emerge import geo

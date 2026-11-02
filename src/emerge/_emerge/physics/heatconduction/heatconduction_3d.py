@@ -19,7 +19,8 @@
 from ...mesher import Mesher
 from ...mesh3d import Mesh3D
 from ...elements.leg2 import Legrange2
-from ...solver import SolveRoutine, MatrixType, SolveReport, AutomaticRoutine
+from ...solveroutine import SolveRoutine, AutomaticRoutine
+from ...solvers import MatrixType, SolveReport
 from ...settings import Settings
 from ...simstate import SimState
 

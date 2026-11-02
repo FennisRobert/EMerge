@@ -17,7 +17,7 @@ def test_wg1():
     p2 = model.mw.bc.ModalPort(box.face("back"), 2)
     p1.align_modes(em.ZAX)
     p2.align_modes(em.ZAX)
-    model.set_solver(em.EMSolver.AASDS)
+    model.set_solver(em.solvers.AASDS)
     data = model.mw.run_sweep(False)
     glob = data.scalar.grid
 
@@ -50,7 +50,7 @@ def test_wg2():
     p2 = model.mw.bc.RectangularWaveguide(box.face("back"), 2)
     p1.align_modes(em.ZAX)
     p2.align_modes(em.ZAX)
-    model.set_solver(em.EMSolver.AASDS)
+    model.set_solver(em.solvers.AASDS)
     data = model.mw.run_sweep(False)
     glob = data.scalar.grid
 

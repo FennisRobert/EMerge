@@ -80,6 +80,9 @@ class PeriodicCell:
         self.included_faces: Selection | None = None
         self._bcs: list[Periodic] = []
         self._ports: list[BoundaryCondition] = []
+        # [Written by Claude] The scan angle (rad), also applied to BCs and ports created after set_scanangle
+        self.scan_theta: float = 0.0
+        self.scan_phi: float = 0.0
 
         self.__post_init__()
 
@@ -123,6 +126,7 @@ class PeriodicCell:
                 continue
             bcs.append(Periodic(f1_new, f2_new, tuple(a)))
         self._bcs = bcs
+        self._apply_scanangle()
         return bcs
     
     @property
@@ -150,8 +154,13 @@ class PeriodicCell:
         if degree:
             theta = theta*np.pi/180
             phi = phi*np.pi/180
+        self.scan_theta = theta
+        self.scan_phi = phi
+        self._apply_scanangle()
 
-        
+    def _apply_scanangle(self) -> None:
+        """Sets the scan angle on the periodic BCs and the Floquet ports of the cell."""
+        theta, phi = self.scan_theta, self.scan_phi
         ux = np.sin(theta)*np.cos(phi)
         uy = np.sin(theta)*np.sin(phi)
         uz = np.cos(theta)

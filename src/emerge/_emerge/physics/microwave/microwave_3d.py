@@ -24,7 +24,7 @@ from ...geometry import GeoSurface, GeoVolume
 from ...elements.femdata import FEMBasis
 from ...elements.nedelec2 import Nedelec2
 from ...elements.dofsets import DoFSet, ElementSpace
-from ...solver import SolveRoutine, AutomaticRoutine
+from ...solveroutine import SolveRoutine, AutomaticRoutine
 from ...system import _called_from_main_function
 from ...selection import FaceSelection
 from ...settings import Settings
@@ -36,13 +36,14 @@ from ..physics_generic import GenericPhysics3D
 
 from .bcs.boundary_condition_set import MWBoundaryConditionSet
 from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
-from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePortIH, UserDefinedPort
+from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePort, UserDefinedPort, FloquetPort, BoundaryConditionError
+from .bcs.portmode import PortMode
 from .bcs.mode_gauge import GAUGE_QUALITY_WARNING, canonical_mode_factor, port_face_quadrature
 
 from .microwave_data import MWData
 from .adaptive_sweep import AdaptiveFrequencySampler
 from .assembly.assembler import Assembler
-from .port_functions import compute_avg_power_flux, compute_port_power_flux, compute_cross_power_flux
+from .port_functions import compute_avg_power_flux, compute_port_power_flux, compute_cross_power_flux, compute_modal_power_flux
 from .simjob import SimJob, CNOSDDSimJob
 
 from emsutil import Material
@@ -59,6 +60,22 @@ import threading
 import time
 from collections import defaultdict
 import psutil
+
+
+# [Written by Claude]
+def _reuse_last_evaluation(fieldf: Callable) -> Callable:
+    """Wraps a field function so a call at the same points as the previous call returns the previous result."""
+    last: list = [None, None]
+
+    def wrapped(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> np.ndarray:
+        pts = last[0]
+        if pts is not None and pts[0].shape == np.shape(x) and all(np.array_equal(a, b) for a, b in zip(pts, (x, y, z))):
+            return last[1]
+        result = fieldf(x, y, z)
+        last[0], last[1] = (np.array(x, copy=True), np.array(y, copy=True), np.array(z, copy=True)), result
+        return result
+
+    return wrapped
 
 
 class SimulationError(Exception):
@@ -1011,6 +1028,21 @@ class Microwave3D(GenericPhysics3D):
             return V
         return U[:, :g].astype(np.complex128)
 
+    # [Written by Claude]
+    def _port_islands(self, port: ModalPort, sigtri: np.ndarray) -> tuple[list[int] | None, list[int] | None, bool]:
+        """The two TEM conductors of a port (_find_two_pec_islands), searched once per port and mesh.
+
+        Returns:
+            tuple: The node lists of the two conductors (None if not found), and whether this call did the search
+        """
+        key = (id(self.mesh), self.mesh.n_tris)
+        cache = getattr(port, "_island_cache", None)
+        if cache is not None and cache[0] == key:
+            return cache[1], cache[2], False
+        g1, g2 = self._find_two_pec_islands(port, sigtri=sigtri)
+        port._island_cache = (key, g1, g2)
+        return g1, g2, True
+
     def _find_two_pec_islands(
         self, port: ModalPort, sigtri: np.ndarray
     ) -> tuple[list[int], list[int]]:
@@ -1106,9 +1138,22 @@ class Microwave3D(GenericPhysics3D):
         Args:
             freq (float): The simulation frequency
         """
+        # [Written by Claude] Floquet ports: select the Floquet modes at the highest frequency and scan angle
+        for bc in self.bc.oftype(FloquetPort):
+            bc._prepare(2 * np.pi * max(max(self.frequencies), freq) / 299792458, self.mesh)
         for bc in self.bc.oftype(ModalPort):
-            # If there is a port mode (at least one) and the port does not have mixed materials. No new analysis is needed
-            if not bc.mixed_materials and bc.initialized:
+            if isinstance(bc, WavePort):
+                # [Written by Claude] a fixed set of modes, followed over the frequency range
+                self._wave_port_modes(bc, freq)
+                continue
+            # The modes of a port with one material and only TEM modes hold at every frequency. All other ports
+            # are solved again. [Written by Claude] This skipped every port without mixed_materials, also
+            # TE/TM modes, whose β and power normalization do change with frequency.
+            if not bc.mixed_materials and bc.initialized and bc._frequency_scalable:
+                continue
+            # Modes computed at this frequency already (for example by a modal_analysis call of the user)
+            if not bc.mixed_materials and (2 * np.pi * freq / 299792458) in bc.available_modes:
+                self._check_modal_port_count(bc, freq)
                 continue
 
             if bc.forced_modetype == "TEM":
@@ -1116,10 +1161,264 @@ class Microwave3D(GenericPhysics3D):
             else:
                 TEM = False
             self.modal_analysis(
-                bc, bc._desired_number_of_modes, direct=False, freq=freq, TEM=TEM
+                bc, max(bc._desired_number_of_modes, bc._nmodes_solved), direct=False, freq=freq, TEM=TEM
             )
 
             bc._check_mode_betas()
+            self._check_modal_port_count(bc, freq)
+
+    # [Written by Claude]
+    def _check_modal_port_count(self, port: ModalPort, freq: float) -> None:
+        """Raises an error if a ModalPort has fewer propagating modes at freq than it has S-matrix indices.
+
+        A ModalPort keeps only propagating modes. Without this check the missing modes surface after the whole
+        sweep as a division by zero in the power normalization.
+
+        Args:
+            port (ModalPort): The port
+            freq (float): The frequency of the modal analysis
+        """
+        k0 = 2 * np.pi * freq / 299792458
+        found = len(port.available_modes.get(k0, []))
+        requested = port._desired_number_of_modes
+        if found >= requested:
+            return
+        raise BoundaryConditionError(
+            f"ModalPort {port.port_number}: {found} propagating mode(s) found at {freq / 1e9:.4g} GHz, but "
+            f"number_of_modes={requested}. A ModalPort only supports propagating modes. Lower number_of_modes, "
+            f"or use a WavePort, which also includes modes below cutoff."
+        )
+
+    # [Written by Claude]
+    def _wave_port_modes(self, port: WavePort, freq: float) -> None:
+        """Make sure a WavePort has its modes at freq.
+
+        The set of modes is fixed at the highest frequency (the number_of_modes modes with the largest β², see
+        _select_wave_port_modes). From there the modes are followed through the sweep frequencies down (or up)
+        to freq, one frequency at a time (_track_wave_port_step), so every S-matrix index belongs to the same
+        physical mode at every frequency, also where the mode is below cutoff.
+
+        Args:
+            port (WavePort): The wave port
+            freq (float): The frequency at which the modes are needed
+        """
+        k0 = 2 * np.pi * freq / 299792458
+        if port._tracks and k0 in port.available_modes:
+            return
+        if not port._tracks:
+            port.available_modes = dict()
+            self._select_wave_port_modes(port, max(max(self.frequencies), freq))
+        if port._scalable:
+            # A homogeneous port face: the modes of the highest frequency hold at every frequency
+            if k0 not in port.available_modes:
+                self._scale_wave_port_modes(port, k0, freq)
+            return
+
+        def kof(f: float) -> float:
+            return 2 * np.pi * f / 299792458
+
+        done = port.solved_frequencies
+        f_start = min(done, key=lambda f: abs(f - freq))
+        lo, hi = sorted((f_start, freq))
+        path = sorted(
+            {f for f in self.frequencies if lo < f < hi and kof(f) not in port.available_modes} | {freq},
+            key=lambda f: abs(f - f_start),
+        )
+        for f in path:
+            if kof(f) not in port.available_modes:
+                self._track_wave_port_step(port, f)
+
+    # [Written by Claude]
+    def _select_wave_port_modes(self, port: WavePort, freq: float) -> None:
+        """Solves the modes of a WavePort at freq (the highest frequency) and lets the port fix its mode set.
+
+        The eigenproblem is solved for more modes, and further below in β², until the candidates contain
+        number_of_modes modes, or all propagating modes plus an evanescent one.
+        """
+        k0 = 2 * np.pi * freq / 299792458
+        N = port._desired_number_of_modes
+        shifts = [np.inf]
+        for attempt in range(8):
+            nreq = (8 if port._all_propagating else N) + 4 + 4 * attempt
+            self.modal_analysis(port, nreq, direct=False, freq=freq, neff2_shifts=shifts)
+            if port._has_mode_set(k0):
+                break
+            # Search below the modes found so far: further evanescent modes
+            shifts = shifts + [-(0.5 + 1.5 * attempt) * port._ermur_max]
+        nfound = len(port.available_modes.get(k0, []))
+        if nfound < (1 if port._all_propagating else N):
+            raise SimulationError(f"{port}: found {nfound} port modes at {freq / 1e9:.3f} GHz, {N} were requested.")
+        port._scalable = self._wave_port_scalable(port) and self._split_te_tm_modes(port, k0)
+        logger.debug(f"{port}: modes {'scaled from' if port._scalable else 'solved at every frequency, tracked from'} "
+                     f"{freq / 1e9:.3f} GHz")
+        port._fix_mode_set(k0)
+
+    # [Written by Claude]
+    def _track_wave_port_step(self, port: WavePort, freq: float) -> None:
+        """Solves the modes of a WavePort at freq around the β² the port predicts from the nearest computed
+        frequencies, and lets the port match them to its tracked modes (WavePort._continue_tracks)."""
+        N = len(port._tracks)
+        k0 = 2 * np.pi * freq / 299792458
+        preds = port._predict_beta2(k0)
+        self.modal_analysis(port, 2 * N + 4, direct=False, freq=freq, neff2_shifts=list(np.real(preds) / k0**2))
+        if len(port.available_modes.get(k0, [])) < N:
+            raise SimulationError(f"{port}: lost track of the port modes at {freq / 1e9:.3f} GHz.")
+        port._continue_tracks(k0, preds)
+
+    # [Written by Claude]
+    def _wave_port_scalable(self, port: WavePort) -> bool:
+        """Whether the modes of a WavePort hold at every frequency: a port face of one isotropic, lossless
+        (σ = 0) and non-dispersive material. Then β² = εr·μr·k0² - kc² and the mode shapes do not change.
+
+        A constant loss tangent keeps εr·μr frequency independent and is allowed. The walls of the port face
+        are PEC in the port eigenproblem at every frequency, also when they carry a surface impedance.
+        """
+        if not port._homogeneous:
+            return False
+        tris = self.mesh.get_triangles(port.tags)
+        fmin, fmax = min(self.frequencies), max(self.frequencies)
+        mats = [self._tri_materials(f) for f in ((fmin, fmax) if fmin < fmax else (fmax,))]
+        if any(np.any(np.abs(cond[tris]) > 0) for _, _, cond, _ in mats):
+            return False
+        if len(mats) == 2:
+            (er1, ur1, _, _), (er2, ur2, _, _) = mats
+            if not (np.allclose(er1[:, :, tris], er2[:, :, tris]) and np.allclose(ur1[:, :, tris], ur2[:, :, tris])):
+                return False
+        return True
+
+    # [Written by Claude]
+    def _make_wave_port_mode(
+        self, port: WavePort, field: np.ndarray, beta: complex, k0: float, freq: float, modetype: str
+    ) -> PortMode:
+        """A WavePort mode from its (transverse E, E_z) coefficients on the surface basis of the port solve,
+        with the E and H functions and the normalization |1/2 ∬ (e × h)·n dS| = 1."""
+        nlf, urp, normal = port._mode_basis
+        portfE = nlf.interpolate_Ef(field)
+        portfH = nlf.interpolate_Hf(field, k0, urp, beta)
+        mode = PortMode(field, portfE, portfH, k0, beta, freq=freq)
+        mode.modetype = modetype
+        mode._nxy = nlf.n_xy
+        mode.normalize_power(np.abs(compute_modal_power_flux(nlf, portfE, portfH, normal)))
+        return mode
+
+    # [Written by Claude]
+    def _split_te_tm_modes(self, port: WavePort, k0: float) -> bool:
+        """Makes every candidate mode of a homogeneous port pure TE (E_z = 0), TM (H_z = 0) or TEM.
+
+        The eigen solver returns an arbitrary basis of a degenerate group (TE11/TM11 of a rectangular guide).
+        The TE and TM parts of such a mix scale differently with frequency (E_t of a TM mode is proportional
+        to β), so each group is split into its TE and its TM combinations, and modes of one type are made
+        orthogonal in ∬ (e_m × h_n)·n dS.
+
+        Returns:
+            bool: False if a mode is not of a pure type (the modes are then solved at every frequency)
+        """
+        nlf, urp, normal = port._mode_basis
+        kmax2 = port._ermur_max * k0**2
+        centers = self.mesh.tri_centers[:, self.mesh.get_triangles(port.tags)]
+
+        def samples(mode, which):
+            if which == "Ez":
+                v = mode.E_function.calcEz(*centers)
+            elif which == "Exy":
+                v = mode.E_function.calcExy(*centers)
+            elif which == "Hz":
+                v = mode.H_function.calcHz(*centers)
+            else:
+                v = mode.H_function.calcHxy(*centers)
+            return v.ravel()
+
+        def ratio(mode, part, whole):
+            return np.linalg.norm(samples(mode, part)) / np.linalg.norm(samples(mode, whole))
+
+        def kind(mode):
+            te, tm = ratio(mode, "Ez", "Exy") < 1e-2, ratio(mode, "Hz", "Hxy") < 1e-2
+            return "TEM" if te and tm else "TE" if te else "TM" if tm else None
+
+        def small_combinations(group, part, whole):
+            """Combinations c of the group, orthonormal in the whole-norm, with |part·c| < 1e-2 |whole·c|."""
+            W = np.array([samples(m, whole) for m in group]).T
+            P = np.array([samples(m, part) for m in group]).T
+            _, R = np.linalg.qr(W)
+            _, sv, Vh = np.linalg.svd(P @ np.linalg.inv(R))
+            sv = np.concatenate([sv, np.zeros(len(group) - len(sv))])
+            return [np.linalg.solve(R, Vh[k].conj()) for k in range(len(group)) if sv[k] < 1e-2]
+
+        def real_basis(fields, beta, nxy):
+            """A basis of the span of fields of real-shaped modes. With the E_z block multiplied by -jβ/|β|
+            (E_t of a TM mode is -jβ/kc² ∇E_z) a TE or TM mode is real up to one phase, so the span of the real
+            and imaginary parts of the fields has the dimension of the subspace and a real basis."""
+            rot = -1j * beta / abs(beta)
+            T = np.array(fields).T.copy()
+            T[nxy:] *= rot
+            U, sv, _ = np.linalg.svd(np.concatenate([T.real, T.imag], axis=1), full_matrices=False)
+            B = U[:, : len(fields)].astype(complex)
+            B[nxy:] /= rot
+            return [B[:, k] for k in range(len(fields))]
+
+        cands = sorted(port.available_modes.get(k0, []), key=lambda m: -np.real(m.beta**2))
+        groups: list[list[PortMode]] = []
+        for m in cands:
+            if groups and abs(m.beta**2 - groups[-1][0].beta**2) < 1e-3 * kmax2:
+                groups[-1].append(m)
+            else:
+                groups.append([m])
+
+        pure: list[PortMode] = []
+        for group in groups:
+            kinds = [kind(m) for m in group]
+            if all(k is not None for k in kinds):
+                # Every mode is of one type already: keep the basis of the eigen solver
+                for m, k in zip(group, kinds):
+                    m.modetype = k
+                pure += group
+                continue
+            # A mix of degenerate TE and TM modes: split it into its TE and its TM combinations
+            te = small_combinations(group, "Ez", "Exy")
+            tm = small_combinations(group, "Hz", "Hxy")
+            if len(te) + len(tm) != len(group):
+                logger.debug(f"{port}: a mode with β = {complex(group[0].beta):.2f} is not pure TE/TM/TEM.")
+                return False
+            beta = np.emath.sqrt(np.mean([m.beta**2 for m in group]))
+            beta = np.conj(beta) if np.imag(beta) > 0 else beta
+            F = np.array([m.modefield * m.E_function.constant for m in group]).T
+            nxy = group[0]._nxy
+            for modetype, combos in (("TE", te), ("TM", tm)):
+                made: list[PortMode] = []
+                if not combos:
+                    continue
+                for field in real_basis([F @ c for c in combos], beta, nxy):
+                    # Orthogonal to the modes of this type made so far, in ∬ (e_m × h_n)·n dS
+                    for prev in made:
+                        mode = self._make_wave_port_mode(port, field, beta, k0, prev.freq, modetype)
+                        overlap = compute_modal_power_flux(nlf, prev.E_function, mode.H_function, normal) / mode.norm_factor
+                        self_product = compute_modal_power_flux(nlf, prev.E_function, prev.H_function, normal)
+                        field = field - overlap / self_product * prev.modefield * prev.E_function.constant
+                    made.append(self._make_wave_port_mode(port, field, beta, k0, group[0].freq, modetype))
+                pure += made
+        port.available_modes[k0] = pure
+        return True
+
+    # [Written by Claude]
+    def _scale_wave_port_modes(self, port: WavePort, k0: float, freq: float) -> None:
+        """The modes of a homogeneous WavePort at k0 from its modes at the highest frequency.
+
+        β² = β_ref² + εr·μr (k0² - k0_ref²). TE and TEM modes keep their fields; the transverse E of a TM
+        mode scales with β (E_t = -jβ/kc² ∇_t E_z). The modes are normalized again at k0.
+        """
+        k_ref = port._k0_ref
+        modes = []
+        for ref in port.available_modes[k_ref]:
+            beta = np.emath.sqrt(ref.beta**2 + port._ermur * (k0**2 - k_ref**2))
+            beta = np.conj(beta) if np.imag(beta) > 0 else beta
+            field = ref.modefield * ref.E_function.constant
+            if ref.modetype == "TM":
+                field = field.copy()
+                field[: ref._nxy] *= beta / ref.beta
+            mode = self._make_wave_port_mode(port, field, beta, k0, freq, ref.modetype)
+            mode.Z0 = ref.Z0
+            modes.append(mode)
+        port.available_modes[k0] = modes
 
     ############################################################
     #             SHARED JOB DISPATCH / ORCHESTRATION          #
@@ -1328,66 +1627,13 @@ class Microwave3D(GenericPhysics3D):
     #                   MAIN SIMULATION FUNCTIONS              #
     ############################################################
 
-    def modal_analysis(
-        self,
-        port: ModalPort,
-        nmodes: int = 6,
-        direct: bool = True,
-        TEM: bool = False,
-        target_kz: float | None = None,
-        target_neff: float | None = None,
-        freq: float | None = None,
-    ) -> None:
-        """Execute a modal analysis on a given ModalPort boundary condition.
+    def _tri_materials(self, freq: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """The material properties at freq on every surface triangle, taken from an adjacent tetrahedron.
 
-        Args:
-            port (ModalPort): The port object to execute the analysis for.
-            nmodes (int, optional): The number of modes to solve for. Defaults to 6.
-            direct (bool, optional): Whether to use the direct solver (LAPACK) if True. Otherwise it uses the iterative
-                ARPACK solver, which requires an estimate of the propagation constant and is faster for a large number
-                of degrees of freedom. Defaults to True.
-            TEM (bool, optional): Whether to estimate the propagation constant assuming its a TEM transmission line.
-                Defaults to False.
-            target_kz (float | None, optional): The expected propagation constant to find a mode for (direct = False).
-                Defaults to None.
-            target_neff (float | None, optional): The expected effective mode index defined as kz/k0 (1.0 = free space,
-                <1 = TE/TM, >1 = slow waves). Defaults to None.
-            freq (float | None, optional): The desired frequency at which the mode is solved. If None then it uses the
-                lowest frequency of the provided range. Defaults to None.
+        Returns:
+            tuple: εr (with the loss tangent) and μr as (3, 3, n_tris), the conductivity (n_tris,) and the void
+            flag (n_tets,)
         """
-        T0 = time.time()
-        logger.info(f"Port {port.port_number}: Starting Mode Analysis for port {port}.")
-
-        # First check if the boundary conditions are initialized.
-
-        if self.bc._initialized_with_defaults is False:
-            raise SimulationError(
-                "Cannot run a modal analysis because no boundary conditions have been assigned."
-            )
-
-        # Initialize the FEM field and boundary condition data
-        self._check_meshed()
-        self._initialize_field()
-        self._initialize_bc_data()
-
-        if self.basis is None:
-            raise SimulationError(
-                "Cannot proceed, the current basis class is undefined."
-            )
-
-        logger.debug(" - retreiving material properties.")
-
-        # If no simulation frequency is provided, use the lowest frequency
-        if freq is None:
-            freq = self.frequencies[0]
-
-        # Materials is now a list of materials and in the materials themselves
-        # They know what values are assigned to which index. This is not uniform
-        # because coordinate dependent material properties/materials are possible.
-
-        # Er, Tand, ur, and conductivity parameters are always 3 by 3 full
-        # material property tensors per tetrahedron.
-        # They are assumed constant within each tetrahedron.
         self._generate_material_assignment()
 
         ertet = np.zeros((3, 3, self.mesh.n_tets), dtype=np.complex128)
@@ -1400,10 +1646,6 @@ class Microwave3D(GenericPhysics3D):
             if geo.properties.get(VoidAttribute):
                 void[self.mesh.get_tetrahedra(geo.tags)] = 1
 
-        # Align the port z-axis with the inward normal (into the non-void side), computed once for this analysis.
-        inward_normal = self.mesh.inward_normal(port.tags, exclude_tets=void == 1)
-        if sum(port.cs.zax.np * inward_normal) < 0:
-            port.cs.flip_z()
         # Evaluating the relavant function er, tand etc on these functions automatically
         # only assigned these material values to those arrays where they are valid.
         # The materials know (high coupling, I know) which tet-indices they are assigned to.
@@ -1435,7 +1677,81 @@ class Microwave3D(GenericPhysics3D):
             er[:, :, itri] = ertet[:, :, itet]
             ur[:, :, itri] = urtet[:, :, itet]
             cond[itri] = condtet[0, 0, itet]
-            
+        return er, ur, cond, void
+
+    def modal_analysis(
+        self,
+        port: ModalPort,
+        nmodes: int = 6,
+        direct: bool = True,
+        TEM: bool = False,
+        target_kz: float | None = None,
+        target_neff: float | None = None,
+        freq: float | None = None,
+        neff2_shifts: list[float] | None = None,
+    ) -> None:
+        """Execute a modal analysis on a given ModalPort boundary condition.
+
+        Args:
+            port (ModalPort): The port object to execute the analysis for.
+            nmodes (int, optional): The number of modes to solve for. Defaults to 6.
+            direct (bool, optional): Whether to use the direct solver (LAPACK) if True. Otherwise it uses the iterative
+                ARPACK solver, which requires an estimate of the propagation constant and is faster for a large number
+                of degrees of freedom. Defaults to True.
+            TEM (bool, optional): Whether to estimate the propagation constant assuming its a TEM transmission line.
+                Defaults to False.
+            target_kz (float | None, optional): The expected propagation constant to find a mode for (direct = False).
+                Defaults to None.
+            target_neff (float | None, optional): The expected effective mode index defined as kz/k0 (1.0 = free space,
+                <1 = TE/TM, >1 = slow waves). Defaults to None.
+            freq (float | None, optional): The desired frequency at which the mode is solved. If None then it uses the
+                lowest frequency of the provided range. Defaults to None.
+            neff2_shifts (list[float] | None, optional): Search for the modes closest to these values of
+                neff² = β²/k0² (negative for evanescent modes, np.inf for the largest εr·μr of the port face)
+                instead of around target_kz. Evanescent modes are kept. Used by the mode tracking of WavePort.
+                Defaults to None.
+        """
+        T0 = time.time()
+        logger.info(f"Port {port.port_number}: Starting Mode Analysis for port {port}.")
+        # [Written by Claude] The number of modes to solve for when the modes are recomputed at other frequencies
+        port._nmodes_solved = max(port._nmodes_solved, nmodes) if neff2_shifts is None else port._nmodes_solved
+
+        # First check if the boundary conditions are initialized.
+
+        if self.bc._initialized_with_defaults is False:
+            raise SimulationError(
+                "Cannot run a modal analysis because no boundary conditions have been assigned."
+            )
+
+        # Initialize the FEM field and boundary condition data
+        self._check_meshed()
+        self._initialize_field()
+        self._initialize_bc_data()
+
+        if self.basis is None:
+            raise SimulationError(
+                "Cannot proceed, the current basis class is undefined."
+            )
+
+        logger.debug(" - retreiving material properties.")
+
+        # If no simulation frequency is provided, use the lowest frequency
+        if freq is None:
+            freq = self.frequencies[0]
+
+        # Materials is now a list of materials and in the materials themselves
+        # They know what values are assigned to which index. This is not uniform
+        # because coordinate dependent material properties/materials are possible.
+
+        # Er, Tand, ur, and conductivity parameters are always 3 by 3 full
+        # material property tensors per tetrahedron.
+        # They are assumed constant within each tetrahedron.
+        er, ur, cond, void = self._tri_materials(freq)
+
+        # Align the port z-axis with the inward normal (into the non-void side), computed once for this analysis.
+        inward_normal = self.mesh.inward_normal(port.tags, exclude_tets=void == 1)
+        if sum(port.cs.zax.np * inward_normal) < 0:
+            port.cs.flip_z()
 
         # A list of all the triangles that are part of the Port.
         itri_port = self.mesh.get_triangles(port.tags)
@@ -1452,6 +1768,18 @@ class Microwave3D(GenericPhysics3D):
         ermin = np.min(er[:, :, itri_port].flatten())
         urmin = np.min(ur[:, :, itri_port].flatten())
 
+        # [Written by Claude] A port face of one isotropic material (and one conductivity) has pure TE/TM/TEM modes
+        # with β² = εr·μr·k0² - kc².
+        er_iso = np.allclose(erp, erp[0, 0][None, None, :] * np.eye(3)[:, :, None])
+        ur_iso = np.allclose(urp, urp[0, 0][None, None, :] * np.eye(3)[:, :, None])
+        port._homogeneous = bool(
+            er_iso and ur_iso
+            and np.allclose(erp[0, 0], erp[0, 0, 0]) and np.allclose(urp[0, 0], urp[0, 0, 0])
+            and np.allclose(cond[itri_port], cond[itri_port][0])
+        )
+        port._ermur = complex(np.mean(erp[0, 0] * urp[0, 0]))
+        port._ermur_max = float(np.real(ermax * urmax))
+
         # Compute k0
         k0 = 2 * np.pi * freq / 299792458
 
@@ -1463,6 +1791,10 @@ class Microwave3D(GenericPhysics3D):
         Amatrix, Bmatrix, solve_ids, nlf = self.assembler.assemble_bma_matrices(
             self.basis, er, ur, cond, k0, port, self.bc, self.dofset_em
         )
+
+        if isinstance(port, WavePort):
+            # [Written by Claude] to rebuild the modes of a homogeneous port at other frequencies
+            port._mode_basis = (nlf, ur[:, :, itri_port], inward_normal)
 
         logger.debug(f"Total of {Amatrix.shape[0]} Degrees of freedom.")
         logger.debug(f"Applied frequency: {freq / 1e9:.2f}GHz")
@@ -1489,10 +1821,20 @@ class Microwave3D(GenericPhysics3D):
         # Only look at the real value
         target_kz = target_kz.real
 
-        # Execute a boundary mode eigenvalue calculation.
-        eigen_values, eigen_modes, report = self.solveroutine.eig_boundary(
-            Amatrix, Bmatrix, solve_ids, nmodes, direct, target_kz, sign=-1
-        )
+        # Execute a boundary mode eigenvalue calculation (λ = -β²). [Written by Claude] Without neff2_shifts: the
+        # propagating modes closest to target_kz. With them: the modes closest to the given β², evanescent modes
+        # included (the mode tracking of WavePort).
+        kmax2 = (k0**2 * ermax * urmax).real
+        if neff2_shifts is None:
+            eigen_values, eigen_modes, report = self.solveroutine.eig_boundary(
+                Amatrix, Bmatrix, solve_ids, nmodes, [-(target_kz**2)], kmax2, direct, keep_evanescent=False,
+            )
+        else:
+            lam_shifts = [-(kmax2 if np.isinf(n2) else n2 * k0**2) for n2 in neff2_shifts]
+            eigen_values, eigen_modes, report = self.solveroutine.eig_boundary(
+                Amatrix, Bmatrix, solve_ids, nmodes, lam_shifts, kmax2, direct,
+                descending=bool(np.any(np.isinf(neff2_shifts))),
+            )
 
         logger.debug(f"Eigenvalues: {np.sqrt(-eigen_values)} rad/m")
 
@@ -1529,6 +1871,10 @@ class Microwave3D(GenericPhysics3D):
 
             # Compute the out of plane propagation constant
             beta = np.emath.sqrt(-eigen_values[i])
+            # [Written by Claude] The branch with Im(β) <= 0: an evanescent mode (β = -jα) decays along its
+            # direction of propagation, as a lossy mode does.
+            if np.imag(beta) > 0:
+                beta = np.conj(beta)
             # beta = min(k0 * np.sqrt(ermax * urmax), beta_base)
 
             # The eigenproblem is solved for e_t = beta E_t and e_z = -j E_z (fields ~ exp(-j beta z)),
@@ -1570,7 +1916,8 @@ class Microwave3D(GenericPhysics3D):
                 # TEM ports with terminals are still flipped to a positive voltage further below.
                 E_gauge = nlf.interpolate_Ef(Emode)(*gauge_quad.points)
                 factor, quality = canonical_mode_factor(E_gauge, gauge_quad)
-                if quality < GAUGE_QUALITY_WARNING:
+                # [Written by Claude] WavePort aligns the phase of its modes by tracking them over frequency
+                if quality < GAUGE_QUALITY_WARNING and not isinstance(port, WavePort):
                     logger.warning(
                         f"{port}: mode {i + 1} has a very small overlap with the gauge test field "
                         f"(quality {quality:.1e}); its sign may not be consistent between meshes. "
@@ -1640,17 +1987,37 @@ class Microwave3D(GenericPhysics3D):
                 continue
 
             mode.modetype = mode_type
+            mode._nxy = nlf.n_xy
+            evanescent = abs(np.imag(beta)) > abs(np.real(beta))
 
             # Port power normalization. Rescaling or flipping the mode cannot change the sign of its power,
             # so a non-positive flux into the model means E and H (or the normal) are inconsistent.
-            power = compute_avg_power_flux(nlf, portfE, portfH, inward_normal)
-            logger.debug(f".. Port power flux = {power:.3e} [W], inward normal = {inward_normal}")
-            if power <= 0.0:
-                logger.error(
-                    f"{port}: mode {i + 1} ({mode_type}, beta = {beta:.3f} rad/m) carries {power:.3e} W "
-                    f"along the inward normal {inward_normal}. Its fields or the port orientation are inconsistent."
-                )
-            mode.normalize_power(np.abs(power))
+            if isinstance(port, WavePort):
+                # [Written by Claude] |1/2 ∬ (e × h)·n dS| = 1, which is the power of a lossless propagating mode and
+                # also normalizes evanescent modes (whose power is 0). It is the normalization of the projection
+                # WavePort uses for the S-parameters.
+                power = compute_modal_power_flux(nlf, portfE, portfH, inward_normal)
+                logger.debug(f".. Port mode flux = {power:.3e} [W], beta = {beta:.3f}, inward normal = {inward_normal}")
+                if abs(np.imag(beta)) < 1e-3 * abs(np.real(beta)):  # clearly propagating
+                    p_real = compute_avg_power_flux(nlf, portfE, portfH, inward_normal)
+                    if p_real <= 0.0:
+                        logger.error(
+                            f"{port}: mode {i + 1} ({mode_type}, beta = {beta:.3f} rad/m) carries {p_real:.3e} W "
+                            f"along the inward normal {inward_normal}. Its fields or the port orientation are inconsistent."
+                        )
+                mode.normalize_power(np.abs(power))
+                if evanescent:
+                    # No characteristic impedance for a mode without power
+                    continue
+            else:
+                power = compute_avg_power_flux(nlf, portfE, portfH, inward_normal)
+                logger.debug(f".. Port power flux = {power:.3e} [W], inward normal = {inward_normal}")
+                if power <= 0.0:
+                    logger.error(
+                        f"{port}: mode {i + 1} ({mode_type}, beta = {beta:.3f} rad/m) carries {power:.3e} W "
+                        f"along the inward normal {inward_normal}. Its fields or the port orientation are inconsistent."
+                    )
+                mode.normalize_power(np.abs(power))
             # After normalization the mode carries 1 W.
             power = 1.0
 
@@ -1673,13 +2040,12 @@ class Microwave3D(GenericPhysics3D):
                     if len(port.voltage_integration_line) > 0:
                         line = port.voltage_integration_line[0]
                     else:
-                        island_group_1, island_group_2 = self._find_two_pec_islands(
-                            port, sigtri=cond
-                        )
+                        island_group_1, island_group_2, fresh = self._port_islands(port, cond)
                         if island_group_1 is None or island_group_2 is None:
-                            logger.warning(
-                                "Skipping characteristic impedance calculation."
-                            )
+                            if fresh:
+                                logger.warning(
+                                    "Skipping characteristic impedance calculation."
+                                )
                             continue
 
                         nodes1 = self.mesh.nodes[:, island_group_1]
@@ -1701,13 +2067,14 @@ class Microwave3D(GenericPhysics3D):
                         intline = port.current_integration_line[0]
                     else:
                         if island_group_1 is None or island_group_2 is None:
-                            island_group_1, island_group_2 = self._find_two_pec_islands(
-                                port, sigtri=cond
-                            )
+                            island_group_1, island_group_2, fresh = self._port_islands(port, cond)
+                        else:
+                            fresh = False
                         if island_group_1 is None or island_group_2 is None:
-                            logger.warning(
-                                "Skipping characteristic impedance calculation."
-                            )
+                            if fresh:
+                                logger.warning(
+                                    "Skipping characteristic impedance calculation."
+                                )
                             continue
                         path = construct_pec_contour(
                             self.mesh,
@@ -1917,7 +2284,7 @@ class Microwave3D(GenericPhysics3D):
 
         logger.info('Starting domain decomposition routine.')
 
-        from ...solver_dd import Factorization
+        from ...solvers.domain_decomposition import Factorization
 
         As = [cnosdata.get_matrix(i) for i in range(cnosdata.n_doms)]
         Zs = [cnosdata.get_zmat(i) for i in range(cnosdata.n_intf)]
@@ -2476,6 +2843,10 @@ class Microwave3D(GenericPhysics3D):
             if isinstance(active_port, (LumpedPort,UserDefinedPort) ):
                 p_constants[smat_index] = 1.0
                 continue
+            if active_port._self_normalized:
+                # [Written by Claude] normalized at every frequency (by the modal analysis or analytically)
+                p_constants[smat_index] = 1.0
+                continue
 
 
             inward_normal = self.mesh.inward_normal(active_port.tags)
@@ -2596,13 +2967,16 @@ class Microwave3D(GenericPhysics3D):
 
                 port_tets = self.mesh.get_face_tets(active_port.tags)
 
+                port_beta = active_port.mode_beta(k0, mode_nr_j)
+                port_Z0 = active_port.mode_Z0(k0, mode_nr_j)
+
                 fielddata.add_port_properties(
                     active_port.port_number,
                     mode_number=mode_nr_j,
                     smat_index=smat_index_j,
                     k0=k0,
-                    beta=active_port.get_beta(k0),
-                    Z0=active_port.portZ0(k0),
+                    beta=port_beta,
+                    Z0=port_Z0,
                     Pout=active_port.power,
                 )
 
@@ -2611,14 +2985,18 @@ class Microwave3D(GenericPhysics3D):
                     mode_number=mode_nr_j,
                     smat_index=smat_index_j,
                     k0=k0,
-                    beta=active_port.get_beta(k0),
-                    Z0=active_port.portZ0(k0),
+                    beta=port_beta,
+                    Z0=port_Z0,
                     Pout=active_port.power,
                 )
 
                 solution = job._solutions_dict[smat_index_j]
                 fielddata._fields = job._solutions_dict
                 fielddata.basis = self.basis
+
+                # [Written by Claude] The solution field on a port face is the same for all modes of the port:
+                # interpolate it once per port (and set of integration points), not once per mode pair.
+                port_fields: dict[int, Callable] = {}
 
                 for passive_port, smat_index_i, mode_nr_i in self.bc.iter_port_modes():
                     if smat_index_i == smat_index_j:
@@ -2628,8 +3006,12 @@ class Microwave3D(GenericPhysics3D):
                         active = False
                         func = "F"
 
-                    port_tets = self.mesh.get_face_tets(passive_port.tags)
-                    fieldf = self.basis.interpolate_Ef(solution, tetids=port_tets)
+                    if id(passive_port) not in port_fields:
+                        port_tets = self.mesh.get_face_tets(passive_port.tags)
+                        port_fields[id(passive_port)] = _reuse_last_evaluation(
+                            self.basis.interpolate_Ef(solution, tetids=port_tets)
+                        )
+                    fieldf = port_fields[id(passive_port)]
                     tris = mesh.get_triangles(passive_port.tags)
                     tri_vertices = mesh.tris[:, tris]
                     EdotF_pas, EdotE_pas = self._compute_s_data(
@@ -2664,14 +3046,24 @@ class Microwave3D(GenericPhysics3D):
             if recip_corr:
                 scalardata.Sp = (scalardata.Sp + scalardata.Sp.T) / 2
 
+            # [Written by Claude] Power conservation only holds between propagating modes: the S-parameters of
+            # evanescent WavePort modes are amplitude ratios and may exceed 1, so they are left out of the caps.
+            prop = [
+                port.is_propagating(k0, mode_nr)
+                for port, _, mode_nr in self.bc.iter_port_modes()
+            ]
             if col_corr:
                 for j in range(N):
+                    if not prop[j]:
+                        continue
                     scalardata.Sp[:, j] = scalardata.Sp[:, j] / max(
-                        1.0, np.sum(np.abs(scalardata.Sp[:, j]) ** 2)
+                        1.0, np.sum(np.abs(scalardata.Sp[prop, j]) ** 2)
                     )
 
             if single_corr:
                 for i, j in product(range(N), range(N)):
+                    if not (prop[i] and prop[j]):
+                        continue
                     scalardata.Sp[i, j] = scalardata.Sp[i, j] / max(
                         1.0, np.abs(scalardata.Sp[i, j])
                     )
@@ -2775,6 +3167,12 @@ class Microwave3D(GenericPhysics3D):
             tuple[complex, complex]: _description_
         """
         from .sparam import sparam_field_power, sparam_mode_power
+
+        if not bc.v_integration:
+            # [Written by Claude] ports with their own mode projection (WavePort, FloquetPort)
+            projection = bc.sparam_projection(self.mesh.nodes, tri_vertices, mode_nr, active, k0, fieldfunction)
+            if projection is not None:
+                return projection
 
         if bc.v_integration:
             if bc.voltage_integration_line is None:

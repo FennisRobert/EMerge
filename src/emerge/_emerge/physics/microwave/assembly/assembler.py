@@ -25,7 +25,8 @@ from ..bcs import (
     PortBC,
     MWBoundaryConditionSet,
     SurfaceImpedance,
-    WavePortIH,
+    WavePort,
+    FloquetPort,
     Void,
 )
 from ...material_assignment import MaterialAssignment
@@ -476,11 +477,9 @@ class Assembler:
         Excitation vectors are accumulated in place into whichever of
         port_vectors (driven ports) or background_fields (scattered field)
         is given; eigenmode assembly passes neither. For a WPBC bc the port
-        excitation reuses assemble_wpbc's own vector (same mode overlap
+        excitation reuses assemble_wpbc_multimode's own vectors (same mode overlaps
         already computed for the matrix term).
         """
-        from .wpbc import assemble_wpbc
-
         for bc in robin_bcs:
             logger.trace(f"   - Implementing {bc}")
             tri_ids = mesh.get_triangles(bc.tags)
@@ -497,12 +496,18 @@ class Assembler:
 
             wpbc_bvec = None
             if bc_has_matrix_term(bc):
-                if isinstance(bc, WavePortIH):
-                    logger.debug("    - Assembling dense Wave Port Boundary Condition.")
-                    mprof, mode_xy, kappa_m = bc.get_modepf_kappa(K0, mesh.nodes, mesh.tris[:, tri_ids])
-                    values, wpbc_bvec = assemble_wpbc(
-                        field, tri_ids, system.wave_port_dofs(bc), mprof, mode_xy, kappa_m, gamma_bc, K0
-                    )
+                if isinstance(bc, WavePort):
+                    # [Written by Claude] one dense WPBC term per port mode
+                    from .wpbc_multimode import assemble_wpbc_multimode
+                    logger.debug("    - Assembling dense Wave Port Boundary Condition of all port modes.")
+                    modes = bc.get_modepf_kappa_all(K0, mesh.nodes, mesh.tris[:, tri_ids])
+                    values, wpbc_bvec = assemble_wpbc_multimode(field, tri_ids, system.wave_port_dofs(bc), modes, K0)
+                    system.add_wave_port_term(out, bc, values, scale)
+                elif isinstance(bc, FloquetPort):
+                    # [Written by Claude] Robin term with γ_r plus the dense projection on the Floquet modes
+                    from .wpbc_multimode import assemble_floquet_port
+                    system.add_robin_term(out, bc, gamma, scale)
+                    values, wpbc_bvec = assemble_floquet_port(field, tri_ids, system.wave_port_dofs(bc), bc, K0)
                     system.add_wave_port_term(out, bc, values, scale)
                 else:
                     system.add_robin_term(out, bc, gamma, scale)
@@ -523,12 +528,16 @@ class Assembler:
         tri_ids: np.ndarray,
         K0: float,
         port_vectors: dict[int | float, np.ndarray],
-        wpbc_bvec: np.ndarray | None = None,
+        wpbc_bvec: np.ndarray | dict[int | float, np.ndarray] | None = None,
     ) -> None:
         """Adds the driven-port excitation of bc into port_vectors (in place)."""
         from .emr_microwave import assemble_robin_bc_bvec
 
         if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
+            return
+        if isinstance(wpbc_bvec, dict):  # [Written by Claude] WavePort: one vector per mode
+            for number, vec in wpbc_bvec.items():
+                port_vectors[number] += vec
             return
         if wpbc_bvec is not None:
             port_vectors[bc.port_number] += wpbc_bvec

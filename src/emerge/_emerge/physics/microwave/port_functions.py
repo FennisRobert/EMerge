@@ -67,6 +67,33 @@ def compute_avg_power_flux(
 
 
 # [Written by Claude]
+def compute_modal_power_flux(
+    field: NedelecLegrange2,
+    Efunc: Callable,
+    Hfunc: Callable,
+    inward_normal: np.ndarray,
+) -> complex:
+    """The complex flux 1/2 ∬ (E × H) · n dS of a mode, without the conjugate.
+
+    For a lossless propagating mode with real transverse fields this is its power. It is also nonzero for
+    evanescent modes, whose power 1/2 Re ∬ (E × H*) · n dS is zero, so it normalizes all modes.
+    """
+    from ...mth.integrals import surface_integral
+
+    nx, ny, nz = inward_normal
+
+    def S(x, y, z):
+        Ex, Ey, Ez = Efunc(x, y, z)
+        Hx, Hy, Hz = Hfunc(x, y, z)
+        Sx = 1 / 2 * (Ey * Hz - Ez * Hy)
+        Sy = 1 / 2 * (Ez * Hx - Ex * Hz)
+        Sz = 1 / 2 * (Ex * Hy - Ey * Hx)
+        return nx * Sx + ny * Sy + nz * Sz
+
+    return surface_integral(field.mesh.nodes, field.mesh.tris, S, None, 5)
+
+
+# [Written by Claude]
 def compute_cross_power_flux(
     field: NedelecLegrange2,
     Efunc: Callable,

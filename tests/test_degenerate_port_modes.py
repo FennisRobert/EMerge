@@ -63,3 +63,39 @@ def test_complex_combinations_of_real_modes_get_a_real_basis():
 
 if __name__ == "__main__":
     test_degenerate_modes_are_orthogonal()
+
+
+def test_iterative_modal_analysis_finds_full_cluster():
+    # Round guide (R = 14.91 mm) at 15 GHz: TE01 and the TM11 pair share β = 180.5 rad/m (p'01 = p11). The
+    # iterative solver used to drop both TM11 modes (their x^H B x of a unit vector is below 0.1) and return the
+    # TE31 pair instead.
+    em.cleanup()
+    with em.Simulation("roundguide", loglevel="ERROR") as sim:
+        cyl = em.geo.Cylinder(14.91 * mm, 30 * mm)
+        sim.commit_geometry()
+        sim.mw.set_frequency([15e9])
+        sim.mw.set_resolution(0.10)
+        sim.generate_mesh()
+        port = sim.mw.bc.ModalPort(cyl.front, 1, number_of_modes=8)
+        sim.mw.modal_analysis(port, 8, direct=False, freq=15e9, target_kz=289.0)
+        k0 = 2 * np.pi * 15e9 / 299792458
+        betas = np.sort([np.real(mode.beta) for mode in port.get_modes(k0)])[::-1]
+    np.testing.assert_allclose(betas, [289.0, 289.0, 269.7, 238.2, 238.2, 180.5, 180.5, 180.5], atol=0.1)
+
+
+def test_modal_port_too_few_propagating_modes():
+    # WR-90 at 10 GHz has one propagating mode. A ModalPort with two modes stops with a clear error before the
+    # sweep (it used to end in a ZeroDivisionError in the power normalization after it).
+    import pytest
+    from emerge._emerge.physics.microwave.bcs.port_bcs import BoundaryConditionError
+
+    em.cleanup()
+    with em.Simulation("wr90", loglevel="ERROR") as sim:
+        box = em.geo.Box(22.86 * mm, 10.16 * mm, 30 * mm)
+        sim.commit_geometry()
+        sim.mw.set_frequency([10e9])
+        sim.generate_mesh()
+        sim.mw.bc.ModalPort(box.face("-z"), 1, number_of_modes=2)
+        sim.mw.bc.ModalPort(box.face("+z"), 2, number_of_modes=2)
+        with pytest.raises(BoundaryConditionError, match="1 propagating mode"):
+            sim.mw.run_sweep()

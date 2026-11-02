@@ -31,11 +31,11 @@ from .plot.pyvista import PVDisplay
 from .periodic import PeriodicCell
 from .cacherun import get_build_section, get_run_section
 from .settings import DEFAULT_SETTINGS, Settings
-from .solver import EMSolver, Solver
+from .solvers import Solver, EigSolver, unavailable_message, reject_emsolver
 from .simstate import SimState
 from .selection import Selector, Selection, FaceSelection, DomainSelection
 from .optim import Optimizer
-from typing import Literal, Generator, Any, Callable
+from typing import Literal, Generator, Any, Callable, TypeVar
 from loguru import logger
 import numpy as np
 import gmsh  # type: ignore
@@ -68,6 +68,9 @@ Known problems/solutions:
 --------------------------
 """
 
+
+# [Written by Claude] The solver class passed to set_solver / get_solver is the type returned
+_S = TypeVar("_S", bound=Solver | EigSolver)
 
 class SimulationError(Exception):
     pass
@@ -1307,29 +1310,45 @@ class Simulation:
             filename (str): The filename
         """
         logger.trace(f"Writing geometry to {filename}")
+        gmsh.option.setString("Geometry.OCCTargetUnit", "M")
         gmsh.write(filename)
 
-    def set_solver(self, solver: EMSolver | Solver) -> Solver:
-        """Set a given Solver class instance as the main solver.
+    def set_solver(self, solver: type[_S] | _S) -> _S:
+        """Use a specific solver, for example model.set_solver(em.solvers.Pardiso).
+
+        em.solvers lists every solver; em.solvers.available() lists the ones installed on this system.
         Solvers will be checked on validity for the given problem.
 
         Args:
-            solver (EMSolver | Solver): The solver objects
-        """
-        logger.trace(f"Setting solver to {solver}")
-        self.mw.solveroutine.set_solver(solver)
-        return self.get_solver(solver)
+            solver (type[Solver] | Solver): The solver class (or a solver object)
 
-    def get_solver(self, solver: EMSolver | Solver) -> Solver | None:
-        """Return the solver of a specific type
-
-        Args:
-            solver (EMSolver | Solver): _description_
+        Raises:
+            RuntimeError: If the solver is not available on this system
 
         Returns:
-            _type_: _description_
+            Solver: The solver object, to configure it further (e.g. .set_nthreads(8))
         """
-        return self.mw.solveroutine.solvers[solver]
+        reject_emsolver(solver)
+        logger.trace(f"Setting solver to {solver}")
+        self.mw.solveroutine.set_solver(solver)
+        return self.get_solver(solver) if isinstance(solver, type) else solver
+
+    def get_solver(self, solver: type[_S]) -> _S:
+        """Return the solver object of a solver class, for example model.get_solver(em.solvers.Pardiso).
+
+        Args:
+            solver (type[Solver]): The solver class
+
+        Raises:
+            RuntimeError: If the solver is not available on this system
+
+        Returns:
+            Solver: The solver object used by this simulation
+        """
+        reject_emsolver(solver)
+        if not solver.available:
+            raise RuntimeError(unavailable_message(solver))
+        return self.mw.solveroutine.solvers[solver]  # type: ignore
     
     @staticmethod
     def from_simulations(name: str, *sims: Simulation, **kwargs) -> Simulation:

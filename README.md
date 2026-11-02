@@ -99,7 +99,7 @@ pip install git+https://github.com/FennisRobert/SPARTA
 To activate the GPU, set:
 
 ```python
-model.set_solver(em.EMSolver.SPARTA)
+model.set_solver(em.solvers.Sparta)
 ```
 
 </details>
@@ -149,7 +149,7 @@ pip install git+https://github.com/FennisRobert/SPARTA
 To activate the GPU, set:
 
 ```python
-model.set_solver(em.EMSolver.SPARTA)
+model.set_solver(em.solvers.Sparta)
 ```
 
 </details>

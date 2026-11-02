@@ -1,4 +1,3 @@
-
 # EMerge is an open source Python based FEM EM simulation module.
 # Copyright (C) 2025  Robert Fennis.
 
@@ -16,21 +15,28 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-# Last Cleanup: 2025-01-01
+"""The MKL PARDISO direct solver: the ctypes interface to MKL and the Solver."""
 from __future__ import annotations
 import os
 import sys
 import ctypes
 import re
 import site
+import platform
 from ctypes.util import find_library
 from enum import Enum
-import numpy as np
-from scipy import sparse # type: ignore
 from pathlib import Path
 from typing import Iterable, Iterator
 import pickle
+import numpy as np
+from scipy import sparse  # type: ignore
+from scipy.sparse import csc_matrix  # type: ignore
 from loguru import logger
+from .solver_base import Solver, SolverType, SolveReport, SimulationError, _pfx
+
+# MKL is not available on ARM processors
+AVAILABLE = "arm" not in platform.processor()
+
 
 ############################################################
 #                        ERROR CODES                       #
@@ -348,7 +354,7 @@ class PardisoInterface:
         scale = abs(A).max()
         return bool(abs(diff.data).max() <= rtol * scale)
 
-    def _configure(self, A: sparse.csr_matrix) -> None:
+    def _configure(self, A: sparse.csr_matrix, symbolic: bool = False) -> None:
         """Configures the solver for the appropriate data type (float/complex)
         and symmetry, as decided by the last `symbolic` call.
 
@@ -372,7 +378,12 @@ class PardisoInterface:
             self.IPARM[34] = 1   # zero-based indices
         else:
             self.MATRIX_TYPE = PARDISOMType.COMP_SYM_STRUCT if self.complex else PARDISOMType.REAL_SYM_STRUCT
-            self.IPARM[0] = 0    # MKL defaults, as before
+            # [Written by Claude] MKL's defaults are loaded once, in the symbolic phase: with IPARM[0] = 0
+            # MKL overwrites IPARM with its defaults (and sets IPARM[0] = 1). Doing that again before the
+            # numeric phase and the solve also clears IPARM[11], which _call_solver sets for CSC input, so
+            # a non-symmetric CSC matrix would be solved as A^T x = b.
+            if symbolic:
+                self.IPARM[0] = 0
             self.IPARM[34] = 0
 
     def _prepare_A(self, A: sparse.spmatrix) -> sparse.spmatrix:
@@ -424,7 +435,7 @@ class PardisoInterface:
         """
 
         self.symmetric = self._is_symmetric(A)
-        self._configure(A)
+        self._configure(A, symbolic=True)
         zerovec = np.zeros((A.shape[0], 1), dtype=A.dtype)
         _, error = self._call_solver(self._prepare_A(A), zerovec, phase=PARDISOPhase.SYMBOLIC_FACTOR)
         return error
@@ -596,4 +607,120 @@ class PardisoInterface:
         b = np.zeros(0, dtype=np.complex128)
         _, error = self._call_solver(A, b, phase=PARDISOPhase.CLEAR)
         self._upper, self._upper_source = None, None
-        
+
+
+class SolverPardiso(Solver):
+    """Implements the PARDISO solver through PyPardiso.
+
+    Requires an x86-64 processor with Intel MKL (Windows and Linux; not on Apple silicon).
+    """
+
+    available = AVAILABLE
+    requires = "an x86-64 processor with Intel MKL (Windows and Linux; not on Apple silicon)"
+
+    real_only: bool = False
+    req_sorter: bool = False
+    stype = SolverType.PARALLEL
+    name = "PARDISO"
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        self.solver: PardisoInterface | None = None
+        self.fact_symb: bool = False
+        self.A: np.ndarray = None
+        self.b: np.ndarray = None
+        self.nthreads: int | None = None
+
+    def initialize(self) -> None:
+        if self.initialized:
+            return
+        self.solver = PardisoInterface(nthreads=self.nthreads)
+        self.initialized = True
+
+    # [Written by Claude]
+    def duplicate(self) -> Solver:
+        # Worker copies keep the thread count
+        return self.__class__(self.pre).set_nthreads(self.nthreads)
+
+    # [Written by Claude]
+    def set_nthreads(self, nthreads: int | None) -> SolverPardiso:
+        """Install the number of CPU threads PARDISO uses. None returns the choice to MKL (MKL_NUM_THREADS).
+
+        Args:
+            nthreads (int | None): The number of threads.
+        """
+        self.nthreads = nthreads
+        if self.solver is not None:
+            self.solver.set_threads(nthreads)
+        return self
+
+    def reset(self) -> None:
+        self.A = None
+        self.B = None
+        if self.solver is not None:
+            self.solver.clear_memory()
+        # Clearing PARDISO drops the symbolic factorization too.
+        self.fact_symb = False
+
+    def _check(self, error: int, id: int, phase: str) -> None:
+        """Raises a SimulationError when a PARDISO phase reported an error.
+
+        Args:
+            error (int): The PARDISO error code, 0 on success
+            id (int): The job id used in log prefixes
+            phase (str): Name of the phase, for the message
+        """
+        if error != 0:
+            try:
+                reason = self.solver.get_error(error)
+            except KeyError:
+                reason = "Unknown error."
+            logger.error(f"{_pfx(self.pre, id)} PARDISO {phase} failed with error code {error}: {reason}")
+            raise SimulationError(
+                f"{_pfx(self.pre, id)} PARDISO {phase} terminated with error code {error}"
+            )
+
+    def solve(
+        self, A: csc_matrix, b, precon, id: int = -1
+    ) -> tuple[np.ndarray, SolveReport]:
+        import time
+
+        logger.info(f"{_pfx(self.pre, id)} Calling Pardiso Solver")
+        t_symb = 0.0
+        if self.fact_symb is False:
+            logger.trace(f"{_pfx(self.pre, id)} Executing symbollic factorization.")
+            t0 = time.perf_counter()
+            self._check(self.solver.symbolic(A), id, "symbolic factorization")
+            t_symb = time.perf_counter() - t0
+            self.fact_symb = True
+
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        t0 = time.perf_counter()
+        self._check(self.solver.numeric(A), id, "numeric factorization")
+        t_num = time.perf_counter() - t0
+        self.A = A
+
+        logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
+        t0 = time.perf_counter()
+        x = np.zeros_like(b)
+        error = 0
+        for i in range(x.shape[1]):
+            logger.trace(f"{_pfx(self.pre, id)} Solving RHS {i}")
+            x[:, i], error = self.solver.solve(A, b[:, i])
+            if error != 0:
+                break
+        t_solve = time.perf_counter() - t0
+        logger.info(
+            f"{_pfx(self.pre, id)} PARDISO {'LDLT (symmetric)' if self.solver.symmetric else 'LU'}: "
+            f"symbolic {t_symb:.3f}s, numeric {t_num:.3f}s, solve {t_solve:.3f}s"
+        )
+
+        if error != 0:
+            logger.error(f"{_pfx(self.pre, id)} Terminated with error code {error}")
+            logger.error(self.pre + self.solver.get_error(error))
+            raise SimulationError(
+                f"{_pfx(self.pre, id)} PARDISO Terminated with error code {error}"
+            )
+
+        aux = {}
+        return x, SolveReport(solver=str(self), exit_code=error, aux=aux)

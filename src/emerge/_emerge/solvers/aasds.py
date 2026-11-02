@@ -1,4 +1,3 @@
-
 # EMerge is an open source Python based FEM EM simulation module.
 # Copyright (C) 2025  Robert Fennis.
 
@@ -16,14 +15,25 @@
 # along with this program; if not, see
 # <https://www.gnu.org/licenses/>.
 
-# Last Cleanup: 2025-01-01
-"""
-Apple Accelerate Sparse Solver Interface
-"""
-
-from emerge_aasds import Factorization, Symmetry, Scaling, Ordering
+"""The Apple Accelerate sparse direct solver: the interface to emerge_aasds and the Solver."""
+from __future__ import annotations
 import time
+from typing import Literal
+import numpy as np
+from scipy.sparse import csc_matrix  # type: ignore
 from loguru import logger
+from .solver_base import Solver, SolverType, SolveReport, _pfx
+
+try:
+    from emerge_aasds import Factorization, Symmetry, Scaling, Ordering  # type: ignore # noqa: F401
+    AVAILABLE = True
+except ModuleNotFoundError:
+    logger.trace("AASDS Interface not found. (not harmful)")
+    AVAILABLE = False
+except ImportError:
+    logger.debug("Tried to import an installed AASDS solver on a non Darwin system.")
+    AVAILABLE = False
+
 
 class AASDSInterface:
     """
@@ -230,3 +240,110 @@ def create_accelerate_interface(factorization='lu', symmetry='nonsymmetric', ver
     - For complex symmetric (A=A^T), use symmetry='nonsymmetric' to avoid issues
     """
     return AASDSInterface(factorization=factorization, symmetry=symmetry, verbose=verbose)
+
+
+class SolverAASDS(Solver):
+    """Implements the Apple Accelerate Sparse Direct solver.
+
+    Requires macOS and the emerge-aasds package (installed with EMerge on macOS).
+    """
+
+    available = AVAILABLE
+    requires = "macOS and the emerge-aasds package (installed with EMerge on macOS)"
+
+    req_sorter = False
+    real_only = False
+    stype = SolverType.SINGLE_MP
+    name = "AASDS"
+
+    def __init__(self, pre: str):
+        super().__init__(pre)
+        logger.trace(self.pre + "Creating Apple Accelerate solver")
+        self.A: np.ndarray = None
+        self.b: np.ndarray = None
+
+        self.aasds: AASDSInterface | None = None
+        self._csym: bool = True
+        self.sym_fact: str = 'lu'   # Ensures backwards compatibility with older installations of emerge-aasds
+        self.unsym_fact: str = 'lu' # Ensures backwards compatibility with older installations of emerge-aasds
+
+        # SETTINGS
+        self._pivoting_threshold: float = 0.001
+
+        self.fact_symb: bool = False
+        self.initalized: bool = False
+
+    def set_symmetry(self, complex_symmetric: bool) -> None:
+        self.aasds._csym = complex_symmetric
+
+    def set_factorization(self, sym_fact: Literal['LU','LUUP','LUSPP','LUTPP','LDLT','LDLTUP','LDLTSBK','LDLTTPP'] = 'LU',
+                          unsym_fact: Literal['LU','LUUP','LUSPP','LUTPP','LDLT','LDLTUP','LDLTSBK','LDLTTPP'] = 'LU'):
+        """Defines the factorization algorithm:
+
+        Options:
+            'LU'      = Default LU factorization.
+            'LUUP'    = LU factorization Unpivoted (no numerical pivoting).
+            'LUSPP'   = LU factorization with Supernode Partial Pivoting (restricted to within supernodes).
+            'LUTPP'   = LU factorization with Threshold Partial Pivoting.
+            'LDLT'    = Default LDLᵀ factorization (for symmetric matrices).
+            'LDLTUP'  = LDLᵀ factorization Unpivoted (Cholesky-like, no pivoting).
+            'LDLTSBK' = LDLᵀ factorization with Supernode-Bunch-Kaufman and static pivoting.
+            'LDLTTPP' = LDLᵀ factorization with full-threshold partial pivoting.
+
+        Args:
+            sym_fact (str): Factorization algorithm for Symmetric matrices
+            unsym_fact (str): Factorization algorithm for Unsymmetric matrices
+        """
+        unsym_options = ['LU','LUUP','LUSPP','LUTPP']
+
+        self.sym_fact = sym_fact.lower()
+        if unsym_fact not in unsym_options:
+            logger.warning('Unsymmetric matrices cannot ude LDLT algorithms. Defaulting to LU')
+            self.unsym_fact = 'lu'
+        else:
+            self.unsym_fact = unsym_fact.lower()
+
+        self.initialize()
+        self.configure()
+
+    def initialize(self):
+        if self.initalized:
+            return
+        logger.trace(self.pre + " Initializing Apple Accelerate Solver")
+        self.aasds = AASDSInterface()
+        self.configure()
+        self.initalized = True
+
+    def configure(self):
+        self.aasds._factorization = self.aasds._fact(self.sym_fact)
+        self.aasds._usfactorization = self.aasds._fact(self.unsym_fact)
+
+    def reset(self) -> None:
+        logger.trace(self.pre + " Resetting Apple Accelerate solver state")
+        self.fact_symb = False
+        self._csym = False
+
+    def duplicate(self) -> Solver:
+        new_solver = self.__class__(self.pre)
+        return new_solver
+
+    def solve(
+        self, A: csc_matrix, b, precon, id: int = -1
+    ) -> tuple[np.ndarray, SolveReport]:
+        logger.info(f"{_pfx(self.pre, id)} Calling Accelerate Solver.")
+        if self.fact_symb is False:
+            logger.trace(f"{_pfx(self.pre, id)} Executing symbolic factorization.")
+            self.aasds.analyse(A)
+            self.fact_symb = True
+    
+        logger.trace(f"{_pfx(self.pre, id)} Executing numeric factorization.")
+        self.aasds.factorize(A)
+        self.A = A
+
+        logger.trace(f"{_pfx(self.pre, id)} Solving linear system.")
+        x = np.zeros_like(b)
+        for i in range(x.shape[1]):
+            logger.trace(f"{_pfx(self.pre, id)} Solve RHS {i}.")
+            x[:, i], _ = self.aasds.solve(b[:, i])
+
+        return x, SolveReport(solver=str(self), exit_code=0)

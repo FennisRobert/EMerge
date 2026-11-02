@@ -942,7 +942,7 @@ class StripPath:
             StripPath: The current StripPath object
         """
         w = self.end.width
-        dist = abs(w * np.tan(angle * np.pi / 360))
+        dist = abs(w * np.tan(angle * np.pi / 360))/2
         self.end._back(dist)
         obj = self.turn(angle, corner_type=corner_type, dsratio=dsratio)
         obj._consume = dist

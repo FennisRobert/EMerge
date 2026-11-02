@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Literal
 from scipy.sparse import csc_matrix  # type: ignore
-from ...solver import SolveReport
+from ...solvers import SolveReport
 
 
 class SimJob:

@@ -22,7 +22,7 @@ from loguru import logger
 from typing import TypeVar, Generic, Any, List, Union, Dict, Generator
 from collections import defaultdict
 from .file import Saveable
-from .solver import SolveReport
+from .solvers import SolveReport
 
 T = TypeVar("T")
 M = TypeVar("M")

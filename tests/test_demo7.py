@@ -55,7 +55,7 @@ def test():
     periodic_cell.set_scanangle(30,45)
 
     # And at last we run our simulation and view the results.
-    model.set_solver(em.EMSolver.SUPERLU)
+    model.set_solver(em.solvers.SuperLU)
     data = model.mw.run_sweep()
 
     model.display.add_object(wg)

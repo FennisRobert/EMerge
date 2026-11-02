@@ -66,6 +66,20 @@ class PortBC(RobinBC, Saveable):
         """The port voltage, None if it is not defined for this port type."""
         return None
 
+    def smatrix_index(self, mode_nr: int = 1) -> int | float:
+        """The S-matrix index of port mode mode_nr, to read the results with (data.scalar.grid.S(i, j)).
+
+        A port with one mode has its port number as index. With more modes the index is port.mode: 1.1, 1.2, ...
+        and from 10 modes on the mode number has two digits: 1.01, 1.02, ..., 1.12.
+
+        Args:
+            mode_nr (int, optional): The port mode number (1-based). Defaults to 1.
+
+        Returns:
+            int | float: The S-matrix index
+        """
+        return self._gen_port_number(mode_nr)
+
     def _gen_port_number(self, mode_nr: int) -> int | float:
         if len(self.port_modes) == 1:
             return self.port_number
@@ -106,6 +120,36 @@ class PortBC(RobinBC, Saveable):
                     return self.get_Uinc(x, y, z, k0, mode_nr=mode_nr)
 
                 yield self._gen_port_number(mode_nr), Ufunc
+
+    # [Written by Claude] Per mode properties used by the S-parameter post processing. Ports whose modes
+    # differ in β (WavePort, FloquetPort) override these.
+    _self_normalized: bool = False  # the port modes are normalized to 1 W already (no power correction)
+
+    def mode_beta(self, k0: float, mode_nr: int = 1) -> complex:
+        """The propagation constant of port mode mode_nr."""
+        return self.get_beta(k0)
+
+    def mode_Z0(self, k0: float, mode_nr: int = 1) -> complex | float | None:
+        """The characteristic impedance of port mode mode_nr."""
+        return self.portZ0(k0)
+
+    def is_propagating(self, k0: float, mode_nr: int = 1) -> bool:
+        """Whether port mode mode_nr carries power at k0 (else its S-parameters are amplitude ratios)."""
+        return True
+
+    def sparam_projection(
+        self,
+        nodes: np.ndarray,
+        tri_vertices: np.ndarray,
+        mode_nr: int,
+        active: bool,
+        k0: float,
+        fieldf: Callable,
+        gq_order: int = 5,
+    ) -> tuple[complex, complex] | None:
+        """The pair (outgoing mode amplitude integral, mode norm integral) of a port with its own projection,
+        or None for the default conjugate projection (sparam_field_power / sparam_mode_power)."""
+        return None
 
     def get_basis(self) -> np.ndarray:
         """The basis of the local port coordinate system.
@@ -277,8 +321,9 @@ class ModalPort(PortBC, Saveable):
             power (float, optional): The radiated power. Defaults to 1.
             modetype (Literal["TE", "TM", "TEM","any"] | None, optional): Force the port mode type (None selects automatically). Defaults to None.
             number_of_modes (int, optional): The number of port modes to compute. Defaults to 1.
-            mixed_materials (bool, optional): Wether the port consists of multiple different dielectrics. This requires
-                A recalculation of the port mode at every frequency
+            mixed_materials (bool, optional): Recompute the port modes at every frequency. Without it the modes
+                are still recomputed at every frequency, unless the port face has one material and only TEM modes,
+                whose fields do not change with frequency. Defaults to False.
             impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed: from power and voltage, power and current, or voltage and current. Defaults to "PV".
         """
         super().__init__(face)
@@ -303,6 +348,12 @@ class ModalPort(PortBC, Saveable):
         self.initialized: bool = False
         self._first_k0: float | None = None
         self._last_k0: float | None = None
+        # [Written by Claude] Set by the modal analysis: whether the port face has a single (isotropic) material,
+        # and its εr·μr (the mean over the face otherwise).
+        self._homogeneous: bool = False
+        self._ermur: complex = 1.0
+        self._ermur_max: float = 1.0
+        self._nmodes_solved: int = 0
 
         self.plus_terminal: list[tuple[int, int]] = []
         self.minus_terminal: list[tuple[int, int]] = []
@@ -357,6 +408,7 @@ class ModalPort(PortBC, Saveable):
 
     def reset(self) -> None:
         """Clear all computed modes and terminal assignments."""
+        self._island_cache = None
         self._last_k0 = None
         self._first_k0 = None
         self.available_modes: dict[float, list[PortMode]] = dict()
@@ -680,9 +732,17 @@ class ModalPort(PortBC, Saveable):
         if mode.modetype == "TEM":
             beta = mode.beta / mode.k0 * k0
         else:
-            freq = k0 * 299792458 / (2 * np.pi)
-            beta = np.sqrt(mode.beta**2 + k0**2 * (1 - ((mode.freq / freq) ** 2)))
+            # [Written by Claude] β² = εr·μr·k0² - kc² of a homogeneously filled port. This used to leave out εr·μr,
+            # which gave the wrong β for dielectric-filled waveguides away from the frequency of the modal analysis.
+            beta = np.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
         return beta
+
+    # [Written by Claude]
+    @property
+    def _frequency_scalable(self) -> bool:
+        """True if the modes of one frequency hold at every frequency: one material and only TEM modes."""
+        modes = self.available_modes.get(self._last_k0, []) if self._last_k0 is not None else []
+        return self._homogeneous and len(modes) > 0 and all(m.modetype == "TEM" for m in modes)
 
     def get_gamma(self, k0: float) -> complex:
         return 1j * self.get_beta(k0)
@@ -725,13 +785,14 @@ class ModalPort(PortBC, Saveable):
         return Exyz
 
 
-class WavePortIH(ModalPort, Saveable):
+# [Written by Claude] WavePort replaces WavePortIH (single mode) and the hertzon MultiModeWavePort.
+class WavePort(ModalPort, Saveable):
     _include_stiff: bool = True
     _include_mass: bool = False
     _include_force: bool = True
     _color: str = "#e1bd1c"
     _texture: str = "tex5.png"
-    _name: str = "WavePortIH"
+    _name: str = "WavePort"
     dim: int = 2
 
     def __init__(
@@ -740,64 +801,254 @@ class WavePortIH(ModalPort, Saveable):
         port_number: int,
         cs: CoordinateSystem | None = None,
         power: float = 1,
-        number_of_modes: int = 1,
+        number_of_modes: int | None = 1,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
+        modetype: Literal["TE", "TM", "TEM", "any"] | None = None,
     ):
-        """Generes a Wave Port Inhomogeneous boundary condition for a port that requires eigenmode solutions for the mode.
+        """A wave port that absorbs and excites each of its modes with the mode's own propagation constant.
 
-        The boundary condition requires a FaceSelection (or GeoSurface related) object for the face and a port
-        number.
-        If the face coordinate system is not provided a local coordinate system will be derived automatically
-        by finding the plane that spans the face nodes with minimial out-of-plane error.
+        The port uses the dense wave port boundary condition (one rank-1 term per mode):
 
-        All modal ports require the execution of a .modal_analysis() by the physics class to define
-        the port mode.
+            n×∇×E = Σ_m w_m ∫E_t·w_m dS / ∫e_tm·w_m dS - 2 a_m w_m,    w_m = γ_m e_tm + ∇e_zm
+
+        Because w_m is proportional to h_tm × n, ∫e_tn·w_m dS is the modal orthogonality integral
+        ∫(e_n × h_m)·n dS, which vanishes for n ≠ m. Every mode is terminated without reflection, also when
+        the modes have different propagation constants, and the S-parameters are extracted with the same
+        projection on w_m. Inhomogeneous ports (microstrip, quasi-TEM and hybrid modes) are supported.
+
+        The port modes are fixed by the highest simulation frequency: the number_of_modes modes with the largest
+        propagation constant there. The same modes are followed down to the lowest frequency (re-solved at
+        every frequency and matched by their field profile), so the S-matrix indices never change. A mode
+        that is below cutoff at a frequency stays in the port as an evanescent mode (β = -jα). It is absorbed
+        by the port, so the port may be placed close to a discontinuity. Evanescent modes carry no power: they
+        are normalized to |1/2 ∬ (e × h)·n dS| = 1 and their S-parameters are amplitude ratios, not power
+        ratios.
 
         Args:
             face (FaceSelection | GeoSurface): The port mode face
             port_number (int): The port number as an integer
             cs (CoordinateSystem | None, optional): The local coordinate system of the port face. Defaults to None.
             power (float, optional): The radiated power. Defaults to 1.
-            number_of_modes (int, optional): The number of port modes. Defaults to 1.
+            number_of_modes (int | None, optional): The number of port modes. None includes every mode that
+                propagates at the highest frequency. Defaults to 1.
             impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed:
                 from power and voltage, power and current, or voltage and current. Defaults to "PV".
+            modetype (Literal["TE", "TM", "TEM", "any"] | None, optional): Only accept port modes of this type.
+                None or "any" accepts all modes. Defaults to None.
         """
-        super(ModalPort, self).__init__(face)
-
-        self.port_number: int = port_number
-        self.active: bool = False
-        self.power: float = power
-        self.alignment_vectors: list[Axis] = []
-
-        self.selected_mode: int = 0
+        super().__init__(
+            face,
+            port_number,
+            cs=cs,
+            power=power,
+            modetype=modetype,
+            number_of_modes=1 if number_of_modes is None else number_of_modes,
+            mixed_materials=True,
+            impedance_definition=impedance_definition,
+        )
+        # None: all modes that propagate at the highest frequency, counted by the mode selection
+        self._all_propagating: bool = number_of_modes is None
         self.available_modes: dict[float, list[PortMode]] = dict()
-        self.port_modes: dict[int | float, tuple[complex, ...]] = dict()
-        self.forced_modetype = "TEM"
-        for i in range(1, number_of_modes + 1):
-            vec = [0.0 + 0.0j for _ in range(number_of_modes)]
-            vec[i - 1] = 1.0 + 0.0j
-            self.port_modes[i] = vec
+        # The tracked modes: per mode the (k0, β²) history and the transverse field of the last frequency.
+        self._tracks: list[dict] = []
+        # Per frequency the field overlap (CMAC) of each mode with the mode at the previous frequency
+        self._track_quality: dict[float, np.ndarray] = {}
+        # A homogeneous port face: the modes of the highest frequency (k0 = _k0_ref) are scaled to the other
+        # frequencies instead of solved (Microwave3D._scale_wave_port_modes)
+        self._scalable: bool = False
+        self._k0_ref: float | None = None
+        # The surface basis, μr and inward normal of the last port solve
+        self._mode_basis: tuple | None = None
 
-        self._desired_number_of_modes: int = number_of_modes
-        self.mixed_materials: bool = True
-        self.initialized: bool = False
-        self._first_k0: float | None = None
-        self._last_k0: float | None = None
+    def reset(self) -> None:
+        super().reset()
+        self.clear_modes()
 
-        self.plus_terminal: list[tuple[int, int]] = []
-        self.minus_terminal: list[tuple[int, int]] = []
-        self.N_mesh_tris: int = 50
-        self.impedance_definition: Literal["PV", "PI", "VI"] = impedance_definition
+    def clear_modes(self) -> None:
+        super().clear_modes()
+        self._tracks = []
+        self._track_quality = {}
+        self._scalable = False
+        self._k0_ref = None
 
-        if cs is None:
-            logger.info("Constructing coordinate system from port normal")
-            self.cs = Axis(self.selection.normal).construct_cs()  # type: ignore
+    @property
+    def solved_frequencies(self) -> list[float]:
+        """The frequencies at which the port modes have been computed."""
+        return [k * 299792458 / (2 * np.pi) for k in self.available_modes]
+
+    def _check_mode_betas(self) -> None:
+        """Modes with different propagation constants are supported by this port."""
+        return
+
+    def _set_number_of_modes(self, n: int) -> None:
+        """Sets the number of port modes (and their S-matrix indices)."""
+        self._desired_number_of_modes = n
+        self.port_modes = {
+            i: [1.0 + 0.0j if j == i - 1 else 0.0 + 0.0j for j in range(n)] for i in range(1, n + 1)
+        }
+
+    def sort_modes(self) -> None:
+        """The mode order is set by the mode tracking (Microwave3D._wave_port_modes)."""
+        return
+
+    ############################################################
+    #                   MODE SET AND TRACKING                  #
+    ############################################################
+
+    def _has_mode_set(self, k0: float) -> bool:
+        """Whether the candidate modes at k0 contain the full mode set: number_of_modes modes, or with
+        number_of_modes=None all propagating modes (once an evanescent mode is found, as the modes come in
+        order of β²)."""
+        cands = self.available_modes.get(k0, [])
+        if self._all_propagating:
+            return len(cands) > sum(np.real(m.beta**2) > 0 for m in cands)
+        return len(cands) >= self._desired_number_of_modes
+
+    def _fix_mode_set(self, k0: float) -> None:
+        """Fixes the port modes from the candidate modes at k0 (the highest frequency): the number_of_modes
+        modes with the largest β², or the modes that match the alignment vectors. Starts the mode tracks.
+
+        Args:
+            k0 (float): The free space propagation constant of the candidate modes
+        """
+        cands = sorted(self.available_modes.get(k0, []), key=lambda m: -np.real(m.beta**2))
+        if self._all_propagating:
+            self._set_number_of_modes(max(sum(np.real(m.beta**2) > 0 for m in cands), 1))
+        N = self._desired_number_of_modes
+        if len(cands) > N and abs(cands[N].beta**2 - cands[N - 1].beta**2) < 1e-3 * self._ermur_max * k0**2:
+            logger.warning(
+                f"{self}: port modes {N} and {N + 1} have the same propagation constant. With only one of them "
+                f"the port cannot absorb all fields of this β; include both (number_of_modes={N + 1})."
+            )
+        if self.alignment_vectors:
+            X, Y, Z = (c.flatten() for c in self.selection.sample(5))
+            chosen: list[PortMode] = []
+            for ax in self.alignment_vectors[:N]:
+                rest = [m for m in cands if m not in chosen]
+                integrals = [_inner_product(m.E_function, X, Y, Z, ax.np) for m in rest]
+                i = int(np.argmax(np.abs(integrals)))
+                if np.real(integrals[i]) < 0:
+                    rest[i].flip_polarity()
+                chosen.append(rest[i])
+            chosen += [m for m in cands if m not in chosen][: N - len(chosen)]
         else:
-            # A copy, because the modal analysis may flip the z-axis of the port coordinate system in place.
-            self.cs = cs.copy()
+            chosen = cands[:N]
+        self.available_modes[k0] = chosen
+        self._k0_ref = k0
+        self._tracks = [{k0: (complex(m.beta**2), m.modefield[: m._nxy].copy())} for m in chosen]
+        for i, m in enumerate(chosen):
+            logger.info(f"{self}: mode {i + 1} = {m.modetype}, β = {complex(m.beta):.2f} rad/m")
 
-        self.voltage_integration_line: list[Line] = []
-        self.current_integration_line: list[Line] = []
+    def _predict_beta2(self, k0: float) -> np.ndarray:
+        """Per tracked mode the β² at k0 predicted with the secant in k0² through the two nearest computed
+        frequencies. With one frequency the slope is εr·μr, which is exact for a homogeneous port face."""
+        preds = []
+        for track in self._tracks:
+            ks = sorted(track, key=lambda k: abs(k - k0))
+            k1 = ks[0]
+            b1 = track[k1][0]
+            slope = (b1 - track[ks[1]][0]) / (k1**2 - ks[1] ** 2) if len(ks) > 1 else self._ermur
+            preds.append(b1 + slope * (k0**2 - k1**2))
+        return np.array(preds)
+
+    def _continue_tracks(self, k0: float, preds: np.ndarray) -> None:
+        """Matches the candidate modes at k0 to the tracked modes and makes them the port modes at k0.
+
+        Every tracked mode is assigned a candidate by the overlap of the transverse fields with the mode at
+        the nearest computed frequency (CMAC) and the distance to the predicted β². The phase of each mode
+        is aligned with that mode, so the modes, and the S-parameters, vary smoothly with frequency.
+
+        Args:
+            k0 (float): The free space propagation constant of the candidate modes
+            preds (np.ndarray): The predicted β² of the tracked modes (_predict_beta2)
+        """
+        from scipy.optimize import linear_sum_assignment
+
+        cands = self.available_modes[k0]
+        refs = [track[min(track, key=lambda k: abs(k - k0))][1] for track in self._tracks]
+        vecs = [m.modefield[: m._nxy] for m in cands]
+        overlap = np.array([[np.vdot(r, v) for v in vecs] for r in refs])
+        norms = np.outer([np.linalg.norm(r) for r in refs], [np.linalg.norm(v) for v in vecs])
+        cmac = np.abs(overlap) ** 2 / norms**2
+        b2 = np.array([complex(m.beta**2) for m in cands])
+        distance = np.abs(b2[None, :] - preds[:, None]) / (self._ermur_max * k0**2)
+        rows, cols = linear_sum_assignment(-cmac + 0.5 * distance)
+
+        chosen = []
+        for m_i, c_i in zip(rows, cols):
+            mode = cands[c_i]
+            if cmac[m_i, c_i] < 0.7:
+                logger.warning(
+                    f"{self}: mode {m_i + 1} at k0 = {k0:.2f} overlaps only {cmac[m_i, c_i]:.2f} with the mode at "
+                    "the previous frequency. Use more frequency points if the S-parameters jump."
+                )
+            phase = np.conj(overlap[m_i, c_i]) / abs(overlap[m_i, c_i])
+            mode.E_function.constant *= phase
+            mode.H_function.constant *= phase
+            chosen.append(mode)
+            self._tracks[m_i][k0] = (complex(mode.beta**2), mode.modefield[: mode._nxy] * phase)
+            logger.debug(
+                f"{self}: mode {m_i + 1}: β² = {b2[c_i]:.1f} (predicted {preds[m_i]:.1f}), CMAC {cmac[m_i, c_i]:.3f}"
+            )
+        self.available_modes[k0] = chosen
+        self._track_quality[k0] = cmac[rows, cols]
+
+    def try_add_mode(
+        self,
+        field: np.ndarray,
+        E_function: Callable,
+        H_function: Callable,
+        beta: complex,
+        k0: float,
+        freq: float,
+    ) -> PortMode | None:
+        """Add a mode candidate, also when it is evanescent.
+
+        Args:
+            field (np.ndarray): The field value array
+            E_function (Callable): The E-field callable
+            H_function (Callable): The H-field callable
+            beta (complex): The out-of-plane propagation constant (Im(β) <= 0)
+            k0 (float): The free space phase constant
+            freq (float): The frequency of the port mode
+
+        Returns:
+            PortMode | None: The port mode object.
+        """
+        mode = PortMode(field, E_function, H_function, k0, beta, freq=freq)
+        if mode.energy < 1e-12:
+            logger.debug(f"Ignoring mode without field energy: beta {beta}")
+            return None
+        self.available_modes.setdefault(k0, []).append(mode)
+        self.initialized = True
+        self._last_k0 = k0
+        if self._first_k0 is None:
+            self._first_k0 = k0
+        return mode
+
+    def _mode(self, k0: float, mode_nr: int) -> PortMode:
+        modes = self.get_modes(k0)
+        return modes[min(mode_nr, len(modes)) - 1]
+
+    def get_beta(self, k0: float, mode_nr: int = 1) -> complex:
+        """The propagation constant of port mode mode_nr (1-based) at k0. Evanescent modes have β = -jα."""
+        return self._mode(k0, mode_nr).beta
+
+    def portZ0(self, k0: float, mode_nr: int = 1) -> complex | float | None:
+        return self._mode(k0, mode_nr).Z0
+
+    _self_normalized: bool = True
+
+    def mode_beta(self, k0: float, mode_nr: int = 1) -> complex:
+        return self.get_beta(k0, mode_nr)
+
+    def mode_Z0(self, k0: float, mode_nr: int = 1) -> complex | float | None:
+        return self.portZ0(k0, mode_nr)
+
+    def is_propagating(self, k0: float, mode_nr: int = 1) -> bool:
+        """True if port mode mode_nr carries power at k0 (|Re β| > |Im β|)."""
+        beta = complex(self.get_beta(k0, mode_nr))
+        return abs(beta.real) > abs(beta.imag)
 
     def get_Uinc(
         self,
@@ -809,10 +1060,10 @@ class WavePortIH(ModalPort, Saveable):
     ) -> np.ndarray:
         """Excitation field for the WPBC: -2 (γ e_t + ∇e_z) of the port mode.
 
-        This is the same effective mode profile as the dense WPBC matrix term (assemble_wpbc),
-        including the E_z part of quasi-TEM / hybrid modes. The assembler normally uses the
-        excitation vector computed by assemble_wpbc directly; this is the fallback when the matrix
-        term is not assembled (bc._assemble_matrix=False or a PML-backed WPBC).
+        This is the same effective mode profile as the dense WPBC matrix term (assemble_wpbc_multimode),
+        including the E_z part of quasi-TEM / hybrid modes. The assembler normally uses the excitation vector
+        computed with the matrix term; this is the fallback when the matrix term is not assembled
+        (bc._assemble_matrix=False or a PML-backed WPBC).
 
         Args:
             x_global (np.ndarray): The global X-coordinates
@@ -831,7 +1082,7 @@ class WavePortIH(ModalPort, Saveable):
     def get_modepf_kappa(
         self, k0: float, nodes: np.ndarray, tris: np.ndarray
     ) -> tuple[Callable, Callable, complex]:
-        """Return the modeprofile function γetm + ∇ez
+        """The mode profile function γe_tm + ∇e_zm, the transverse mode field function and kappa of the first mode.
 
         Args:
             k0 (float): The free space propagation constant
@@ -849,13 +1100,97 @@ class WavePortIH(ModalPort, Saveable):
         def fxy(x, y, z):
             return mode.E_function.calcExy(x, y, z)
 
+        return fmp, fxy, mode.compute_kappa(nodes, tris)
+
+    def get_modepf_kappa_all(
+        self, k0: float, nodes: np.ndarray, tris: np.ndarray
+    ) -> list[tuple[int | float, Callable, complex]]:
+        """The S-matrix index, the mode profile function γ_m e_tm + ∇e_zm and kappa_m of every port mode.
+
+        Args:
+            k0 (float): The free space propagation constant
+            nodes (np.ndarray): The mesh node coordinates
+            tris (np.ndarray): The port face triangle node indices
+
+        Returns:
+            list[tuple[int | float, Callable, complex]]: One (S-matrix index, mode profile, kappa) per mode
+        """
+        modes = self.get_modes(k0)
+        out = []
+        for (number, mode_nr), mode in zip(self._iter_port_numbers(), modes):
+            def fmp(x, y, z, mode=mode):
+                return mode.E_function.calc_eff_modeprofile(x, y, z)
+
+            out.append((number, fmp, mode.compute_kappa(nodes, tris)))
+        return out
+
+    def sparam_projection(
+        self,
+        nodes: np.ndarray,
+        tri_vertices: np.ndarray,
+        mode_nr: int,
+        active: bool,
+        k0: float,
+        fieldf: Callable,
+        gq_order: int = 5,
+    ) -> tuple[complex, complex]:
+        """The outgoing amplitude of mode mode_nr, as the pair (∫(E - Q e_m)·w_m dS, ∫e_tm·w_m dS).
+
+        Their ratio is the amplitude of mode m in the field E (Q = 1 removes the incident mode of the
+        active port). Unlike the conjugate projection ∫E·e_m* of ModalPort, this projection separates
+        modes that are orthogonal in power but not in E_t (coupled microstrip lines).
+        """
+        from ....mth.integrals import surface_integral
+
+        Q = 1 if active else 0
+        const = np.ones((tri_vertices.shape[1],), dtype=np.complex128)
+
+        def field_dot_w(x, y, z):
+            w = self.port_mode_3d_global(x, y, z, k0, which="modprof", mode_nr=mode_nr)
+            e = self.port_mode_3d_global(x, y, z, k0, which="Exy", mode_nr=mode_nr)
+            E = fieldf(x, y, z) - Q * e
+            return E[0] * w[0] + E[1] * w[1] + E[2] * w[2]
+
+        def mode_dot_w(x, y, z):
+            w = self.port_mode_3d_global(x, y, z, k0, which="modprof", mode_nr=mode_nr)
+            e = self.port_mode_3d_global(x, y, z, k0, which="Exy", mode_nr=mode_nr)
+            return e[0] * w[0] + e[1] * w[1] + e[2] * w[2]
+
         return (
-            fmp,
-            fxy,
-            mode.compute_kappa(nodes, tris),
+            surface_integral(nodes, tri_vertices, field_dot_w, const, gq_order=gq_order),
+            surface_integral(nodes, tri_vertices, mode_dot_w, const, gq_order=gq_order),
         )
 
 
+# [Written by Claude]
+class WavePortIH(WavePort, Saveable):
+    _name: str = "WavePortIH"
+
+    def __init__(
+        self,
+        face: FaceSelection | GeoSurface,
+        port_number: int,
+        cs: CoordinateSystem | None = None,
+        power: float = 1,
+        number_of_modes: int = 1,
+        impedance_definition: Literal["PV", "PI", "VI"] = "PV",
+    ):
+        """Deprecated: use WavePort. A WavePort that only accepts TEM (and quasi-TEM) modes.
+
+        Args:
+            face (FaceSelection | GeoSurface): The port mode face
+            port_number (int): The port number as an integer
+            cs (CoordinateSystem | None, optional): The local coordinate system of the port face. Defaults to None.
+            power (float, optional): The radiated power. Defaults to 1.
+            number_of_modes (int, optional): The number of port modes. Defaults to 1.
+            impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed:
+                from power and voltage, power and current, or voltage and current. Defaults to "PV".
+        """
+        logger.warning("WavePortIH is deprecated and will be removed, use WavePort(..., modetype='TEM') instead.")
+        super().__init__(face, port_number, cs, power, number_of_modes, impedance_definition, modetype="TEM")
+
+
+# [Written by Claude]
 class FloquetPort(PortBC, Saveable):
     _include_stiff: bool = True
     _include_mass: bool = False
@@ -873,7 +1208,35 @@ class FloquetPort(PortBC, Saveable):
         polarization_deg: float = 0.0,
         power: float = 1.0,
         er: float = 1.0,
+        number_of_modes: int | None = 1,
     ):
+        """A port on the face of a periodic unit cell that excites and absorbs Floquet modes.
+
+        The fields above a periodic surface are a sum of Floquet harmonics (m, n) with the transverse wave vector
+        k_t,mn = k_t,00 + m b1 + n b2 (b1, b2 the reciprocal lattice vectors, k_t,00 set by the scan angle),
+        each as a TE and a TM plane wave with k_z,mn = sqrt(εr k0² - |k_t,mn|²). The port absorbs every mode
+        of its basis exactly, with the admittance of that mode (γ_TE = j k_z, γ_TM = j εr k0² / k_z), through
+        a dense projection term on the port face. The rest of the field sees a first order absorbing
+        boundary (γ = j k0 √εr). The TE and TM modes of the (0, 0) harmonic are always in the basis.
+
+        The modes are fixed by the highest simulation frequency, as for the WavePort: a grating mode that
+        propagates there stays in the S-matrix at lower frequencies as an evanescent mode (k_z = -jα).
+        Propagating modes carry 1 W; evanescent modes are normalized to the same amplitude with |k_z|.
+
+        Args:
+            face (FaceSelection | GeoSurface): The port face
+            port_number (int): The port number
+            cs (CoordinateSystem | None, optional): Not used, the modes are defined in the global XY plane.
+                Defaults to None.
+            polarization_deg (float, optional): For number_of_modes=1: the polarization of the single port mode,
+                0 = TE (S), 90 = TM (P). Defaults to 0.0.
+            power (float, optional): The port power. Defaults to 1.0.
+            er (float, optional): The relative permittivity of the medium at the port. Defaults to 1.0.
+            number_of_modes (int | None, optional): The number of port modes in the S-matrix. 1: one mode of the
+                (0, 0) harmonic with the given polarization (both polarizations are still absorbed). 2: TE00 and
+                TM00. More: also the grating modes (m, n) ≠ (0, 0), ordered by their cutoff at the highest
+                frequency. None: every mode that propagates at the highest frequency. Defaults to 1.
+        """
         super().__init__(face)
         if cs is None:
             cs = GCS
@@ -886,69 +1249,236 @@ class FloquetPort(PortBC, Saveable):
         self.scan_theta: float = 0
         self.scan_phi: float = 0
         self.polarization_deg: float = polarization_deg
-        self.port_modes: dict[int, tuple[complex, complex]] = {
-            1: (1.0 + 0.0j, 0.0 + 0.0j),
-        }
+        self.number_of_modes: int | None = number_of_modes
         self.area: float = 1
         self.width: float | None = None
         self.height: float | None = None
+        # The two lattice vectors of the cell in the XY plane, set by MWBoundaryConditionSet.floquet_port
+        self.lattice: tuple[np.ndarray, np.ndarray] | None = None
+        # The z component of the inward normal: the propagation direction of the incident modes
+        self._inward_z: float = -1.0
+        # The basis modes (m, n, "TE" | "TM") and per S-matrix mode its coefficients on the basis
+        self._harmonics: list[tuple[int, int, str]] = [(0, 0, "TE"), (0, 0, "TM")]
+        self._coeffs: dict[int, np.ndarray] = {}
+        self._set_port_modes(2 if number_of_modes is None else number_of_modes)
 
-        if self.cs is None:
-            self.cs = GCS
+    ############################################################
+    #                       MODE SELECTION                     #
+    ############################################################
 
-    def portZ0(self, k0: float | None = None) -> complex | float | None:
-        return Z0
-
-    def get_amplitude(self, k0: float) -> float:
-        """The amplitude of the port mode field such that the mode carries the port power.
-
-        Args:
-            k0 (float): The free space propagation constant
-
-        Returns:
-            float: The mode amplitude
-        """
-        amplitude = np.sqrt(2 * Z0 * self.power / (self.area * np.cos(self.scan_theta)))
-        return amplitude
-
-    def get_beta(self, k0: float) -> float:
-        """Return the out of plane propagation constant. βz.
-
-        Args:
-            k0 (float): The free space propagation constant
-
-        Returns:
-            float: The out of plane propagation constant βz (rad/m)
-        """
-        return k0 * np.cos(self.scan_theta)
+    def _set_port_modes(self, n: int) -> None:
+        """Sets the S-matrix modes: the polarization mix of the (0, 0) harmonic for n = 1, else the first n basis modes."""
+        if n == 1:
+            pol = self.polarization_deg * np.pi / 180
+            self._coeffs = {1: np.array([np.cos(pol), np.sin(pol)] + [0.0] * (len(self._harmonics) - 2), dtype=complex)}
+        else:
+            # (before _prepare the basis holds only the (0, 0) modes; the S-matrix indices are known already)
+            basis = np.eye(max(n, len(self._harmonics)), dtype=complex)
+            self._coeffs = {i: basis[i - 1] for i in range(1, n + 1)}
+        self.port_modes = {i: tuple(c) for i, c in self._coeffs.items()}
 
     def set_polarization(self, polarization_deg: float) -> None:
-        """Set the polarization angle from 0deg = S to 90deg = P
+        """Set the polarization angle of a single mode port from 0deg = S (TE) to 90deg = P (TM).
 
         Args:
             polarization_deg (float): The polarization angle in degrees
         """
         self.polarization_deg = polarization_deg
-        S = np.cos(polarization_deg * np.pi/180)
-        P = np.sin(polarization_deg * np.pi/180)
-        self.port_modes = {
-            1: (S + 0.0j, P + 0.0j)
-        }
+        if len(self._coeffs) == 1:
+            self._set_port_modes(1)
 
-    def get_gamma(self, k0: float) -> complex:
-        """Computes the γ-constant for matrix assembly. This constant is required for the Robin boundary condition.
+    def floquet_modes(self) -> list[tuple[int | float, int, int, str]]:
+        """The port modes: per mode its S-matrix index, Floquet order (m, n) and polarization ("TE" or "TM").
 
-        Args:
-            k0 (float): The free space propagation constant.
+        The modes are selected at the highest frequency when the simulation runs, so call this after run_sweep().
+        A port with number_of_modes=1 has one mode of order (0, 0) whose polarization is "mixed" unless the
+        polarization angle is 0 (TE) or 90 (TM) degrees.
 
         Returns:
-            complex: The γ-constant
+            list[tuple[int | float, int, int, str]]: (S-matrix index, m, n, polarization) per port mode
         """
-        S, P = self.port_modes[1]
-        beta = self.get_beta(k0)
-        gamma_te = beta
-        gamma_tm = k0**2 / beta
-        return 1j * (abs(S)**2 * gamma_te + abs(P)**2 * gamma_tm)
+        out = []
+        for mode_nr, coeffs in sorted(self._coeffs.items()):
+            nonzero = np.flatnonzero(np.abs(coeffs) > 1e-12)
+            m, n, pol = self._harmonics[nonzero[0]]
+            out.append((self.smatrix_index(mode_nr), m, n, pol if len(nonzero) == 1 else "mixed"))
+        return out
+
+    def order_direction(self, freq: float, m: int, n: int) -> tuple[float, float] | None:
+        """The direction of Floquet order (m, n) at freq, away from the cell through this port.
+
+        Args:
+            freq (float): The frequency in Hz
+            m (int): The order along the first lattice vector
+            n (int): The order along the second lattice vector
+
+        Returns:
+            tuple[float, float] | None: The angles (θ, φ) in degrees from the port normal, None if the order is
+            evanescent at freq.
+        """
+        k0 = 2 * np.pi * freq / 299792458
+        kt = self._kt(k0, m, n)
+        k = k0 * np.sqrt(self.er)
+        if kt @ kt >= k**2:
+            return None
+        theta = np.degrees(np.arcsin(np.linalg.norm(kt) / k))
+        phi = np.degrees(np.arctan2(kt[1], kt[0]))
+        return float(theta), float(phi)
+
+    def _reciprocal(self) -> tuple[np.ndarray, np.ndarray]:
+        """The reciprocal lattice vectors b1, b2 (b_i · a_j = 2π δ_ij)."""
+        if self.lattice is None:
+            raise ValueError("FloquetPort: grating modes need the lattice vectors of the cell (use bc.floquet_port).")
+        a1, a2 = self.lattice
+
+        def rot(v):
+            return np.array([v[1], -v[0]])
+
+        return 2 * np.pi * rot(a2) / (a1 @ rot(a2)), 2 * np.pi * rot(a1) / (a2 @ rot(a1))
+
+    def _kt(self, k0: float, m: int, n: int) -> np.ndarray:
+        """The transverse wave vector of harmonic (m, n)."""
+        kt = k0 * np.sin(self.scan_theta) * np.array([np.cos(self.scan_phi), np.sin(self.scan_phi)])
+        if m or n:
+            b1, b2 = self._reciprocal()
+            kt = kt + m * b1 + n * b2
+        return kt
+
+    def _prepare(self, k0max: float, mesh) -> None:
+        """Sets the port geometry and selects the basis modes at the highest frequency (and the current scan angle).
+
+        Args:
+            k0max (float): The free space propagation constant at the highest simulation frequency
+            mesh (Mesh3D): The mesh, for the inward normal and the area of the port face
+        """
+        self._inward_z = float(np.sign(mesh.inward_normal(self.tags)[2])) or -1.0
+        p = mesh.nodes
+        tris = mesh.tris[:, mesh.get_triangles(self.tags)]
+        cross = np.cross(p[:, tris[1]] - p[:, tris[0]], p[:, tris[2]] - p[:, tris[0]], axis=0)
+        self.area = float(0.5 * np.linalg.norm(cross, axis=0).sum())
+        nmodes = self.number_of_modes
+        if nmodes is not None and nmodes <= 2:
+            self._harmonics = [(0, 0, "TE"), (0, 0, "TM")]
+            self._set_port_modes(nmodes)
+            return
+
+        k2 = self.er * k0max**2
+        b1, b2 = self._reciprocal()
+        bmin = min(np.linalg.norm(b1), np.linalg.norm(b2))
+        M = int(np.ceil(2 * np.sqrt(k2) / bmin + np.sqrt(nmodes or 1))) + 2
+        cands = [(m, n) for m in range(-M, M + 1) for n in range(-M, M + 1) if (m, n) != (0, 0)]
+        kt2 = {mn: float(np.sum(self._kt(k0max, *mn) ** 2)) for mn in cands}
+        cands.sort(key=lambda mn: (kt2[mn], abs(mn[0]) + abs(mn[1]), mn))
+        order = [(0, 0)] + cands  # the specular (0, 0) harmonic first, also when a grating mode has a smaller k_t
+        if nmodes is None:
+            order = [(0, 0)] + [mn for mn in cands if kt2[mn] < k2]
+            nmodes = 2 * len(order)
+        else:
+            nh = (nmodes + 1) // 2
+            if nh < len(order) and nh > 1 and abs(kt2[order[nh]] - kt2[order[nh - 1]]) < 1e-9 * k2:
+                logger.warning(
+                    f"FloquetPort {self.port_number}: {nmodes} modes split a group of grating modes with the same "
+                    "propagation constant; the left out modes are only absorbed approximately."
+                )
+            order = order[:nh]
+        self._harmonics = [(m, n, pol) for m, n in order for pol in ("TE", "TM")][:max(nmodes, 2)]
+        self._set_port_modes(nmodes)
+        logger.debug(f"FloquetPort {self.port_number} modes: {self._harmonics}")
+
+    ############################################################
+    #                        MODE FIELDS                       #
+    ############################################################
+
+    def _basis_mode(self, k0: float, i: int) -> tuple[np.ndarray, complex, np.ndarray, complex, float]:
+        """Of basis mode i: the transverse wave vector, k_z, the unit E_t direction, γ and the amplitude."""
+        m, n, pol = self._harmonics[i]
+        kt = self._kt(k0, m, n)
+        kz = np.sqrt(complex(self.er * k0**2 - kt @ kt))
+        if kz.imag > 0:
+            kz = np.conj(kz)
+        if abs(kz) < 1e-6 * k0:
+            logger.warning(f"FloquetPort {self.port_number}: mode {m, n, pol} is at cutoff (Wood anomaly).")
+            kz = -1j * 1e-6 * k0
+        ktn = np.linalg.norm(kt)
+        if ktn > 1e-9 * k0:
+            t = kt / ktn
+        else:
+            t = np.array([np.cos(self.scan_phi), np.sin(self.scan_phi)])
+        if pol == "TE":
+            u = np.array([-t[1], t[0]])
+            gamma = 1j * kz
+            amp = np.sqrt(2 * k0 * Z0 * self.power / (self.area * abs(kz)))
+        else:
+            u = -t
+            gamma = 1j * self.er * k0**2 / kz
+            amp = np.sqrt(2 * Z0 * abs(kz) * self.power / (self.area * k0 * self.er))
+        return kt, kz, u, gamma, amp
+
+    @property
+    def n_basis(self) -> int:
+        return len(self._harmonics)
+
+    def basis_gamma(self, k0: float, i: int) -> complex:
+        """The Robin coefficient γ of basis mode i."""
+        return self._basis_mode(k0, i)[3]
+
+    def basis_norm(self, k0: float, i: int) -> float:
+        """∬ |e_t,i|² dS of basis mode i."""
+        return self._basis_mode(k0, i)[4] ** 2 * self.area
+
+    def basis_field(
+        self, k0: float, i: int, x: np.ndarray, y: np.ndarray, which: Literal["E", "Exy", "H"] = "E"
+    ) -> np.ndarray:
+        """The (3, N) field of basis mode i at global coordinates x, y of the port face."""
+        kt, kz, u, _, amp = self._basis_mode(k0, i)
+        phase = amp * np.exp(-1j * (kt[0] * x + kt[1] * y))
+        kzv = kz * self._inward_z  # the incident mode travels along the inward normal
+        ez = 0.0 if self._harmonics[i][2] == "TE" else -(kt @ u) / kzv
+        E = np.array([u[0] * phase, u[1] * phase, ez * phase])
+        if which == "Exy":
+            E[2] = 0
+            return E
+        if which == "E":
+            return E
+        if which == "H":
+            kv = np.array([kt[0], kt[1], kzv])
+            return np.cross(kv, E, axis=0) / (k0 * Z0)
+        raise ValueError("Field parameter 'which' must be 'E', 'Exy' or 'H'.")
+
+    def _mode_coeffs(self, mode_nr: int) -> np.ndarray:
+        return self._coeffs[mode_nr]
+
+    def get_amplitude(self, k0: float) -> float:
+        """The E_t amplitude of the TE00 mode."""
+        return self._basis_mode(k0, 0)[4]
+
+    def get_beta(self, k0: float, mode_nr: int = 1) -> complex:
+        """The propagation constant k_z of port mode mode_nr (of its first basis mode). Evanescent: k_z = -jα."""
+        i = int(np.flatnonzero(self._coeffs[mode_nr])[0])
+        return self._basis_mode(k0, i)[1]
+
+    def portZ0(self, k0: float | None = None, mode_nr: int = 1) -> complex | float | None:
+        return Z0
+
+    _self_normalized: bool = True
+
+    def mode_beta(self, k0: float, mode_nr: int = 1) -> complex:
+        return self.get_beta(k0, mode_nr)
+
+    def mode_Z0(self, k0: float, mode_nr: int = 1) -> complex | float | None:
+        return self.portZ0(k0, mode_nr)
+
+    def is_propagating(self, k0: float, mode_nr: int = 1) -> bool:
+        """True if port mode mode_nr carries power at k0."""
+        beta = complex(self.get_beta(k0, mode_nr))
+        return abs(beta.real) > abs(beta.imag)
+
+    def get_gamma(self, k0: float) -> complex:
+        """γ of the first order absorbing term for the field outside the mode basis: j k0 √εr.
+
+        The basis modes are absorbed with their own γ by the dense projection term (assemble_floquet_port).
+        """
+        return 1j * k0 * np.sqrt(self.er)
 
     def get_Uinc(
         self,
@@ -958,81 +1488,12 @@ class FloquetPort(PortBC, Saveable):
         k0: float,
         mode_nr: int = 1,
     ) -> np.ndarray:
-        return (
-            -2
-            * self.get_gamma(k0)
-            * self.port_mode_3d_global(
-                x_global, y_global, z_global, k0, mode_nr=mode_nr
-            )
-        )
-
-    def port_mode_3d(
-        self,
-        x_local: np.ndarray,
-        y_local: np.ndarray,
-        k0: float,
-        which: Literal["E", "H"] = "E",
-        mode_nr: int = 1,
-    ) -> np.ndarray:
-        """Compute the port mode E-field in local coordinates (XY) + Z out of plane.
-
-        Args:
-            x_local (np.ndarray): The local X-coordinates
-            y_local (np.ndarray): The local Y-coordinates
-            k0 (float): The free space propagation constant
-            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
-            mode_nr (int, optional): The port mode number. Defaults to 1.
-
-        Returns:
-            np.ndarray: The (3, N) port mode E-field in local coordinates
-        """
-
-        S, P = self.port_modes[mode_nr]
-        kx = k0 * np.sin(self.scan_theta) * np.cos(self.scan_phi)
-        ky = k0 * np.sin(self.scan_theta) * np.sin(self.scan_phi)
-        phi = np.exp(-1j * (x_local * kx + y_local * ky))
-
-        E0 = self.get_amplitude(k0)
-
-        Ex = (
-            E0
-            * (
-                -S * np.sin(self.scan_phi)
-                - P * np.cos(self.scan_theta) * np.cos(self.scan_phi)
-            )
-            * phi
-        )
-        Ey = (
-            E0
-            * (
-                S * np.cos(self.scan_phi)
-                - P * np.cos(self.scan_theta) * np.sin(self.scan_phi)
-            )
-            * phi
-        )
-        Ez = (P * E0 * np.sin(self.scan_theta)) * phi
-
-        if which == "E":
-            Exyz = np.array([Ex, Ey, Ez])
-            return Exyz
-        if which == "Exy":
-            Exyz = np.array([Ex, Ey, 0 * Ez])
-            return Exyz
-        elif which == "H":
-            Z_space = Z0 / np.sqrt(self.er)
-
-            xu = np.sin(self.scan_theta) * np.cos(self.scan_phi)
-            yu = np.sin(self.scan_theta) * np.sin(self.scan_phi)
-            zu = np.cos(self.scan_theta)
-
-            Hx = (Ey * zu - Ez * yu) / Z_space
-            Hy = (Ez * xu - Ex * zu) / Z_space
-            Hz = (Ex * yu - Ey * xu) / Z_space
-
-            Hxyz = np.array([Hx, Hy, Hz])
-            return Hxyz
-        else:
-            raise ValueError("Field parameter 'which' must be either 'E' or 'H'.")
+        """The excitation -2 Σ c_i γ_i e_t,i of port mode mode_nr."""
+        out = np.zeros((3, np.asarray(x_global).size), dtype=np.complex128)
+        for i, c in enumerate(self._coeffs[mode_nr]):
+            if c != 0:
+                out += -2 * c * self.basis_gamma(k0, i) * self.basis_field(k0, i, x_global, y_global, "Exy")
+        return out
 
     def port_mode_3d_global(
         self,
@@ -1040,7 +1501,7 @@ class FloquetPort(PortBC, Saveable):
         y_global: np.ndarray,
         z_global: np.ndarray,
         k0: float,
-        which: Literal["E", "H"] = "E",
+        which: Literal["E", "Exy", "H"] = "E",
         mode_nr: int = 1,
     ) -> np.ndarray:
         """Compute the port mode field for global xyz coordinates.
@@ -1050,18 +1511,55 @@ class FloquetPort(PortBC, Saveable):
             y_global (np.ndarray): The global Y-coordinates
             z_global (np.ndarray): The global Z-coordinates
             k0 (float): The free space propagation constant
-            which (Literal["E", "H"], optional): Which field to return. Defaults to "E".
+            which (Literal["E", "Exy", "H"], optional): Which field to return. Defaults to "E".
             mode_nr (int, optional): The port mode number. Defaults to 1.
 
         Returns:
-            np.ndarray: The (3, N) port mode E-field in global coordinates
+            np.ndarray: The (3, N) port mode field in global coordinates
         """
-        if self.cs is None:
-            raise ValueError("No coordinate system is defined for this FloquetPort")
-        xl, yl, _ = self.cs.in_local_cs(x_global, y_global, z_global)
-        Ex, Ey, Ez = self.port_mode_3d(xl, yl, k0, mode_nr=mode_nr, which=which)
-        Exg, Eyg, Ezg = self.cs.in_global_basis(Ex, Ey, Ez)
-        return np.array([Exg, Eyg, Ezg])
+        out = np.zeros((3, np.asarray(x_global).size), dtype=np.complex128)
+        for i, c in enumerate(self._coeffs[mode_nr]):
+            if c != 0:
+                out += c * self.basis_field(k0, i, x_global, y_global, which)
+        return out
+
+    def port_mode_3d(
+        self,
+        x_local: np.ndarray,
+        y_local: np.ndarray,
+        k0: float,
+        which: Literal["E", "Exy", "H"] = "E",
+        mode_nr: int = 1,
+    ) -> np.ndarray:
+        """The port mode field, with the global X and Y coordinates as local coordinates."""
+        return self.port_mode_3d_global(x_local, y_local, 0 * x_local, k0, which, mode_nr)
+
+    def sparam_projection(
+        self,
+        nodes: np.ndarray,
+        tri_vertices: np.ndarray,
+        mode_nr: int,
+        active: bool,
+        k0: float,
+        fieldf: Callable,
+        gq_order: int = 5,
+    ) -> tuple[complex, complex]:
+        """The pair (∬ (E - Q e)·e* dS, ∬ e·e* dS) of port mode mode_nr; their ratio is its outgoing amplitude.
+
+        The Floquet modes are orthogonal in ∬ e_m·e_n* dS over the cell, so the conjugate projection separates them.
+        """
+        from ....mth.integrals import surface_integral
+
+        Q = 1 if active else 0
+        const = np.ones((tri_vertices.shape[1],), dtype=np.complex128)
+
+        def field_dot_e(x, y, z):
+            e = self.port_mode_3d_global(x, y, z, k0, which="Exy", mode_nr=mode_nr)
+            E = fieldf(x, y, z) - Q * e
+            return E[0] * np.conj(e[0]) + E[1] * np.conj(e[1])
+
+        norm = sum(abs(c) ** 2 * self.basis_norm(k0, i) for i, c in enumerate(self._coeffs[mode_nr]))
+        return surface_integral(nodes, tri_vertices, field_dot_e, const, gq_order=gq_order), norm
 
 
 class RectangularWaveguide(PortBC, Saveable):

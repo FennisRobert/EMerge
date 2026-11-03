@@ -95,7 +95,7 @@ def test():
     port2 = model.mw.bc.ModalPort(model.select.face.near(Lbox+lfeed, 0, h), 2, modetype='TEM')
 
     # At last we can compute the frequency domain study
-    data = model.mw.run_sweep(parallel=True)
+    data = model.mw.run_sweep_distributed()
 
     # Next we will use the Vector Fitting algorithm to model our S-parameters with a Rational function
 

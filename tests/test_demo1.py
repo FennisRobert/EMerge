@@ -50,7 +50,7 @@ def test() -> None:
     #m.view(use_gmsh=True)
 
     # Finally we execute the frequency domain sweep and compute the Scattering Parameters.
-    sol = m.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8, multi_processing=False)
+    sol = m.mw.run_sweep_distributed(n_workers=4, frequency_groups=8)
     
 if __name__ == "__main__":
     test()

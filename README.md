@@ -207,7 +207,7 @@ pip install https://gmsh.info/python-packages-dev/gmsh/gmsh-5.0.0.dev1-py2.py3-n
 You can read Gerber and ODB++ files using the optional `emcad` dependency which I also maintain. To get all the dependencies its easiest to do:
 
 ```bash
-pip intall emerge[cad]
+pip install emerge[cad]
 ```
 
 ---

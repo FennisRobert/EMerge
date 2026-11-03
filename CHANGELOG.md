@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b11 — changes since 2.8.9
+## 3.0.0b12 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus
@@ -163,6 +163,12 @@
 - `em.solvers.Sparta` (`sparta>=0.2.0`) is a direct solver with GPU, CPU and hybrid modes
   (`set_options()`). With multiprocessing it is now picked automatically when installed, before
   the Apple Accelerate solver.
+- **`em.set_threads(n)` sets the number of CPU threads of EMerge.** It applies to the compiled
+  kernels (matrix assembly, interpolation, far fields, mesh processing), which used all logical
+  cores, and is the default `nthreads` of the solvers. It can be called at any time, also between
+  sweeps; `em.set_threads(None)` returns to the defaults and `em.get_threads()` returns the count.
+  An `nthreads=` argument of a run method takes precedence for the solver. Worker processes of
+  `worker_type="process"` use the same count.
 - **Thread count per solve.** `run_sweep()`, `run_scattered()`, `run_adaptive_sweep()`,
   `adaptive_mesh_refinement()` and the thermal `run_steady_state()`, `run_transient()` and
   `run_steady_state_nl()` take `nthreads=`. It is passed to the solver, which can also be set
@@ -235,6 +241,13 @@
 ### Microwave
 
 - **`run_adaptive_sweep()`**: `n_max_new` is replaced by `tol` and `max_samples`.
+- **`run_sweep()` and `run_scattered()` are sequential; `run_sweep_distributed()` and
+  `run_scattered_distributed()` solve several frequency points at once.**
+  `run_sweep(parallel=True, n_workers=4)` read as "use multiple cores", but the solver is always
+  multi-threaded: it solves 4 frequency points at the same time. That is now
+  `run_sweep_distributed(n_workers=4, nthreads=...)`, which uses `n_workers × nthreads` threads.
+  `multi_processing=True` became `worker_type="process"`. `run_sweep()` and `run_scattered()`
+  still accept `parallel`, `n_workers` and `multi_processing` for now, with a deprecation warning.
 - **`MWField.farfield()` returns an `EHFieldFF`** (use `.E`, `.H`) instead of an `(E, H, Ptot)`
   tuple.
 - **`farfield_3d()` arrays are indexed `(theta, phi)`** (were `(phi, theta)`).
@@ -349,6 +362,8 @@
     `model.set_solver(em.solvers.Pardiso)`.
 11. Replace `WavePortIH` with `WavePort`, and multi-mode `ModalPort`s whose modes have different
     propagation constants with `WavePort(..., number_of_modes=N)`.
+12. Replace `run_sweep(parallel=True, n_workers=N)` with `run_sweep_distributed(n_workers=N)`
+    (`run_scattered` likewise), and `multi_processing=True` with `worker_type="process"`.
 
 ---
 
@@ -430,6 +445,9 @@
 - **SPARTA:** with a multithreaded sweep, worker threads lost the mode set with `set_options()`
   and used the GPU.
 - **`XYPolygon` fillets** were inserted at shifted positions when more than one fillet was used.
+- **`XYPolygon.rect()`** raised an error for a 2D origin `(x, y)`.
+- **`import emerge` on Windows and Linux** raised `NameError: name 'Factorization' is not defined`
+  in 3.0.0b10. The Apple Accelerate solver interface used its macOS-only library at import time.
 - **STEP import:** integer values were rejected where floats were expected.
 - **`Curve`** no longer opens the FLTK GUI.
 - **cuDSS:**

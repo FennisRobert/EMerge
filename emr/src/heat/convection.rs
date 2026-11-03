@@ -60,28 +60,30 @@ pub fn _robin_stiffness_builder(
     tri_ids_2d: &ArrayView2<i64>,
     h_coeff: f64,
 ) -> CooF {
-    let n_tri = tri_ids_2d.shape()[1];
-    let m = _tri_mass_stencil();
-    let mut values = vec![0.0; n_tri * 36];
-    let mut rows = vec![0i64; n_tri * 36];
-    let mut cols = vec![0i64; n_tri * 36];
-    values
-        .par_chunks_mut(36)
-        .zip(rows.par_chunks_mut(36))
-        .zip(cols.par_chunks_mut(36))
-        .enumerate()
-        .for_each(|(idx, ((v, r), c))| {
-            let itri = tri_ids_2d[[0, idx]] as usize;
-            let scale = h_coeff * tri_area(nodes, tris, itri);
-            for i in 0..6 {
-                for j in 0..6 {
-                    r[6 * i + j] = tri_to_field[[i, itri]];
-                    c[6 * i + j] = tri_to_field[[j, itri]];
-                    v[6 * i + j] = m[i][j] * scale;
+    crate::pool::install(|| {
+        let n_tri = tri_ids_2d.shape()[1];
+        let m = _tri_mass_stencil();
+        let mut values = vec![0.0; n_tri * 36];
+        let mut rows = vec![0i64; n_tri * 36];
+        let mut cols = vec![0i64; n_tri * 36];
+        values
+            .par_chunks_mut(36)
+            .zip(rows.par_chunks_mut(36))
+            .zip(cols.par_chunks_mut(36))
+            .enumerate()
+            .for_each(|(idx, ((v, r), c))| {
+                let itri = tri_ids_2d[[0, idx]] as usize;
+                let scale = h_coeff * tri_area(nodes, tris, itri);
+                for i in 0..6 {
+                    for j in 0..6 {
+                        r[6 * i + j] = tri_to_field[[i, itri]];
+                        c[6 * i + j] = tri_to_field[[j, itri]];
+                        v[6 * i + j] = m[i][j] * scale;
+                    }
                 }
-            }
-        });
-    (Array1::from(values), Array1::from(rows), Array1::from(cols))
+            });
+        (Array1::from(values), Array1::from(rows), Array1::from(cols))
+    })
 }
 
 /// COO radiation stiffness and load vector linearised around the temperature solution T_dofs.

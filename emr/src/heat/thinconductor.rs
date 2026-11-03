@@ -79,25 +79,27 @@ pub fn leg2_tri_stiff(
     tri_ids_2d: &ArrayView2<i64>,
     kappa_t: f64,
 ) -> (Array1<f64>, Array1<i64>, Array1<i64>) {
-    let n_sel = tri_ids_2d.shape()[1];
-    let mut values = vec![0.0; n_sel * 36];
-    let mut rows = vec![0i64; n_sel * 36];
-    let mut cols = vec![0i64; n_sel * 36];
-    values
-        .par_chunks_mut(36)
-        .zip(rows.par_chunks_mut(36))
-        .zip(cols.par_chunks_mut(36))
-        .enumerate()
-        .for_each(|(idx, ((v, r), c))| {
-            let itri = tri_ids_2d[[0, idx]] as usize;
-            let ksub = leg2_tri_stiff_triangle(&tri_global_vertices(nodes, tris, itri).view(), kappa_t);
-            let fids: Vec<i64> = (0..6).map(|i| tri_to_field[[i, itri]]).collect();
-            write_block_rowcol(&fids, r, c);
-            for (k, x) in ksub.iter().enumerate() {
-                v[k] = *x;
-            }
-        });
-    (Array1::from(values), Array1::from(rows), Array1::from(cols))
+    crate::pool::install(|| {
+        let n_sel = tri_ids_2d.shape()[1];
+        let mut values = vec![0.0; n_sel * 36];
+        let mut rows = vec![0i64; n_sel * 36];
+        let mut cols = vec![0i64; n_sel * 36];
+        values
+            .par_chunks_mut(36)
+            .zip(rows.par_chunks_mut(36))
+            .zip(cols.par_chunks_mut(36))
+            .enumerate()
+            .for_each(|(idx, ((v, r), c))| {
+                let itri = tri_ids_2d[[0, idx]] as usize;
+                let ksub = leg2_tri_stiff_triangle(&tri_global_vertices(nodes, tris, itri).view(), kappa_t);
+                let fids: Vec<i64> = (0..6).map(|i| tri_to_field[[i, itri]]).collect();
+                write_block_rowcol(&fids, r, c);
+                for (k, x) in ksub.iter().enumerate() {
+                    v[k] = *x;
+                }
+            });
+        (Array1::from(values), Array1::from(rows), Array1::from(cols))
+    })
 }
 
 #[pyfunction]

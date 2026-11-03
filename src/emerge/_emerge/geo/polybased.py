@@ -553,7 +553,7 @@ class XYPolygon:
         Returns:
             XYPolygon: A new XYpolygon object
         """
-        origin = _parse_vector(origin)[:-1]
+        origin = _parse_vector(origin)[:2]
         
         if alignment is Alignment.CORNER:
             x0, y0 = origin

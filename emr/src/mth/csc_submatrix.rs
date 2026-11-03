@@ -11,47 +11,49 @@ use rayon::prelude::*;
 
 /// (indptr, indices, data) of A[:, keep][keep, :] for a square CSC matrix with n rows and increasing keep.
 pub fn csc_submatrix(indptr: &[i32], indices: &[i32], data: &[c64], n: usize, keep: &[i64]) -> (Vec<i32>, Vec<i32>, Vec<c64>) {
-    let mut newid = vec![-1i32; n];
-    for (j, &c) in keep.iter().enumerate() {
-        newid[c as usize] = j as i32;
-    }
-    let counts: Vec<usize> = keep
-        .par_iter()
-        .map(|&c| {
-            let (a, b) = (indptr[c as usize] as usize, indptr[c as usize + 1] as usize);
-            indices[a..b].iter().filter(|&&r| newid[r as usize] >= 0).count()
-        })
-        .collect();
-    let mut outptr = vec![0i32; keep.len() + 1];
-    for (j, &m) in counts.iter().enumerate() {
-        outptr[j + 1] = outptr[j] + m as i32;
-    }
-    let nnz = outptr[keep.len()] as usize;
-    let mut outind = vec![0i32; nnz];
-    let mut outdata = vec![c64::new(0.0, 0.0); nnz];
-    // one disjoint output slice per kept column
-    let mut cols = Vec::with_capacity(keep.len());
-    let (mut ri, mut rd) = (outind.as_mut_slice(), outdata.as_mut_slice());
-    for &m in &counts {
-        let (ci, ti) = ri.split_at_mut(m);
-        let (cd, td) = rd.split_at_mut(m);
-        cols.push((ci, cd));
-        ri = ti;
-        rd = td;
-    }
-    cols.into_par_iter().zip(keep.par_iter()).for_each(|((ci, cd), &c)| {
-        let (a, b) = (indptr[c as usize] as usize, indptr[c as usize + 1] as usize);
-        let mut p = 0;
-        for k in a..b {
-            let r = newid[indices[k] as usize];
-            if r >= 0 {
-                ci[p] = r;
-                cd[p] = data[k];
-                p += 1;
-            }
+    crate::pool::install(|| {
+        let mut newid = vec![-1i32; n];
+        for (j, &c) in keep.iter().enumerate() {
+            newid[c as usize] = j as i32;
         }
-    });
-    (outptr, outind, outdata)
+        let counts: Vec<usize> = keep
+            .par_iter()
+            .map(|&c| {
+                let (a, b) = (indptr[c as usize] as usize, indptr[c as usize + 1] as usize);
+                indices[a..b].iter().filter(|&&r| newid[r as usize] >= 0).count()
+            })
+            .collect();
+        let mut outptr = vec![0i32; keep.len() + 1];
+        for (j, &m) in counts.iter().enumerate() {
+            outptr[j + 1] = outptr[j] + m as i32;
+        }
+        let nnz = outptr[keep.len()] as usize;
+        let mut outind = vec![0i32; nnz];
+        let mut outdata = vec![c64::new(0.0, 0.0); nnz];
+        // one disjoint output slice per kept column
+        let mut cols = Vec::with_capacity(keep.len());
+        let (mut ri, mut rd) = (outind.as_mut_slice(), outdata.as_mut_slice());
+        for &m in &counts {
+            let (ci, ti) = ri.split_at_mut(m);
+            let (cd, td) = rd.split_at_mut(m);
+            cols.push((ci, cd));
+            ri = ti;
+            rd = td;
+        }
+        cols.into_par_iter().zip(keep.par_iter()).for_each(|((ci, cd), &c)| {
+            let (a, b) = (indptr[c as usize] as usize, indptr[c as usize + 1] as usize);
+            let mut p = 0;
+            for k in a..b {
+                let r = newid[indices[k] as usize];
+                if r >= 0 {
+                    ci[p] = r;
+                    cd[p] = data[k];
+                    p += 1;
+                }
+            }
+        });
+        (outptr, outind, outdata)
+    })
 }
 
 // [Written by Claude]

@@ -40,16 +40,18 @@ pub fn _locate_entries_kernel(
     cols: &ArrayView1<i64>,
     data_indices: &mut ArrayViewMut1<i64>,
 ) {
-    let found: Vec<i64> = (0..rows.len())
-        .into_par_iter()
-        .map(|i| {
-            let c = cols[i] as usize;
-            _find_row_in_column(indices, indptr[c], indptr[c + 1], rows[i])
-        })
-        .collect();
-    for (d, f) in data_indices.iter_mut().zip(found) {
-        *d = f;
-    }
+    crate::pool::install(|| {
+        let found: Vec<i64> = (0..rows.len())
+            .into_par_iter()
+            .map(|i| {
+                let c = cols[i] as usize;
+                _find_row_in_column(indices, indptr[c], indptr[c + 1], rows[i])
+            })
+            .collect();
+        for (d, f) in data_indices.iter_mut().zip(found) {
+            *d = f;
+        }
+    })
 }
 
 /// out[data_indices[k]] += tri_coeffs[k / values_per_tri] * unit_values[k], accumulating repeated indices.
@@ -77,11 +79,13 @@ pub fn _scatter_add(out: &mut ArrayViewMut1<c64>, data_indices: &ArrayView1<i64>
 
 /// out = a + alpha * b.
 pub fn _write_a_plus_alpha_b(out: &mut ArrayViewMut1<c64>, a: &ArrayView1<c64>, b: &ArrayView1<c64>, alpha: c64) {
-    out.as_slice_mut()
-        .expect("out must be contiguous")
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, o)| *o = a[i] + alpha * b[i]);
+    crate::pool::install(|| {
+        out.as_slice_mut()
+            .expect("out must be contiguous")
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, o)| *o = a[i] + alpha * b[i]);
+    })
 }
 
 #[pyfunction]

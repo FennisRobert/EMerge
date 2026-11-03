@@ -15,6 +15,7 @@ pub mod heat;
 pub mod mesh3d;
 pub mod microwave;
 pub mod mth;
+pub mod pool;
 
 /// Raw pointer that may be shared between rayon workers that write provably disjoint indices.
 #[derive(Clone, Copy)]
@@ -79,6 +80,7 @@ fn emr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_submodule(m, "heat_thinconductor", heat::thinconductor::register)?;
     add_submodule(m, "mesh3d", mesh3d::register)?;
     add_submodule(m, "aura", aura::py::register)?;
+    add_submodule(m, "pool", pool::register)?; // [Written by Claude]
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

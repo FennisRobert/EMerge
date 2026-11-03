@@ -25,6 +25,7 @@ from ...elements.femdata import FEMBasis
 from ...elements.nedelec2 import Nedelec2
 from ...elements.dofsets import DoFSet, ElementSpace
 from ...solveroutine import SolveRoutine, AutomaticRoutine
+from ... import threads as _threads
 from ...system import _called_from_main_function
 from ...selection import FaceSelection
 from ...settings import Settings
@@ -146,6 +147,12 @@ def _solve_krylov(
 
 
 _worker_routine: SolveRoutine | None = None
+
+
+def _init_worker_threads(nthreads: int | None) -> None:
+    """Applies the parent's em.set_threads() count in a worker process."""
+    if nthreads is not None:
+        _threads.set_threads(nthreads)
 
 
 def run_job_multi(job: SimJob, nthreads: int | None = None) -> SimJob:
@@ -1532,7 +1539,8 @@ class Microwave3D(GenericPhysics3D):
                 "Multiprocess support must be launched from your "
                 "if __name__ == '__main__' guard in the top-level script."
             )
-        return mp.Pool(processes=n_workers)
+        # Worker processes start a fresh EMerge, so they get the thread count set with em.set_threads() here
+        return mp.Pool(processes=n_workers, initializer=_init_worker_threads, initargs=(_threads._NTHREADS,))
 
     def _run_frequency_domain(
         self,
@@ -2120,7 +2128,142 @@ class Microwave3D(GenericPhysics3D):
         logger.info(f"Elapsed time = {(T2 - T0):.2f} seconds.")
         return None
 
+    # [Written by Claude] run_sweep / run_scattered solve one frequency point at a time; the *_distributed versions
+    # solve several at once. The old positional order of both, for scripts that still pass parallel=True.
+    _LEGACY_SWEEP_ARGS = (
+        "parallel", "n_workers", "harddisc_path", "frequency_groups", "cache_harddisk", "multi_processing",
+        "automatic_modal_analysis", "nthreads",
+    )
+    _LEGACY_SCATTERED_ARGS = (
+        "parallel", "n_workers", "cache_harddisk", "harddisc_path", "frequency_groups", "multi_processing",
+        "automatic_modal_analysis", "nthreads",
+    )
+
+    @staticmethod
+    def _legacy_parallel_options(
+        method: str, order: tuple[str, ...], args: tuple, kwargs: dict[str, Any], opts: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Maps the deprecated parallel, n_workers and multi_processing arguments of run_sweep / run_scattered
+        onto the options of the shared driver, and warns with the replacement call."""
+        if len(args) > len(order):
+            raise TypeError(f"{method}() takes at most {len(order)} positional arguments")
+        unknown = set(kwargs) - {"parallel", "n_workers", "multi_processing", "_reset_solvers"}
+        if unknown:
+            raise TypeError(f"{method}() got an unexpected keyword argument '{min(unknown)}'")
+        opts = {"parallel": False, "n_workers": 2, "multi_processing": False, **opts}
+        opts.update(zip(order, args))
+        opts.update(kwargs)
+
+        if opts["parallel"]:
+            process = ", worker_type='process'" if opts["multi_processing"] else ""
+            logger.warning(
+                f"{method}(parallel=True) is deprecated: the solver already uses several threads for each frequency. "
+                f"To solve several frequency points at the same time, use "
+                f"{method}_distributed(n_workers={opts['n_workers']}{process})."
+            )
+        else:
+            logger.warning(
+                f"{method}() no longer takes parallel, n_workers or multi_processing, they are ignored. "
+                f"To solve several frequency points at the same time, use {method}_distributed()."
+            )
+        return opts
+
+    @staticmethod
+    def _check_worker_type(worker_type: str) -> bool:
+        """Returns whether the workers are processes."""
+        if worker_type not in ("thread", "process"):
+            raise ValueError(f"worker_type must be 'thread' or 'process', not {worker_type!r}.")
+        return worker_type == "process"
+
     def run_sweep(
+        self,
+        *_legacy_args: Any,
+        nthreads: int | None = None,
+        frequency_groups: int = -1,
+        cache_harddisk: bool = False,
+        harddisc_path: str = "EMergeSparse",
+        automatic_modal_analysis: bool = True,
+        **_legacy_kwargs: Any,
+    ) -> MWData:
+        """Executes a frequency domain study, solving the frequency points one after another.
+
+        Each solve uses nthreads CPU threads (for solvers that support it). To solve several frequency
+        points at the same time, use run_sweep_distributed().
+
+        The matrices of all frequency points are assembled before they are solved. frequency_groups limits
+        how many are held in memory at once: with 11 frequencies in groups of 4, the frequency indices
+        [[1,2,3,4],[5,6,7,8],[9,10,11]] are assembled and solved in turn. cache_harddisk writes the
+        assembled matrices to disk instead.
+
+        Args:
+            nthreads (int | None, optional): The number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
+            frequency_groups (int, optional): The number of frequency points in a solve group. -1 is all. Defaults to -1.
+            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
+            harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+
+        Raises:
+            SimulationError: An error associated witha a problem during the simulation.
+
+        Returns:
+            MWData: The dataset.
+        """
+        opts: dict[str, Any] = {
+            "harddisc_path": harddisc_path, "frequency_groups": frequency_groups, "cache_harddisk": cache_harddisk,
+            "automatic_modal_analysis": automatic_modal_analysis, "nthreads": nthreads,
+        }
+        if _legacy_args or _legacy_kwargs:
+            opts = self._legacy_parallel_options(
+                "run_sweep", self._LEGACY_SWEEP_ARGS, _legacy_args, _legacy_kwargs, opts
+            )
+        return self._run_sweep(**opts)
+
+    def run_sweep_distributed(
+        self,
+        n_workers: int = 2,
+        nthreads: int | None = None,
+        frequency_groups: int = -1,
+        cache_harddisk: bool = False,
+        harddisc_path: str = "EMergeSparse",
+        worker_type: Literal["thread", "process"] = "thread",
+        automatic_modal_analysis: bool = True,
+    ) -> MWData:
+        """Executes a frequency domain study, solving n_workers frequency points at the same time.
+
+        Each worker solves one frequency point with nthreads CPU threads (for solvers that support it), so the
+        sweep uses up to n_workers * nthreads threads in total. Every worker holds its own factorization, so
+        the memory use grows with n_workers. This is faster than run_sweep() when one solve does not use all
+        cores efficiently, e.g. for small models with many frequency points.
+
+        The matrices of all frequency points are assembled before they are solved. frequency_groups limits
+        how many are held in memory at once: with 11 frequencies in groups of 4, the frequency indices
+        [[1,2,3,4],[5,6,7,8],[9,10,11]] are assembled and solved in turn. cache_harddisk writes the
+        assembled matrices to disk instead.
+
+        Args:
+            n_workers (int, optional): The number of frequency points solved at the same time. Defaults to 2.
+            nthreads (int | None, optional): The number of CPU threads of each worker's solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
+            frequency_groups (int, optional): The number of frequency points in a solve group. -1 is all. Defaults to -1.
+            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
+            harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
+            worker_type (Literal["thread", "process"], optional): Whether the workers are threads or separate
+                processes (slower on most machines). Defaults to "thread".
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+
+        Raises:
+            SimulationError: An error associated witha a problem during the simulation.
+
+        Returns:
+            MWData: The dataset.
+        """
+        return self._run_sweep(
+            True, n_workers, harddisc_path, frequency_groups, cache_harddisk, self._check_worker_type(worker_type),
+            automatic_modal_analysis, nthreads,
+        )
+
+    def _run_sweep(
         self,
         parallel: bool = False,
         n_workers: int = 2,
@@ -2132,33 +2275,7 @@ class Microwave3D(GenericPhysics3D):
         nthreads: int | None = None,
         _reset_solvers: bool = True,
     ) -> MWData:
-        """Executes a frequency domain study
-
-        The study is distributed over "n_workers" workers.
-        As optional parameter you may set cache_harddisk which will write the matrices to the harddsik. The
-        path that will be used to cache the sparse matrices can be specified.
-        Additionally the term frequency_groups may be specified. This number will define in how
-        many groups the matrices will be pre-computed before they are send to workers. This can minimize
-        the total amound of RAM memory used. For example with 11 frequencies in gruops of 4, the following
-        frequency indices will be precomputed and then solved: [[1,2,3,4],[5,6,7,8],[9,10,11]]
-
-        Args:
-            parallel (bool, optional): Solve the frequency points in parallel. Defaults to False.
-            n_workers (int, optional): The number of workers. Defaults to 2.
-            harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
-            frequency_groups (int, optional): The number of frequency points in a solve group. Defaults to -1.
-            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
-            multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines). Defaults to False.
-            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
-            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
-                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
-
-        Raises:
-            SimulationError: An error associated witha a problem during the simulation.
-
-        Returns:
-            MWData: The dataset.
-        """
+        """The frequency domain study behind run_sweep (parallel=False) and run_sweep_distributed (parallel=True)."""
         self._completed = False
         self._simstart = time.time()
         self.solveroutine.symmetry_limit = self._settings.sim_symmetry_limit
@@ -2498,7 +2615,7 @@ class Microwave3D(GenericPhysics3D):
             logger.info(f"Adaptive sweep: solving at {[_format_freq(f) for f in freqs]}")
             n_before = self.data.scalar.n
             self.frequencies = freqs
-            self.run_sweep(
+            self._run_sweep(
                 parallel,
                 n_workers=n_workers,
                 harddisc_path=harddisc_path,
@@ -2521,6 +2638,89 @@ class Microwave3D(GenericPhysics3D):
 
     def run_scattered(
         self,
+        *_legacy_args: Any,
+        nthreads: int | None = None,
+        frequency_groups: int = -1,
+        cache_harddisk: bool = False,
+        harddisc_path: str = "EMergeSparse",
+        automatic_modal_analysis: bool = True,
+        **_legacy_kwargs: Any,
+    ) -> MWData:
+        """Executes a scattered field simulation, solving the frequency points one after another.
+
+        Each solve uses nthreads CPU threads (for solvers that support it). To solve several frequency
+        points at the same time, use run_scattered_distributed().
+
+        The matrices of all frequency points are assembled before they are solved. frequency_groups limits
+        how many are held in memory at once: with 11 frequencies in groups of 4, the frequency indices
+        [[1,2,3,4],[5,6,7,8],[9,10,11]] are assembled and solved in turn. cache_harddisk writes the
+        assembled matrices to disk instead.
+
+        Args:
+            nthreads (int | None, optional): The number of CPU threads of the solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
+            frequency_groups (int, optional): The number of frequency points in a solve group. -1 is all. Defaults to -1.
+            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
+            harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+
+        Raises:
+            SimulationError: An error associated witha a problem during the simulation.
+
+        Returns:
+            MWData: The dataset.
+        """
+        opts: dict[str, Any] = {
+            "harddisc_path": harddisc_path, "frequency_groups": frequency_groups, "cache_harddisk": cache_harddisk,
+            "automatic_modal_analysis": automatic_modal_analysis, "nthreads": nthreads,
+        }
+        if _legacy_args or _legacy_kwargs:
+            opts = self._legacy_parallel_options(
+                "run_scattered", self._LEGACY_SCATTERED_ARGS, _legacy_args, _legacy_kwargs, opts
+            )
+        return self._run_scattered(**opts)
+
+    def run_scattered_distributed(
+        self,
+        n_workers: int = 2,
+        nthreads: int | None = None,
+        frequency_groups: int = -1,
+        cache_harddisk: bool = False,
+        harddisc_path: str = "EMergeSparse",
+        worker_type: Literal["thread", "process"] = "thread",
+        automatic_modal_analysis: bool = True,
+    ) -> MWData:
+        """Executes a scattered field simulation, solving n_workers frequency points at the same time.
+
+        Each worker solves one frequency point with nthreads CPU threads (for solvers that support it), so the
+        simulation uses up to n_workers * nthreads threads in total. Every worker holds its own factorization,
+        so the memory use grows with n_workers. This is faster than run_scattered() when one solve does not use
+        all cores efficiently, e.g. for small models with many frequency points.
+
+        Args:
+            n_workers (int, optional): The number of frequency points solved at the same time. Defaults to 2.
+            nthreads (int | None, optional): The number of CPU threads of each worker's solver, for solvers that
+                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
+            frequency_groups (int, optional): The number of frequency points in a solve group. -1 is all. Defaults to -1.
+            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
+            harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
+            worker_type (Literal["thread", "process"], optional): Whether the workers are threads or separate
+                processes (slower on most machines). Defaults to "thread".
+            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
+
+        Raises:
+            SimulationError: An error associated witha a problem during the simulation.
+
+        Returns:
+            MWData: The dataset.
+        """
+        return self._run_scattered(
+            True, n_workers, cache_harddisk, harddisc_path, frequency_groups, self._check_worker_type(worker_type),
+            automatic_modal_analysis, nthreads,
+        )
+
+    def _run_scattered(
+        self,
         parallel: bool = False,
         n_workers: int = 2,
         cache_harddisk: bool = False,
@@ -2531,33 +2731,8 @@ class Microwave3D(GenericPhysics3D):
         nthreads: int | None = None,
         _reset_solvers: bool = True,
     ) -> MWData:
-        """Executes a Scattered field simulation
-
-        The study is distributed over "n_workers" workers.
-        As optional parameter you may set cache_harddisk which will write the matrices to the harddsik. The
-        path that will be used to cache the sparse matrices can be specified.
-        Additionally the term frequency_groups may be specified. This number will define in how
-        many groups the matrices will be pre-computed before they are send to workers. This can minimize
-        the total amound of RAM memory used. For example with 11 frequencies in gruops of 4, the following
-        frequency indices will be precomputed and then solved: [[1,2,3,4],[5,6,7,8],[9,10,11]]
-
-        Args:
-            parallel (bool, optional): Solve the frequency points in parallel. Defaults to False.
-            n_workers (int, optional): The number of workers. Defaults to 2.
-            cache_harddisk (bool, optional): Cache the assembled matrices on disk instead of in memory. Defaults to False.
-            harddisc_path (str, optional): The cached matrix path name. Defaults to 'EMergeSparse'.
-            frequency_groups (int, optional): The number of frequency points in a solve group. Defaults to -1.
-            multi_processing (bool, optional): Whether to use multiprocessing instead of multi-threaded (slower on most machines). Defaults to False.
-            automatic_modal_analysis (bool, optional): Automatically compute port modes. Defaults to True.
-            nthreads (int | None, optional): The preferred number of CPU threads of the solver, for solvers that
-                support it (see Solver.set_nthreads). None keeps the solver's own setting. Defaults to None.
-
-        Raises:
-            SimulationError: An error associated witha a problem during the simulation.
-
-        Returns:
-            MWData: The dataset.
-        """
+        """The scattered field simulation behind run_scattered (parallel=False) and run_scattered_distributed
+        (parallel=True)."""
         self._completed = False
         self._simstart = time.time()
         self.solveroutine.symmetry_limit = self._settings.sim_symmetry_limit

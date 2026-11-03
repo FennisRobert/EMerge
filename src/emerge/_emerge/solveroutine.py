@@ -25,6 +25,7 @@ from scipy.sparse import csc_matrix, save_npz  # type: ignore
 from loguru import logger
 from .mth.csc_submatrix import csc_submatrix  # [Written by Claude]
 from .precon_data import PreconData
+from .threads import solver_threads
 from .solvers import (
     Solver, EigSolver, Sorter, Preconditioner, SolveReport, MatrixType, SolverType, classify_matrix,
     complex_to_real_block, real_to_complex_block, _pfx, ReverseCuthillMckee, JacobiPrecon, ALL_SOLVERS,
@@ -385,7 +386,8 @@ class SolveRoutine:
         """
         solver.initialize()
         solver.set_symmetry(matrix_type.symmetric or self.force_symmetric)
-        # None keeps what the solver has, e.g. a count set with solver.set_nthreads()
+        # None keeps what the solver has (e.g. a count set with solver.set_nthreads()), unless em.set_threads() was used
+        nthreads = solver_threads(nthreads)
         if nthreads is not None:
             solver.set_nthreads(nthreads)
 

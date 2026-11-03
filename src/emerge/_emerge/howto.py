@@ -106,9 +106,10 @@ class _HowtoClass:
         
         >>> results = model.mw.run_sweep(...)
 
-        You can distribute your frequency sweep across multiple threads using
-        
-        >>> results = model.mw.run_sweep(parallel=True, njobs=3)
+        The solver uses several threads for each frequency point. You can also solve several frequency
+        points at the same time, e.g. 3 points with 4 threads each:
+
+        >>> results = model.mw.run_sweep_distributed(n_workers=3, nthreads=4)
 
         The frequency domain study will return an MWSimData object that contains all data.
         """

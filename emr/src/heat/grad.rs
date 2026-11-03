@@ -114,24 +114,26 @@ fn tet_block_builder<F: Fn(usize, &ArrayView2<f64>) -> Array2<f64> + Sync>(
     tet_to_field: &ArrayView2<i64>,
     block: F,
 ) -> CooF {
-    let nt = tets.shape()[1];
-    let mut vals = vec![0.0; nt * 100];
-    let mut rows = vec![0i64; nt * 100];
-    let mut cols = vec![0i64; nt * 100];
-    vals.par_chunks_mut(100)
-        .zip(rows.par_chunks_mut(100))
-        .zip(cols.par_chunks_mut(100))
-        .enumerate()
-        .for_each(|(itet, ((v, r), c))| {
-            let verts = tet_vertices(nodes, tets, itet);
-            let sub = block(itet, &verts.view());
-            let indices: Vec<i64> = (0..10).map(|f| tet_to_field[[f, itet]]).collect();
-            write_block_rowcol(&indices, r, c);
-            for (k, x) in sub.iter().enumerate() {
-                v[k] = *x;
-            }
-        });
-    (Array1::from(vals), Array1::from(rows), Array1::from(cols))
+    crate::pool::install(|| {
+        let nt = tets.shape()[1];
+        let mut vals = vec![0.0; nt * 100];
+        let mut rows = vec![0i64; nt * 100];
+        let mut cols = vec![0i64; nt * 100];
+        vals.par_chunks_mut(100)
+            .zip(rows.par_chunks_mut(100))
+            .zip(cols.par_chunks_mut(100))
+            .enumerate()
+            .for_each(|(itet, ((v, r), c))| {
+                let verts = tet_vertices(nodes, tets, itet);
+                let sub = block(itet, &verts.view());
+                let indices: Vec<i64> = (0..10).map(|f| tet_to_field[[f, itet]]).collect();
+                write_block_rowcol(&indices, r, c);
+                for (k, x) in sub.iter().enumerate() {
+                    v[k] = *x;
+                }
+            });
+        (Array1::from(vals), Array1::from(rows), Array1::from(cols))
+    })
 }
 
 /// COO stiffness entries of all tets with per tet 3x3 conductivity tensors.

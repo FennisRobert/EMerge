@@ -155,7 +155,7 @@ def _init_worker_threads(nthreads: int | None) -> None:
         _threads.set_threads(nthreads)
 
 
-def run_job_multi(job: SimJob, nthreads: int | None = None) -> SimJob:
+def run_job_multi(job: SimJob, nthreads: int | None = None, device: str = "CPU") -> SimJob:
     """The job launcher for Multi-Processing environements
 
     The solve routine (and the solver objects it owns, e.g. SolverSuperLU's
@@ -166,6 +166,7 @@ def run_job_multi(job: SimJob, nthreads: int | None = None) -> SimJob:
     Args:
         job (SimJob): The Simulation Job
         nthreads (int | None, optional): The preferred number of CPU threads of the solver. Defaults to None.
+        device (str, optional): The device of the parent's solve routine (set_device). Defaults to "CPU".
 
     Returns:
         SimJob: The solved SimJob
@@ -174,6 +175,7 @@ def run_job_multi(job: SimJob, nthreads: int | None = None) -> SimJob:
     if _worker_routine is None:
         nr = int(mp.current_process().name.split("-")[1])
         _worker_routine = AutomaticRoutine()._configure_routine("MP", proc_nr=nr)
+    _worker_routine._set_device(device)
     A, bmat, ids, aux = job.get_Ab()
     solution, report = _worker_routine.solve(
         A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0, nthreads=nthreads
@@ -1273,6 +1275,23 @@ class Microwave3D(GenericPhysics3D):
         port._continue_tracks(k0, preds)
 
     # [Written by Claude]
+    def _port_field_triangles(self, itri_port: np.ndarray, cond: np.ndarray) -> np.ndarray:
+        """The port triangles that carry the mode field: all but the conductors, which the port eigenproblem treats
+        as PEC (Assembler.assemble_bma_matrices).
+
+        Args:
+            itri_port (np.ndarray): The triangles of the port face
+            cond (np.ndarray): The conductivity of every surface triangle (_tri_materials)
+
+        Returns:
+            np.ndarray: The triangles of the port face that are not a conductor (all if every one is)
+        """
+        itri_port = np.asarray(itri_port)
+        limit = min(self._settings.mw_3d_peclim, self._settings.mw_3d_surfimplim)
+        field = np.abs(cond[itri_port]) <= limit
+        return itri_port[field] if np.any(field) else itri_port
+
+    # [Written by Claude]
     def _wave_port_scalable(self, port: WavePort) -> bool:
         """Whether the modes of a WavePort hold at every frequency: a port face of one isotropic, lossless
         (σ = 0) and non-dispersive material. Then β² = εr·μr·k0² - kc² and the mode shapes do not change.
@@ -1282,9 +1301,9 @@ class Microwave3D(GenericPhysics3D):
         """
         if not port._homogeneous:
             return False
-        tris = self.mesh.get_triangles(port.tags)
         fmin, fmax = min(self.frequencies), max(self.frequencies)
         mats = [self._tri_materials(f) for f in ((fmin, fmax) if fmin < fmax else (fmax,))]
+        tris = self._port_field_triangles(self.mesh.get_triangles(port.tags), mats[0][2])
         if any(np.any(np.abs(cond[tris]) > 0) for _, _, cond, _ in mats):
             return False
         if len(mats) == 2:
@@ -1516,7 +1535,7 @@ class Microwave3D(GenericPhysics3D):
         logger.info(
             f"Starting distributed solve of {len(jobs)} jobs with {n_workers} processes in parallel"
         )
-        run_job = partial(run_job_multi, nthreads=nthreads)
+        run_job = partial(run_job_multi, nthreads=nthreads, device=self.solveroutine.device)
         if pool is not None:
             return pool.map(run_job, jobs)
 
@@ -1763,18 +1782,21 @@ class Microwave3D(GenericPhysics3D):
 
         # A list of all the triangles that are part of the Port.
         itri_port = self.mesh.get_triangles(port.tags)
+        # [Written by Claude] The triangles that carry the mode field: conductors (e.g. the inner conductor of a coax)
+        # are PEC in the port eigenproblem, so their material does not count.
+        itri_field = self._port_field_triangles(itri_port, cond)
 
         # Compute mean values for each material property.
         # These values are used to coarsely estimate what the
         # out of plane propagation constant may be.
-        erp = er[:,:,itri_port]
-        urp = ur[:,:,itri_port]
+        erp = er[:,:,itri_field]
+        urp = ur[:,:,itri_field]
         ermean = np.mean(erp[erp > 0].flatten())
         urmean = np.mean(urp[urp > 0].flatten())
-        ermax = np.max(er[:, :, itri_port].flatten())
-        urmax = np.max(ur[:, :, itri_port].flatten())
-        ermin = np.min(er[:, :, itri_port].flatten())
-        urmin = np.min(ur[:, :, itri_port].flatten())
+        ermax = np.max(erp.flatten())
+        urmax = np.max(urp.flatten())
+        ermin = np.min(erp.flatten())
+        urmin = np.min(urp.flatten())
 
         # [Written by Claude] A port face of one isotropic material (and one conductivity) has pure TE/TM/TEM modes
         # with β² = εr·μr·k0² - kc².
@@ -1783,7 +1805,7 @@ class Microwave3D(GenericPhysics3D):
         port._homogeneous = bool(
             er_iso and ur_iso
             and np.allclose(erp[0, 0], erp[0, 0, 0]) and np.allclose(urp[0, 0], urp[0, 0, 0])
-            and np.allclose(cond[itri_port], cond[itri_port][0])
+            and np.allclose(cond[itri_field], cond[itri_field][0])
         )
         port._ermur = complex(np.mean(erp[0, 0] * urp[0, 0]))
         port._ermur_max = float(np.real(ermax * urmax))

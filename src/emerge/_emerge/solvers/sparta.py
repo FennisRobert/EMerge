@@ -34,6 +34,14 @@ except ModuleNotFoundError:
     logger.trace("SPARTA Interface not found. (not harmful)")
     AVAILABLE = False
 
+# [Written by Claude] If SPARTA can use a Metal GPU (Apple silicon). Without one only its CPU path works.
+GPU = False
+if AVAILABLE:
+    try:
+        GPU = bool(sparta.gpu_available())
+    except Exception:
+        GPU = False
+
 
 class SolverSparta(Solver):
     """Implements the SPARTA Sparse Metal based GPU solver.
@@ -42,6 +50,7 @@ class SolverSparta(Solver):
     """
 
     available = AVAILABLE
+    gpu = GPU
     requires = "SPARTA 0.2.0 or newer: pip install git+https://github.com/FennisRobert/SPARTA"
 
     req_sorter = False

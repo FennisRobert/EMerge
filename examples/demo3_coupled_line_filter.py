@@ -85,7 +85,7 @@ model.mw.set_frequency_range(5.2e9, 6.2e9, 30)  # 5.2–6.2 GHz, 31 points
 
 # --- Assemble geometry into simulation -----------------------------------
 model.commit_geometry()
-model.export('demo3_new.step')
+
 # --- Mesh refinement -----------------------------------------------------
 # High growth rates are generally not adviced but used here to save some memory.
 model.mesher.set_boundary_size(stripline, 1.0 * mm, growth_rate=4)

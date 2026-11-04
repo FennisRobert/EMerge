@@ -1333,6 +1333,29 @@ class Simulation:
         self.mw.solveroutine.set_solver(solver)
         return self.get_solver(solver) if isinstance(solver, type) else solver
 
+    # [Written by Claude]
+    def set_device(self, device: Literal["CPU", "GPU", "HYBRID"]) -> None:
+        """Set the hardware the direct solvers use, for example model.set_device("GPU").
+
+         - "CPU" (default): CPU solvers only. SPARTA, when installed, runs its CPU path, which is the fastest
+           direct solver on Apple silicon.
+         - "GPU": SPARTA on the Apple GPU, otherwise cuDSS on an NVIDIA GPU (pip install emerge[cudss]). Without
+           either, the CPU solvers are used and a warning is given.
+         - "HYBRID": SPARTA's combined GPU + CPU factorization (Apple silicon only). Without it, "GPU" is used.
+
+        Systems with fewer than 10,000 unknowns, eigenmode problems and run_sweep_distributed(worker_type="thread")
+        keep using CPU solvers. A solver set with set_solver() is used as is, except that SPARTA's mode follows the
+        device.
+
+        Args:
+            device (Literal["CPU", "GPU", "HYBRID"]): The device
+
+        Raises:
+            ValueError: If the device is not one of the options
+        """
+        logger.trace(f"Setting the solver device to {device}")
+        self.mw.solveroutine.set_device(device)
+
     def get_solver(self, solver: type[_S]) -> _S:
         """Return the solver object of a solver class, for example model.get_solver(em.solvers.Pardiso).
 

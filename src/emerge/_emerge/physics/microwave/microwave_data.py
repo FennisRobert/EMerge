@@ -28,7 +28,7 @@ from .adaptive_sweep import RationalModel
 from ...cs import Axis, _parse_axis
 from ...selection import FaceSelection, DomainSelection
 from ...geometry import GeoSurface
-from ...mesh3d import Mesh3D, SurfaceMesh
+from ...mesh3d import Mesh3D, SurfaceMesh, _MISSING_ID
 from ...const import MU0
 from ...coord import Line
 from emsutil.emdata import EHField, EHFieldFF, DataStructure
@@ -696,10 +696,12 @@ class MWField(Saveable):
         return out
 
     def set_field_vector(self) -> None:
-        """Defines the default excitation coefficients for the current dataset as an excitation of only port 1."""
-        # Freq sweep with ports
+        """Defines the default excitation coefficients for the current dataset as an excitation of only the first
+        port mode."""
+        # Freq sweep with ports. [Written by Claude] The S-matrix index, not the port number: for a port with several
+        # modes the port number (1) is no field, its modes are (1.1, 1.2, ...).
         if len(self.port_modes) > 0:
-            self.excite_port(self.port_modes[0].port_number)
+            self.excite_port(self.port_modes[0].smat_index)
         elif len(self.background_fields) > 0:
             self.set_backgroundfield(self.background_fields[0])
 
@@ -708,10 +710,22 @@ class MWField(Saveable):
     ) -> None:
         """Excite a single port provided by a given port number
 
+        For a port with several modes, give the S-matrix index of the mode, e.g. excite_port(1.2) for the second
+        mode of port 1.
+
         Args:
-            number (int | float): The port number to excite
+            number (int | float): The port number (S-matrix index) to excite
             excitation (complex, optional): The port excitation. Defaults to 1.0 + 0.0j
+
+        Raises:
+            KeyError: If this field has no port (mode) with this number
         """
+        # [Written by Claude] An unknown number used to give a zero field
+        if number not in self._fields:
+            indices = [pm.smat_index for pm in self.port_modes]
+            modes = [pm.smat_index for pm in self.port_modes if pm.port_number == number]
+            hint = f" Port {number} has the modes {modes}, e.g. excite_port({modes[0]})." if modes else ""
+            raise KeyError(f"There is no port mode {number} in this field.{hint} Port modes: {indices}.")
         if self._active_ports is not None and number not in self._active_ports:
             raise KeyError(
                 f"Port {number} has been embedded via embed_external_component "
@@ -1650,7 +1664,8 @@ class MWField(Saveable):
         from .sc import stratton_chu
 
         surface = self._integration_surface(faces, origin)
-        ehfield = self.interpolate(*self._surface_samples(surface))
+        x, y, z, tets = self._surface_samples(surface)
+        ehfield = self.interpolate(x, y, z, mapping=tets)
 
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
 
@@ -1670,19 +1685,61 @@ class MWField(Saveable):
         return Eff * factor, Hff * factor, Ptot  # [Written by Claude] Ptot of the simulated part already is the power of the full structure at 1 W
 
     # [Written by Claude]
-    def _surface_samples(self, surface: SurfaceMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """The points where the fields of an integration surface are sampled: its edge centres, moved a tiny
-        distance (1e-5 of the surface size) against the outward normal. A point exactly on a face inside the
-        mesh can be located in the tetrahedron on the outside, which for a PML interface gives the PML fields
-        and too much radiated power."""
-        from .sc import _weighted_normals
+    def _surface_samples(self, surface: SurfaceMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """The points where the fields of an integration surface are sampled, its edge centres, and the tetrahedron
+        each one is evaluated in.
 
-        xyz = np.array(surface.exyz)
-        normals = _weighted_normals(surface)
-        normals = normals / np.maximum(np.linalg.norm(normals, axis=0), 1e-300)
-        size = np.linalg.norm(xyz.max(axis=1) - xyz.min(axis=1))
-        x, y, z = xyz - 1e-5 * size * normals
-        return x, y, z
+        The tetrahedron is one of the two next to a triangle of the edge, so no point location search is needed and
+        the side of the surface is a choice, not chance: the tetrahedron against the outward normal (inside the
+        surface), which on an air/PML interface is the air. Where that one is missing (an outer boundary of the mesh)
+        or has no field (a conductor, e.g. the surface of a PEC scatterer), the one on the outside.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The x, y and z coordinates and the tetrahedra
+        """
+        mesh = surface.original
+        # [Written by Claude] One surface triangle per edge (any of them: the edge centre lies on both)
+        edge_tri = np.zeros(surface.n_edges, dtype=np.int64)
+        for k in range(3):
+            edge_tri[surface.tri_to_edge[k, :]] = np.arange(surface.n_tris)
+        tris = np.asarray(surface._tri_ids)[edge_tri]
+        normals = np.asarray(surface.normals)[:, edge_tri]
+
+        tets = mesh.tri_to_tet[:, tris]
+        valid = tets != _MISSING_ID
+        safe = np.where(valid, tets, 0)
+        centers = mesh.nodes[:, mesh.tets[:, safe]].mean(axis=1)  # (3, 2, n)
+        side = np.einsum("ikn,in->kn", centers - mesh.tri_centers[:, tris][:, None, :], normals)
+        inside = np.where(valid & (side < 0), tets, _MISSING_ID).max(axis=0)
+        outside = np.where(valid & (side >= 0), tets, _MISSING_ID).max(axis=0)
+
+        fieldless = self._fieldless_tets()
+
+        def has_field(t: np.ndarray) -> np.ndarray:
+            return (t != _MISSING_ID) & ~fieldless[np.where(t != _MISSING_ID, t, 0)]
+
+        use_inside = has_field(inside) | (~has_field(outside) & (inside != _MISSING_ID))
+        chosen = np.where(use_inside, inside, outside)
+
+        x, y, z = surface.edge_centers
+        return x, y, z, chosen
+
+    # [Written by Claude]
+    def _fieldless_tets(self) -> np.ndarray:
+        """The tetrahedra whose degrees of freedom are zero in every solution, e.g. those inside a PEC object.
+
+        Returns:
+            np.ndarray: A boolean per tetrahedron
+        """
+        solutions = list(self._fields.values())
+        if self._mode_field is not None:
+            solutions.append(self._mode_field)
+        if not solutions:
+            return np.zeros(self.basis.tet_to_field.shape[1], dtype=bool)
+        nonzero = np.zeros(self.basis.n_field, dtype=bool)
+        for solution in solutions:
+            nonzero |= np.asarray(solution).ravel()[: self.basis.n_field] != 0
+        return ~nonzero[self.basis.tet_to_field].any(axis=0)
 
     def _integration_surface(
         self, faces: FaceSelection | GeoSurface, origin: tuple[float, float, float] | None
@@ -1782,7 +1839,8 @@ class MWField(Saveable):
         from .sc import stratton_chu_near
 
         surface = self._integration_surface(faces, origin)
-        ehfield = self.interpolate(*self._surface_samples(surface))
+        x, y, z, tets = self._surface_samples(surface)
+        ehfield = self.interpolate(x, y, z, mapping=tets)
 
         Enf, Hnf = stratton_chu_near(ehfield.E, ehfield.H, surface, xyz, self.k0)
 

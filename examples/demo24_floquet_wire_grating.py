@@ -16,9 +16,10 @@ The wires run along the Y-axis with a period of 15 mm. At normal incidence:
 With number_of_modes=None the Floquet ports include every order that propagates at the highest frequency.
 """
 # [Written by Claude]
+from dataclasses import replace
 import numpy as np
 import emerge as em
-from emerge.plot import plot, plot_sp
+from emerge.plot import plot, plot_sp, plot_ff
 
 mm = 0.001
 period = 15 * mm     # wire period along X
@@ -61,7 +62,7 @@ cell.set_scanangle(0, 0)
 
 data = model.mw.run_sweep()
 g = data.scalar.grid
-freqs = g.freq.ravel()
+freqs = g.freq
 
 # Each port mode has an S-matrix index, a Floquet order (m, n) and a polarization
 print("Port modes of port 1:")
@@ -85,16 +86,13 @@ plot_sp(freqs, [g.S(te_in, te_in), g.S(index2[(0, 0, "TE")], te_in),
         labels=["Reflection, E ∥ wires", "Transmission, E ∥ wires",
                 "Reflection, E ⊥ wires", "Transmission, E ⊥ wires"])
 
-i_low = 0
-print(f"\nAt {freqs[i_low] / 1e9:.1f} GHz: |S21| E ∥ wires = {np.abs(g.S(index2[(0, 0, 'TE')], te_in).ravel()[i_low]):.3f}, "
-      f"E ⊥ wires = {np.abs(g.S(index2[(0, 0, 'TM')], tm_in).ravel()[i_low]):.3f}")
-
 ############################################################
 #                  THE DIFFRACTION ORDERS                  #
 ############################################################
 
 # With 1 W port modes |S|² is the fraction of the power that goes into an order. The (-1, 0) and (+1, 0)
 # orders carry the same power by symmetry. Below 20 GHz they are evanescent and carry no power.
+
 def efficiency(index_out, index_in):
     return np.abs(g.S(index_out, index_in).ravel()) ** 2
 
@@ -108,10 +106,6 @@ plot(freqs / 1e9, [reflected_0, reflected_1, transmitted_0, transmitted_1],
      labels=["Reflected (0, 0)", "Reflected (+1, 0), each", "Transmitted (0, 0)", "Transmitted (+1, 0), each"],
      xlabel="Frequency (GHz)", ylabel="Fraction of the power, E ∥ wires")
 
-# All power ends up in one of the propagating orders
-total = reflected_0 + transmitted_0 + 2 * reflected_1 + 2 * transmitted_1
-print(f"Total power over all propagating orders: {total.min():.4f} ... {total.max():.4f}")
-
 # The direction of the diffracted beams. The diffraction orders are the far field of the grating: an infinite
 # grating radiates only in these directions. As the frequency drops to 20 GHz the beams tilt down to 90°.
 angles = [port2.order_direction(f, 1, 0) for f in freqs]
@@ -120,7 +114,6 @@ plot(freqs / 1e9, [theta], labels=["Order (+1, 0)"], xlabel="Frequency (GHz)", y
 
 f_show = freqs[np.argmin(np.abs(freqs - 27.5e9))]
 i_show = int(np.argmin(np.abs(freqs - f_show)))
-print(f"\nAt {f_show / 1e9:.1f} GHz, E ∥ wires:")
 for m in (-1, 0, 1):
     direction = port2.order_direction(f_show, m, 0)
     r = efficiency(index1[(m, 0, "TE")], te_in)[i_show]
@@ -128,13 +121,64 @@ for m in (-1, 0, 1):
     print(f"  order ({m:+d}, 0) at θ = {direction[0]:5.1f}°: reflected {100 * r:5.1f} %, transmitted {100 * t:5.1f} %")
 
 ############################################################
+#              A FINITE GRATING: GRATING LOBES             #
+############################################################
+
+# A finite grating of N x M cells radiates beams in the same directions as the orders of the infinite one, with
+# a width of about λ / (N · period). We predict its far field with array theory: the far field of one cell
+# times the array factor of N x M copies of it. The far field of one cell follows from the transmitted field on
+# the bottom port face. At normal incidence all cells are excited in phase. The edges of a finite grating are
+# not part of this prediction.
+N, M = 8, 30  # 8 cells along X and 30 along Y: an aperture of 120 x 120 mm
+field = data.field.find(freq=f_show)
+field.excite_port(te_in)
+k0 = field.k0
+
+def array_factor(ff):
+    """The array factor of N x M cells in the directions of the far field ff."""
+    ux = np.sin(ff.theta) * np.cos(ff.phi)
+    uy = np.sin(ff.theta) * np.sin(ff.phi)
+    afx = np.exp(1j * k0 * np.multiply.outer(np.arange(N) * period, ux)).sum(axis=0)
+    afy = np.exp(1j * k0 * np.multiply.outer(np.arange(M) * depth, uy)).sum(axis=0)
+    return afx * afy
+
+
+def finite_grating(ff):
+    """The far field of N x M cells for a total incident power of 1 W (1 / (N·M) W per cell)."""
+    scale = array_factor(ff) / np.sqrt(N * M)
+    return replace(ff, _E=ff._E * scale, _H=ff._H * scale)
+
+
+# The XZ-plane below the grating, from θ = -90° to 90° around the -Z axis
+cell_ff = field.farfield_2d((0, 0, -1), (0, 1, 0), bottom, (-90, 90), Npoints=721)
+grating_ff = finite_grating(cell_ff)
+plot_ff(cell_ff.ang * 180 / np.pi, [cell_ff.gain.norm, grating_ff.gain.norm], dB=True,
+        labels=["One cell", f"{N} x {M} cells"], xlabel="Angle from -Z in the XZ-plane (deg)", ylabel="Gain (dBi)",
+        ylim=(-20, 35))
+
+# Each beam has the gain of the aperture, 4πA·cos(θ)/λ², times the fraction of the power in its order
+area = N * period * M * depth
+wavelength = C0 / f_show
+print(f"\nGain of the {N} x {M} grating at {f_show / 1e9:.1f} GHz, E ∥ wires:")
+for m in (0, 1):
+    theta_m = port2.order_direction(f_show, m, 0)[0]
+    expected = 4 * np.pi * area * np.cos(np.radians(theta_m)) / wavelength**2 * efficiency(index2[(m, 0, "TE")], te_in)[i_show]
+    near = np.abs(np.degrees(cell_ff.ang) - theta_m) < 2
+    print(f"  order ({m:+d}, 0) at θ = {theta_m:4.1f}°: {10 * np.log10(np.max(grating_ff.gain.norm[near] ** 2)):5.1f} dBi "
+          f"(from the order efficiency: {10 * np.log10(expected):5.1f} dBi)")
+
+# The 3D far field of the lower half space, shown below the cell. The (±1, 0) grating lobes lie in the XZ-plane.
+grating_3d = finite_grating(field.farfield_3d(bottom, thetas=np.linspace(np.pi / 2, np.pi, 91),
+                                              phis=np.linspace(-np.pi, np.pi, 361)))
+
+############################################################
 #                   THE DIFFRACTED FIELD                   #
 ############################################################
 
 # The field of the incident TE wave at 27.5 GHz in the XZ-plane. Above the wires the incident and reflected
-# waves interfere, below the wires the transmitted (0, 0) and (±1, 0) orders do.
-field = data.field.find(freq=f_show)
-field.excite_port(te_in)
+# waves interfere, below the wires the transmitted (0, 0) and (±1, 0) orders do. The far field of the finite
+# grating is drawn below the cell.
+model.display.add_farfield3d(grating_3d, dB=True, dBfloor=-30, rmax=15 * mm, offset=(0, 0, -H))
 model.display.add_object(wire)
 model.display.add_object(air, opacity=0.1)
 model.display.animate().cbar("Ey").add_field(field.cutplane(0.5 * mm, y=0).scalar("Ey", "complex"), symmetrize=True)

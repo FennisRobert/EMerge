@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0b12 — changes since 2.8.9
+## 3.0.0 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before
 2. [Breaking API changes](#2-breaking-api-changes): changes that can break existing scripts, plus
@@ -161,8 +161,20 @@
     complete its methods: `model.set_solver(em.solvers.Sparta).set_options(mode='CPU')`.
 - `em.solvers.RSLab` (`rslab` package) is a direct solver.
 - `em.solvers.Sparta` (`sparta>=0.2.0`) is a direct solver with GPU, CPU and hybrid modes
-  (`set_options()`). With multiprocessing it is now picked automatically when installed, before
-  the Apple Accelerate solver.
+  (`set_options()`). When installed it is picked automatically, before the Apple Accelerate
+  solver, and runs on the device set with `set_device()` (below).
+- **`model.set_device("CPU" | "GPU" | "HYBRID")` selects the hardware of the direct solvers.**
+  The device belongs to the simulation's solve routine, like `set_solver()`.
+  - `"CPU"` (default) uses CPU solvers only. When SPARTA is installed it runs its CPU path,
+    the fastest direct solver for EMerge, before the Apple Accelerate solver.
+  - `"GPU"` uses SPARTA on the Apple GPU, otherwise cuDSS on an NVIDIA GPU. Without either it
+    warns and uses the CPU solvers.
+  - `"HYBRID"` uses SPARTA's combined GPU + CPU factorization (Apple silicon only). Without it,
+    `"GPU"` is used, with a warning.
+  - The device applies to the solver EMerge picks for systems with at least 10,000 unknowns.
+    Eigenmode problems and `worker_type="thread"` sweeps stay on the CPU. Worker processes of
+    `worker_type="process"` use SPARTA only, because cuDSS supports one solver per GPU.
+    SPARTA's `set_options(mode=...)` follows the device.
 - **`em.set_threads(n)` sets the number of CPU threads of EMerge.** It applies to the compiled
   kernels (matrix assembly, interpolation, far fields, mesh processing), which used all logical
   cores, and is the default `nthreads` of the solvers. It can be called at any time, also between
@@ -391,8 +403,11 @@
     some faces flipped, so directivity read far too high or NaN while the pattern looked right.
     The normals are now oriented consistently over the surface and outward.
   - The fields on the surface were sampled in the PML tetrahedra, which overestimated the radiated
-    power (by 46 % for a test dipole). They are now sampled just inside the integration surface.
-    This applies to `farfield*`, `nearfield` and `farfield_3d_ports`.
+    power (by 46 % for a test dipole). They are now evaluated on the surface itself, in a
+    tetrahedron next to each surface triangle: the one inside the surface (the air side of a PML
+    interface), or the one outside where the inside has no field, such as the surface of a PEC
+    scatterer for an RCS. No point location search is needed. This applies to `farfield*`,
+    `nearfield` and `farfield_3d_ports`.
 - **Ports with 10 or more modes:** mode labels collided (mode 10 → `1.10` == `1.1`, the label of
   mode 1), so the S-parameters of those modes silently overwrote each other. On such ports the
   mode number is now zero-padded (`1.01` … `1.12`), so mode 1 is `S(1.01, …)`. Ports with up to 9
@@ -431,9 +446,7 @@
   - `nthreads` was written to `IPARM[2]`, which MKL does not use.
   - Non-symmetric systems (periodic boundaries) were solved as Aᵀx = b instead of Ax = b, because
     PARDISO read the CSC matrix as CSR. A lossless dielectric slab in a Floquet cell at 30° lost
-    31 % of its power. Symmetric systems were not affected. (In 3.0.0b9 the fix did not reach the
-    numeric phase and the solve: MKL's default settings were reloaded before every phase. They
-    are now loaded once, in the symbolic phase.)
+    31 % of its power. Symmetric systems were not affected.
 - **Degenerate port modes:** the eigen solver returns an arbitrary basis of modes that share one
   propagation constant, which could mix the modes and make lossless modes complex. Those modes
   are now orthogonalized in the cross power and given a real basis.
@@ -442,12 +455,11 @@
 - **AURA:** new nodes on a curved face could stay on the chord where the surface mesh ran over a
   concave diagonal, leaving dents in the refined surface (up to 14 mm on a 250 mm sphere). Such
   wedges are now flipped to the convex diagonal before refinement.
-- **SPARTA:** with a multithreaded sweep, worker threads lost the mode set with `set_options()`
-  and used the GPU.
 - **`XYPolygon` fillets** were inserted at shifted positions when more than one fillet was used.
 - **`XYPolygon.rect()`** raised an error for a 2D origin `(x, y)`.
-- **`import emerge` on Windows and Linux** raised `NameError: name 'Factorization' is not defined`
-  in 3.0.0b10. The Apple Accelerate solver interface used its macOS-only library at import time.
+- **Ports with several modes:** the default excitation of a field and `farfield_3d_ports()` excited
+  the port number (`1`) instead of the mode index (`1.1`), which gave a zero field and far field.
+  `excite_port()` with a number that is not a port mode now raises an error that lists the modes.
 - **STEP import:** integer values were rejected where floats were expected.
 - **`Curve`** no longer opens the FLTK GUI.
 - **cuDSS:**
@@ -483,6 +495,9 @@
 ### Performance
 
 - No JIT compilation: the first-run delay is gone.
+- **Coax and other ports with a conductor in the port face** solve their modes once per sweep
+  again, instead of at every frequency. The conductor (e.g. a PEC inner conductor) is PEC in
+  the port eigenproblem, so its material no longer makes the port face count as mixed materials.
 - Removing the prescribed degrees of freedom before a solve is done in one parallel pass, about
   10× faster on large systems and without an intermediate matrix copy.
 - Faster assembly:

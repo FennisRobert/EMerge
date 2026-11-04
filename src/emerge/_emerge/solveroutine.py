@@ -31,7 +31,12 @@ from .solvers import (
     complex_to_real_block, real_to_complex_block, _pfx, ReverseCuthillMckee, JacobiPrecon, ALL_SOLVERS,
     unavailable_message, reject_emsolver, SolverSuperLU, SolverUMFPACK, SolverPardiso, SolverMUMPS, SolverAASDS, SolverCHOLMOD,
     SolverRSLAB, SolverSparta, SolverCorvid, SolverBicgstab, SolverCG, SolverLAPACK, SolverARPACK, SolverARPACK_BMA,
+    SolverCuDSS,
 )
+
+# [Written by Claude] The hardware a SolveRoutine solves on, set with set_device()
+Device = Literal["CPU", "GPU", "HYBRID"]
+_DEVICES: tuple[str, ...] = ("CPU", "GPU", "HYBRID")
 
 
 ############################################################
@@ -69,6 +74,7 @@ class SolveRoutine:
         """
         self.pre: str = ""
         self._set_name(thread_nr, proc_nr)
+        self.device: Device = "CPU"
 
         self.sorter: Sorter = ReverseCuthillMckee()
         self.precon: Preconditioner = JacobiPrecon()
@@ -94,7 +100,77 @@ class SolveRoutine:
     # [Written by Claude]
     def _create_solvers(self) -> dict[type[Solver] | type[EigSolver], Solver | EigSolver]:
         """One instance of every solver that is available on this system, by class."""
-        return {cls: cls(self.pre) for cls in ALL_SOLVERS if cls.available}
+        solvers = {cls: cls(self.pre) for cls in ALL_SOLVERS if cls.available}
+        sparta = solvers.get(SolverSparta)
+        if sparta is not None:
+            sparta.set_options(self._sparta_mode())  # type: ignore
+        return solvers
+
+    # [Written by Claude]
+    def _sparta_mode(self) -> Device:
+        """The SPARTA mode for the device: its CPU path unless a GPU device is set and SPARTA has a GPU."""
+        if self.device == "CPU" or not SolverSparta.gpu:
+            return "CPU"
+        return self.device
+
+    # [Written by Claude]
+    def set_device(self, device: Device) -> None:
+        """Set the hardware the direct solvers of this routine use: "CPU" (default), "GPU" or "HYBRID".
+
+         - "CPU": CPU solvers only. SPARTA, when installed, runs its CPU path.
+         - "GPU": SPARTA on the Apple GPU, otherwise cuDSS on an NVIDIA GPU. Without either, the CPU solvers are
+           used and a warning is given.
+         - "HYBRID": SPARTA's combined GPU + CPU factorization (Apple silicon only). Without it, "GPU" is used.
+
+        The device applies to the solver EMerge picks. Systems with fewer than 10,000 unknowns, eigenmode problems and
+        thread-distributed sweeps keep using CPU solvers. A solver set with set_solver() is used as is, except that
+        SPARTA's mode follows the device.
+
+        Args:
+            device (Literal["CPU", "GPU", "HYBRID"]): The device
+
+        Raises:
+            ValueError: If the device is not one of the options
+        """
+        self._set_device(device)
+        if self.device == "CPU":
+            return
+        fallback = "the GPU with cuDSS" if SolverCuDSS.available else "the CPU"
+        if self.device == "HYBRID" and not SolverSparta.gpu:
+            logger.warning(
+                f"The HYBRID device needs SPARTA on an Apple GPU, which is not available. Solving on {fallback} instead."
+            )
+        elif not (SolverSparta.gpu or SolverCuDSS.available):
+            logger.warning(
+                "No GPU solver is available (SPARTA on an Apple GPU, or cuDSS on an NVIDIA GPU: "
+                "pip install emerge[cudss]). Solving on the CPU instead."
+            )
+
+    # [Written by Claude]
+    def _set_device(self, device: str) -> None:
+        """Set the device without the availability warnings (used for copies and worker processes)."""
+        name = str(device).strip().upper()
+        if name not in _DEVICES:
+            raise ValueError(f"The device must be one of {', '.join(_DEVICES)}, not {device!r}.")
+        self.device = name  # type: ignore
+        sparta = self.solvers.get(SolverSparta) if hasattr(self, "solvers") else None
+        if sparta is not None and sparta.mode != self._sparta_mode():  # type: ignore
+            sparta.reset()  # the analysis depends on the mode
+            sparta.set_options(self._sparta_mode())  # type: ignore
+
+    # [Written by Claude]
+    def _device_solver(self) -> Solver | None:
+        """The GPU solver for the device and parallel mode, or None to pick a CPU solver."""
+        if self.device == "CPU" or self.parallel == "MT":
+            return None
+        candidates: list[type[Solver]] = [SolverSparta] if SolverSparta.gpu else []
+        if self.parallel == "SI":
+            candidates.append(SolverCuDSS)  # one cuDSS solver per process and GPU
+        for cls in candidates:
+            solver = self.solvers.get(cls)
+            if solver is not None and not isinstance(solver, tuple(self.disabled_solver)):
+                return solver  # type: ignore
+        return None
 
     def _set_name(self, thread_nr: int, proc_nr: int):
         self.pre = f"p{int(proc_nr):02d}/t{int(thread_nr):02d}"
@@ -180,6 +256,7 @@ class SolveRoutine:
             SolveRoutine: The copied version
         """
         new_routine = self.__class__()
+        new_routine._set_device(self.device)
         new_routine.parallel = self.parallel
         new_routine.smart_search = self.smart_search
         new_routine.force_symmetric = self.force_symmetric
@@ -269,7 +346,8 @@ class SolveRoutine:
         """Reset all solver states
 
         Args:
-            reset_solver_preference (bool, optional): Also clear the forced and disabled solvers. Defaults to False.
+            reset_solver_preference (bool, optional): Also clear the forced and disabled solvers and return to the CPU
+                device. Defaults to False.
             hard (bool, optional): Recreate all solver objects. Defaults to False.
         """
         for solver in self.solvers.values():
@@ -281,6 +359,7 @@ class SolveRoutine:
         if reset_solver_preference:
             self.forced_solver = []
             self.disabled_solver = []
+            self._set_device("CPU")
         if hard:
             self.solvers = self._create_solvers()
 
@@ -690,9 +769,12 @@ class AutomaticRoutine(SolveRoutine):
             if matrix_type is MatrixType.SPD and SolverCHOLMOD.available:
                 return self._try_solver(SolverCHOLMOD)
             return self._try_solver(SolverSuperLU)
+        gpu = self._device_solver()  # [Written by Claude] set_device("GPU"/"HYBRID")
         if self.parallel == "SI":
             if matrix_type is MatrixType.SPD and SolverCHOLMOD.available:
                 return self._try_solver(SolverCHOLMOD)
+            if gpu is not None:
+                return gpu
             if SolverPardiso.available:
                 return self._try_solver(SolverPardiso)
             elif SolverSparta.available:
@@ -708,6 +790,8 @@ class AutomaticRoutine(SolveRoutine):
             else:
                 return self._try_solver(SolverSuperLU)
         elif self.parallel == "MP":
+            if gpu is not None:
+                return gpu
             if SolverSparta.available:
                 return self._try_solver(SolverSparta)
             elif SolverAASDS.available:

@@ -94,7 +94,7 @@ def farfield_ports(
     if phis is None:
         phis = np.linspace(-np.pi, np.pi, 181)
     if ports is None:
-        ports = list(dict.fromkeys(pm.port_number for pm in field.port_modes))
+        ports = [pm.smat_index for pm in field.port_modes]  # [Written by Claude] every mode of a multi-mode port
         if field._active_ports is not None:
             ports = [p for p in ports if p in field._active_ports]
 
@@ -102,8 +102,7 @@ def farfield_ports(
     theta, phi = T.flatten(), P.flatten()
 
     surface = field._integration_surface(faces, origin)
-    xs, ys, zs = field._surface_samples(surface)
-    mapping = field.basis.interpolate_index(xs.flatten(), ys.flatten(), zs.flatten(), usenan=True)
+    xs, ys, zs, mapping = field._surface_samples(surface)
 
     excitation = field.excitation
     ehfields = []

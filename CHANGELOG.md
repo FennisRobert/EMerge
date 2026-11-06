@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.0.1 — changes since 3.0.0
+
+### Breaking API changes
+
+- **`ModalPort(mixed_materials=...)` is removed.** It no longer changed how often the port modes are solved.
+  Delete the argument; the modes are now solved as few times as possible (see below). To solve the modes of an
+  inhomogeneous port only once, use `assume_homogeneous=True`.
+
+### New features
+
+- **`assume_homogeneous` for ports.** `ModalPort(..., assume_homogeneous=True)`,
+  `WavePort(..., assume_homogeneous=True)`, `pcb.modal_port(..., assume_homogeneous=True)` or
+  `port.assume_homogeneous()` treat the port face as homogeneous without checking its materials. The modes are
+  solved once and scaled to the other frequencies, with a constant effective permittivity for quasi-TEM modes.
+  Use it for, for example, microstrip ports at a low frequency × substrate thickness, where the dispersion of the
+  line is small.
+- **Waveguide assemblies (`em.wg`).** `WGRect` and E- and H-plane bends with rounded (`WGETurnRound`,
+  `WGHTurnRound`) or mitered (`WGETurnMiter`, `WGHTurnMiter`) corners at any angle from -90 to 90 degrees, with
+  an optional inner corner radius, straight lead sections and wall geometry (`WGConfig(model_walls=True)`).
+  Components are connected with `.place()` on their `front`/`back` anchors.
+- **`GeoObject.face_from_anchor(anchor)`** selects the faces in the plane of an anchor. After
+  `commit_geometry()` it works without GMSH, from the cached boundary.
+
+### Bug fixes
+
+- **ModalPort modes of homogeneous waveguides** were solved again at every frequency. Like a `WavePort`, a
+  homogeneous, lossless and non-dispersive port face is now solved once and its modes are scaled analytically to
+  the other frequencies (TE: β² = β_ref² + εr·μr (k0² − k0_ref²), TM: the transverse field also scales with β,
+  TEM: β ∝ k0) and normalized again. `ModalPort` and `WavePort` share this rule. A rectangular waveguide port is
+  now one modal analysis instead of one per frequency.
+- **PCB units:** `lumped_port_pts`, the π-network plates of `lumped_element_from_sp`, `RouteElement.pnt` and the
+  mesh size of lumped elements mixed PCB units and meters, which placed or sized them wrongly in models that
+  do not use meters.
+- **Touchstone:** the 2-port branch of `z_series` returned the wrong data.
+- **Embedding external components** (`embed_external_component`):
+  - the Touchstone data is renormalized from its reference impedance to the Z0 of each port it connects to;
+  - parameter sweeps (S-parameters of shape (..., F, N, N)) are supported;
+  - embedding on a field no longer writes NaN into the S-parameters of the scalar data;
+  - `TouchstoneData.interp_S` raises a clear error when the file does not cover the simulated frequencies.
+
+### Documentation and installation
+
+- README: SPARTA is the recommended solver (fastest on the CPU, and GPU support) and is installed from its latest
+  release; threads with `em.set_threads()` and `emerge_config`; GPU selection with `model.set_device()`;
+  UMFPACK moved to legacy; the dependency list matches the package and says pip installs it automatically.
+- The SPARTA install hints in EMerge point to the latest SPARTA release.
+- The release workflow builds the macOS wheel on `macos-latest` (the `macos-14` runner image was retired).
+
+---
+
 ## 3.0.0 — changes since 2.8.9
 
 1. [New features](#1-new-features): what you can do now that you couldn't before

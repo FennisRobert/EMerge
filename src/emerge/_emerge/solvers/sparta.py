@@ -28,7 +28,7 @@ try:
     import sparta  # type: ignore
     AVAILABLE = True
     if Version(sparta.__version__) < Version("0.2.0"):
-        logger.error('Sparta version is outdated, install the latest (at least 0.2.0) from github: pip install git+https://github.com/FennisRobert/SPARTA')
+        logger.error('Sparta version is outdated, install the latest release (at least 0.2.0): https://github.com/FennisRobert/SPARTA/releases/latest')
         AVAILABLE = False
 except ModuleNotFoundError:
     logger.trace("SPARTA Interface not found. (not harmful)")
@@ -46,12 +46,12 @@ if AVAILABLE:
 class SolverSparta(Solver):
     """Implements the SPARTA Sparse Metal based GPU solver.
 
-    Requires SPARTA 0.2.0 or newer: pip install git+https://github.com/FennisRobert/SPARTA.
+    Requires SPARTA 0.2.0 or newer, installed from the latest release: https://github.com/FennisRobert/SPARTA/releases/latest
     """
 
     available = AVAILABLE
     gpu = GPU
-    requires = "SPARTA 0.2.0 or newer: pip install git+https://github.com/FennisRobert/SPARTA"
+    requires = "SPARTA 0.2.0 or newer, installed from the latest release: https://github.com/FennisRobert/SPARTA/releases/latest"
 
     req_sorter = False
     real_only = False

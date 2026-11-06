@@ -63,7 +63,7 @@ jobs:
           - { os: ubuntu-latest, target: aarch64 }
           # One universal2 wheel (arm64 + x86_64) from the Apple Silicon runner, so Intel Macs
           # get a wheel without needing an Intel runner
-          - { os: macos-14, target: universal2-apple-darwin }
+          - { os: macos-latest, target: universal2-apple-darwin }
           - { os: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v4

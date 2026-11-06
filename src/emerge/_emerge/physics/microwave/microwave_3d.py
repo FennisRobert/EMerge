@@ -776,7 +776,8 @@ class Microwave3D(GenericPhysics3D):
                     logger.info(f'   - {attr}')
 
             if wpattr := geometry.properties.get(WavePortAttribute):
-                self.bc.ModalPort(geometry, wpattr.port_number, modetype=wpattr.mode_type)
+                self.bc.ModalPort(geometry, wpattr.port_number, modetype=wpattr.mode_type,
+                                  assume_homogeneous=getattr(wpattr, 'assume_homogeneous', False))
                 for attr in geometry.properties:
                     logger.info(f'   - {attr}')
 
@@ -1155,26 +1156,49 @@ class Microwave3D(GenericPhysics3D):
                 # [Written by Claude] a fixed set of modes, followed over the frequency range
                 self._wave_port_modes(bc, freq)
                 continue
-            # The modes of a port with one material and only TEM modes hold at every frequency. All other ports
-            # are solved again. [Written by Claude] This skipped every port without mixed_materials, also
-            # TE/TM modes, whose β and power normalization do change with frequency.
-            if not bc.mixed_materials and bc.initialized and bc._frequency_scalable:
-                continue
-            # Modes computed at this frequency already (for example by a modal_analysis call of the user)
-            if not bc.mixed_materials and (2 * np.pi * freq / 299792458) in bc.available_modes:
-                self._check_modal_port_count(bc, freq)
-                continue
+            self._modal_port_modes(bc, freq)
 
-            if bc.forced_modetype == "TEM":
-                TEM = True
-            else:
-                TEM = False
-            self.modal_analysis(
-                bc, max(bc._desired_number_of_modes, bc._nmodes_solved), direct=False, freq=freq, TEM=TEM
-            )
+    # [Written by Claude]
+    def _modal_port_modes(self, port: ModalPort, freq: float) -> None:
+        """Make sure a ModalPort has its modes at freq, with as few modal analyses as possible.
 
-            bc._check_mode_betas()
-            self._check_modal_port_count(bc, freq)
+        The first modes of the port (of the first frequency the sweep asks for, or of a modal_analysis call of the
+        user) decide whether the modes hold at every frequency (_port_scalable, the same rule as for a WavePort).
+        If they do, the modes at freq are scaled from them (_scale_port_modes), otherwise they are solved at freq.
+
+        Args:
+            port (ModalPort): The modal port
+            freq (float): The frequency at which the modes are needed
+        """
+        k0 = 2 * np.pi * freq / 299792458
+        if k0 in port.available_modes:
+            self._check_modal_port_count(port, freq)
+            return
+        if port._scalable is None and port.available_modes:
+            # Modes of another frequency exist already: decide on the modes of the last modal analysis
+            self._decide_modal_port_scaling(port, port._last_k0)
+        if port._scalable:
+            self._scale_port_modes(port, k0, freq)
+            self._check_modal_port_count(port, freq)
+            return
+
+        self.modal_analysis(
+            port, max(port._desired_number_of_modes, port._nmodes_solved), direct=False, freq=freq,
+            TEM=port.forced_modetype == "TEM",
+        )
+        port._check_mode_betas()
+        if port._scalable is None:
+            self._decide_modal_port_scaling(port, k0)
+        self._check_modal_port_count(port, freq)
+
+    # [Written by Claude]
+    def _decide_modal_port_scaling(self, port: ModalPort, k0: float) -> None:
+        """Decides from the modes at k0 whether a ModalPort is scaled to the other frequencies."""
+        port._scalable = self._port_scalable(port, k0)
+        if port._scalable:
+            port._k0_ref = k0
+        logger.debug(f"{port}: modes {'scaled from' if port._scalable else 'solved at every frequency, first at'} "
+                     f"{k0 * 299792458 / (2 * np.pi) / 1e9:.3f} GHz")
 
     # [Written by Claude]
     def _check_modal_port_count(self, port: ModalPort, freq: float) -> None:
@@ -1220,7 +1244,7 @@ class Microwave3D(GenericPhysics3D):
         if port._scalable:
             # A homogeneous port face: the modes of the highest frequency hold at every frequency
             if k0 not in port.available_modes:
-                self._scale_wave_port_modes(port, k0, freq)
+                self._scale_port_modes(port, k0, freq)
             return
 
         def kof(f: float) -> float:
@@ -1257,7 +1281,7 @@ class Microwave3D(GenericPhysics3D):
         nfound = len(port.available_modes.get(k0, []))
         if nfound < (1 if port._all_propagating else N):
             raise SimulationError(f"{port}: found {nfound} port modes at {freq / 1e9:.3f} GHz, {N} were requested.")
-        port._scalable = self._wave_port_scalable(port) and self._split_te_tm_modes(port, k0)
+        port._scalable = self._port_scalable(port, k0)
         logger.debug(f"{port}: modes {'scaled from' if port._scalable else 'solved at every frequency, tracked from'} "
                      f"{freq / 1e9:.3f} GHz")
         port._fix_mode_set(k0)
@@ -1292,9 +1316,35 @@ class Microwave3D(GenericPhysics3D):
         return itri_port[field] if np.any(field) else itri_port
 
     # [Written by Claude]
-    def _wave_port_scalable(self, port: WavePort) -> bool:
-        """Whether the modes of a WavePort hold at every frequency: a port face of one isotropic, lossless
-        (σ = 0) and non-dispersive material. Then β² = εr·μr·k0² - kc² and the mode shapes do not change.
+    def _port_scalable(self, port: ModalPort, k0: float) -> bool:
+        """Whether the modes of a ModalPort or WavePort at k0 hold at every frequency, so they are scaled to the
+        other frequencies (_scale_port_modes) instead of solved.
+
+        That requires a homogeneous port face (_port_face_homogeneous) and modes of a pure type, TE, TM or TEM:
+        a degenerate group of mixed TE and TM modes is split into pure ones first (_split_te_tm_modes). With
+        port.assume_homogeneous() the materials are not checked and modes of no pure type are kept and scaled
+        by the type of the modal analysis.
+
+        Args:
+            port (ModalPort): The port, with its modes at k0
+            k0 (float): The free space phase constant of the modes
+
+        Returns:
+            bool: Whether the modes are scaled
+        """
+        if not (port._assume_homogeneous or self._port_face_homogeneous(port)):
+            return False
+        if self._split_te_tm_modes(port, k0):
+            return True
+        if port._assume_homogeneous:
+            logger.debug(f"{port}: modes of no pure TE/TM/TEM type, scaled as the port is assumed homogeneous.")
+            return True
+        return False
+
+    # [Written by Claude]
+    def _port_face_homogeneous(self, port: ModalPort) -> bool:
+        """Whether a port face is of one isotropic, lossless (σ = 0) and non-dispersive material. Then
+        β² = εr·μr·k0² - kc² and the mode shapes do not change with frequency.
 
         A constant loss tangent keeps εr·μr frequency independent and is allowed. The walls of the port face
         are PEC in the port eigenproblem at every frequency, also when they carry a surface impedance.
@@ -1313,22 +1363,26 @@ class Microwave3D(GenericPhysics3D):
         return True
 
     # [Written by Claude]
-    def _make_wave_port_mode(
-        self, port: WavePort, field: np.ndarray, beta: complex, k0: float, freq: float, modetype: str
+    def _make_port_mode(
+        self, port: ModalPort, field: np.ndarray, beta: complex, k0: float, freq: float, modetype: str
     ) -> PortMode:
-        """A WavePort mode from its (transverse E, E_z) coefficients on the surface basis of the port solve,
-        with the E and H functions and the normalization |1/2 ∬ (e × h)·n dS| = 1."""
+        """A port mode from its (transverse E, E_z) coefficients on the surface basis of the port solve, with the
+        E and H functions and the normalization of modal_analysis: |1/2 ∬ (e × h)·n dS| = 1 for a WavePort,
+        a time-averaged power of 1 W for a ModalPort."""
         nlf, urp, normal = port._mode_basis
         portfE = nlf.interpolate_Ef(field)
         portfH = nlf.interpolate_Hf(field, k0, urp, beta)
         mode = PortMode(field, portfE, portfH, k0, beta, freq=freq)
         mode.modetype = modetype
         mode._nxy = nlf.n_xy
-        mode.normalize_power(np.abs(compute_modal_power_flux(nlf, portfE, portfH, normal)))
+        if isinstance(port, WavePort):
+            mode.normalize_power(np.abs(compute_modal_power_flux(nlf, portfE, portfH, normal)))
+        else:
+            mode.normalize_power(np.abs(compute_avg_power_flux(nlf, portfE, portfH, normal)))
         return mode
 
     # [Written by Claude]
-    def _split_te_tm_modes(self, port: WavePort, k0: float) -> bool:
+    def _split_te_tm_modes(self, port: ModalPort, k0: float) -> bool:
         """Makes every candidate mode of a homogeneous port pure TE (E_z = 0), TM (H_z = 0) or TEM.
 
         The eigen solver returns an arbitrary basis of a degenerate group (TE11/TM11 of a rectangular guide).
@@ -1416,32 +1470,42 @@ class Microwave3D(GenericPhysics3D):
                 for field in real_basis([F @ c for c in combos], beta, nxy):
                     # Orthogonal to the modes of this type made so far, in ∬ (e_m × h_n)·n dS
                     for prev in made:
-                        mode = self._make_wave_port_mode(port, field, beta, k0, prev.freq, modetype)
+                        mode = self._make_port_mode(port, field, beta, k0, prev.freq, modetype)
                         overlap = compute_modal_power_flux(nlf, prev.E_function, mode.H_function, normal) / mode.norm_factor
                         self_product = compute_modal_power_flux(nlf, prev.E_function, prev.H_function, normal)
                         field = field - overlap / self_product * prev.modefield * prev.E_function.constant
-                    made.append(self._make_wave_port_mode(port, field, beta, k0, group[0].freq, modetype))
+                    made.append(self._make_port_mode(port, field, beta, k0, group[0].freq, modetype))
                 pure += made
         port.available_modes[k0] = pure
         return True
 
     # [Written by Claude]
-    def _scale_wave_port_modes(self, port: WavePort, k0: float, freq: float) -> None:
-        """The modes of a homogeneous WavePort at k0 from its modes at the highest frequency.
+    def _scale_port_modes(self, port: ModalPort, k0: float, freq: float) -> None:
+        """The modes of a homogeneous ModalPort or WavePort at k0 from its modes at k0 = port._k0_ref.
 
-        β² = β_ref² + εr·μr (k0² - k0_ref²). TE and TEM modes keep their fields; the transverse E of a TM
-        mode scales with β (E_t = -jβ/kc² ∇_t E_z). The modes are normalized again at k0.
+        β² = β_ref² + εr·μr (k0² - k0_ref²) for TE and TM modes and β = β_ref·k0/k0_ref for TEM modes, the
+        same for a homogeneous port face and for a quasi-TEM mode of a port that is assumed homogeneous, whose
+        effective permittivity is kept. TE and TEM modes keep their fields; the transverse E of a TM mode
+        scales with β (E_t = -jβ/kc² ∇_t E_z). The modes are normalized again at k0.
+
+        A WavePort keeps modes below cutoff as evanescent modes. A ModalPort only has propagating modes, so a
+        mode below cutoff at k0 is left out (_check_modal_port_count reports a missing mode).
         """
         k_ref = port._k0_ref
         modes = []
         for ref in port.available_modes[k_ref]:
-            beta = np.emath.sqrt(ref.beta**2 + port._ermur * (k0**2 - k_ref**2))
-            beta = np.conj(beta) if np.imag(beta) > 0 else beta
+            if ref.modetype == "TEM":
+                beta = ref.beta * k0 / k_ref
+            else:
+                beta = np.emath.sqrt(ref.beta**2 + port._ermur * (k0**2 - k_ref**2))
+                beta = np.conj(beta) if np.imag(beta) > 0 else beta
+            if not isinstance(port, WavePort) and not np.real(beta**2) > 0:
+                continue
             field = ref.modefield * ref.E_function.constant
             if ref.modetype == "TM":
                 field = field.copy()
                 field[: ref._nxy] *= beta / ref.beta
-            mode = self._make_wave_port_mode(port, field, beta, k0, freq, ref.modetype)
+            mode = self._make_port_mode(port, field, beta, k0, freq, ref.modetype)
             mode.Z0 = ref.Z0
             modes.append(mode)
         port.available_modes[k0] = modes
@@ -1822,9 +1886,8 @@ class Microwave3D(GenericPhysics3D):
             self.basis, er, ur, cond, k0, port, self.bc, self.dofset_em
         )
 
-        if isinstance(port, WavePort):
-            # [Written by Claude] to rebuild the modes of a homogeneous port at other frequencies
-            port._mode_basis = (nlf, ur[:, :, itri_port], inward_normal)
+        # [Written by Claude] to rebuild the modes of a homogeneous port at other frequencies
+        port._mode_basis = (nlf, ur[:, :, itri_port], inward_normal)
 
         logger.debug(f"Total of {Amatrix.shape[0]} Degrees of freedom.")
         logger.debug(f"Applied frequency: {freq / 1e9:.2f}GHz")
@@ -3265,7 +3328,7 @@ class Microwave3D(GenericPhysics3D):
                         1.0, np.abs(scalardata.Sp[i, j])
                     )
 
-            fielddata._Sp = scalardata.Sp
+            fielddata._Sp = scalardata.Sp.copy()
             job.clear_solutions()
 
         if not_conserved and conserve_margin > 0.01:

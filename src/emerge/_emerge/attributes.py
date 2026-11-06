@@ -352,15 +352,18 @@ class SurfaceRoughness(PhysicalAttribute):
 class WavePortAttribute(PhysicalAttribute):
     name: str = 'WavePort'
 
-    def __init__(self, port_number: int, mode_type: Literal['TEM','TE','TM'] = 'TEM'):
+    def __init__(self, port_number: int, mode_type: Literal['TEM','TE','TM'] = 'TEM', assume_homogeneous: bool = False):
         """Mark a surface as a wave port.
 
         Args:
             port_number (int): The port number
             mode_type (Literal['TEM','TE','TM'], optional): The mode type of the port. Defaults to 'TEM'.
+            assume_homogeneous (bool, optional): Treat the port face as homogeneous, see
+                ModalPort.assume_homogeneous(). Defaults to False.
         """
         self.port_number: int = port_number
         self.mode_type: str = mode_type
+        self.assume_homogeneous: bool = assume_homogeneous
 
     def __descr__(self):
         return f'{self.port_number}, {self.mode_type}'

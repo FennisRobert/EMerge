@@ -26,7 +26,7 @@ def _coupled_microstrip(port: str):
     if port == "WavePort":
         ports = [sim.mw.bc.WavePort(f, i + 1, number_of_modes=2) for i, f in enumerate(faces)]
     else:
-        ports = [sim.mw.bc.ModalPort(f, i + 1, number_of_modes=2, mixed_materials=True) for i, f in enumerate(faces)]
+        ports = [sim.mw.bc.ModalPort(f, i + 1, number_of_modes=2) for i, f in enumerate(faces)]
     data = sim.mw.run_sweep()
     k0 = 2 * np.pi * 4e9 / 299792458
     betas = [np.real(m.beta) for m in ports[0].get_modes(k0)]

@@ -240,6 +240,47 @@ def renormalise_s(
     return S0
 
 
+# [Written by Claude]
+def _embed_network(
+    Sp: np.ndarray,
+    Z0: np.ndarray,
+    freq: np.ndarray | float,
+    td,
+    n_pos: list[int],
+    m_pos: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Connect the network of a Touchstone file to the ports m_pos of the S-matrices Sp.
+
+    Sp has the shape (..., N, N) with any leading axes (frequency, sweep parameters), Z0 the shape (..., N) and
+    freq the shape (...). The file is renormalised from its reference impedance to the impedance of each
+    port it connects to, because the S-parameters of the model are normalised to the port impedances.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: The S-matrices of the ports n_pos with the shape (..., n, n) and the
+            coupling from the incident waves at n_pos to the waves into the ports m_pos with the shape (..., m, n).
+    """
+    lead = Sp.shape[:-2]
+    M = len(m_pos)
+    f = np.broadcast_to(np.asarray(freq, dtype=float), lead).ravel()
+    Zm = np.broadcast_to(np.asarray(Z0, dtype=np.complex128), lead + (Sp.shape[-1],))[..., m_pos].reshape(-1, M)
+    if not np.all(np.isfinite(Zm)) or np.any(np.real(Zm) == 0):
+        raise ValueError(
+            "The ports to embed on need a reference impedance with a non-zero real part, got "
+            f"{np.unique(Zm)}."
+        )
+    S_ext = td.interp_S(f)
+    S_ext = renormalise_s(S_ext, td.refimp, Zm).reshape(lead + (M, M))
+
+    S_nn = Sp[..., n_pos, :][..., n_pos]
+    S_nm = Sp[..., n_pos, :][..., m_pos]
+    S_mn = Sp[..., m_pos, :][..., n_pos]
+    S_mm = Sp[..., m_pos, :][..., m_pos]
+
+    term = np.linalg.inv(np.eye(M, dtype=np.complex128) - S_mm @ S_ext)
+    coupling = S_ext @ term @ S_mn
+    return S_nn + S_nm @ coupling, coupling
+
+
 def generate_ndim(
     outer_data: dict[str, list[float]],
     inner_data: list[float],
@@ -1574,24 +1615,19 @@ class MWField(Saveable):
             raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
 
         td = TouchstoneData(touchstone_file)
-        S_ext = td.interp_S(self.freq)  # (M, M) at this field's single frequency
 
         m_pos = [portmap[p] for p in port_indices]
         n_labels = sorted(self._active_ports - set(port_indices), key=lambda l: portmap[l])
         n_pos = [portmap[l] for l in n_labels]
 
-        S_nn = self._Sp[np.ix_(n_pos, n_pos)]
-        S_nm = self._Sp[np.ix_(n_pos, m_pos)]
-        S_mn = self._Sp[np.ix_(m_pos, n_pos)]
-        S_mm = self._Sp[np.ix_(m_pos, m_pos)]
-
-        I_m = np.eye(len(m_pos), dtype=np.complex128)
-        term = np.linalg.inv(I_m - S_mm @ S_ext)
-        coupling = S_ext @ term @ S_mn  # (M, N)
+        Z0 = np.array([np.nan if p.Z0 is None else p.Z0 for p in self.port_modes], dtype=np.complex128)
+        S_red, coupling = _embed_network(self._Sp, Z0, self.freq, td, n_pos, m_pos)
 
         # Fold the embedding into the effective S among still-active ports,
         # so a SUBSEQUENT embedding call sees the correct effective network.
-        self._Sp[np.ix_(n_pos, n_pos)] = S_nn + S_nm @ coupling
+        # A copy, so the S-parameters of the scalar data are never changed.
+        self._Sp = self._Sp.copy()
+        self._Sp[np.ix_(n_pos, n_pos)] = S_red
         # Mark embedded ports as no longer meaningful.
         self._Sp[m_pos, :] = np.nan
         self._Sp[:, m_pos] = np.nan
@@ -2567,7 +2603,6 @@ class MWScalarNdim(Saveable):
             raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
 
         td = TouchstoneData(touchstone_file)
-        S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
 
         m_pos = [self._portmap[p] for p in port_indices]
         n_labels = sorted(
@@ -2575,24 +2610,15 @@ class MWScalarNdim(Saveable):
         )
         n_pos = [self._portmap[l] for l in n_labels]
 
-        S_nn = self.Sp[:, n_pos][:, :, n_pos]
-        S_nm = self.Sp[:, n_pos][:, :, m_pos]
-        S_mn = self.Sp[:, m_pos][:, :, n_pos]
-        S_mm = self.Sp[:, m_pos][:, :, m_pos]
-
-        n_freq = self.Sp.shape[0]
-        I = np.eye(len(m_pos))
-        S_red = np.zeros_like(S_nn)
-        for i in range(n_freq):
-            term = np.linalg.inv(I - S_mm[i] @ S_ext[i])
-            S_red[i] = S_nn[i] + S_nm[i] @ S_ext[i] @ term @ S_mn[i]
+        # Works for any leading axes: (F, N, N) or (*sweep, F, N, N)
+        S_red, _ = _embed_network(self.Sp, self.Z0, self.freq, td, n_pos, m_pos)
 
         # Fold the embedding into the effective S among still-active ports,
         # so a SUBSEQUENT embedding call sees the correct effective network.
-        self.Sp[np.ix_(range(n_freq), n_pos, n_pos)] = S_red
+        self.Sp[..., np.array(n_pos)[:, None], np.array(n_pos)[None, :]] = S_red
         # Mark eliminated ports as no longer meaningful.
-        self.Sp[:, m_pos, :] = np.nan
-        self.Sp[:, :, m_pos] = np.nan
+        self.Sp[..., m_pos, :] = np.nan
+        self.Sp[..., :, m_pos] = np.nan
 
         self._active_ports -= set(port_indices)
 

@@ -23,8 +23,8 @@ def _guide(a, b, L, freqs, material=None, resolution=0.15):
 
 
 def test_modal_port_dielectric_filled_waveguide():
-    # The modes of a ModalPort without mixed_materials were computed at one frequency and extrapolated with
-    # β² = β0² + k0² - k00², without εr: a uniform dielectric-filled guide reflected up to |S11| = 0.4.
+    # The modes of a homogeneous ModalPort were once extrapolated with β² = β0² + k0² - k00², without εr: a
+    # uniform dielectric-filled guide reflected up to |S11| = 0.4. Now they are scaled with εr.
     a, b, L, er = 22.86 * mm, 10.16 * mm, 40 * mm, 2.2
     freqs = np.array([6e9, 9e9, 12e9])
     sim, box = _guide(a, b, L, freqs, em.Material(er=er, name="diel"))
@@ -100,7 +100,7 @@ def test_wave_port_homogeneous_scaled_modes():
     for scale in (True, False):
         sim, box = _guide(a, a, L, freqs, resolution=0.15)
         if not scale:
-            sim.mw._wave_port_scalable = lambda port: False
+            sim.mw._port_scalable = lambda port, k0: False
         p1 = sim.mw.bc.WavePort(box.face("-z"), 1, number_of_modes=4)
         sim.mw.bc.WavePort(box.face("+z"), 2, number_of_modes=4)
         Sp = sim.mw.run_sweep().scalar.grid.Sp
@@ -148,7 +148,7 @@ def test_wave_port_split_mixed_degenerate_modes():
     te11, tm11 = modes[2], modes[3]
     assert (te11.modetype, tm11.modetype) == ("TE", "TM")
     f1, f2 = (m.modefield * m.E_function.constant for m in (te11, tm11))
-    mixes = [sim.mw._make_wave_port_mode(p1, c1 * f1 + c2 * f2, te11.beta, k0, 12e9, "TEM")
+    mixes = [sim.mw._make_port_mode(p1, c1 * f1 + c2 * f2, te11.beta, k0, 12e9, "TEM")
              for c1, c2 in ((0.8, 0.6j), (-0.6, 0.8j))]
     p1.available_modes[k0] = modes[:2] + mixes
     assert sim.mw._split_te_tm_modes(p1, k0)

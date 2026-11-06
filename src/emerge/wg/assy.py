@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from emerge._emerge.geometry import GeoVolume, GeoSurface
+from emerge._emerge.selection import FaceSelection
 from emerge import CoordinateSystem, Anchor
 from emerge._emerge.geo import stick
 
 from enum import Enum
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 import emerge as em
 from abc import ABC, abstractmethod
 
@@ -16,16 +17,16 @@ class WaveguideDim(NamedTuple):
     b: float  # Height in mm
 
 
-def up_dydx0(x: float):
+def _up_dydx0(x: float):
     return 1 - np.cos(x)
 
-def up_dydx1(x: float):
+def _up_dydx1(x: float):
     return np.sin(x)
 
-def down_dydx0(x: float):
+def _down_dydx0(x: float):
     return np.cos(x)
 
-def down_dydx1(x: float):
+def _down_dydx1(x: float):
     return 1 - np.sin(x)
 
 class WGStandard(Enum):
@@ -105,11 +106,12 @@ class WGConfig:
         
     
     
-class WGComponent:
+class _WGComponent:
     
     def __init__(self):
         self._active_anchor: Anchor | None = None
-        
+        self.air: GeoVolume = None
+
     @property
     def anchors(self) -> list[Anchor]:
         raise NotImplementedError(f'Comps is not defined for class {self.__class__.name}')
@@ -129,17 +131,17 @@ class WGComponent:
         self._active_anchor = None
         
     def place(self, 
-                anchor: Anchor | WGComponent, 
+                anchor: Anchor | _WGComponent, 
                 flipx: bool = False, 
                 flipy: bool = False, 
-                flipz: bool = False) -> WGComponent:
+                flipz: bool = False) -> _WGComponent:
         
         if self._active_anchor is None:
             raise ValueError(f'You must specify an active achor for this component: {self}')
         
         anchor_self = self._active_anchor
         
-        if isinstance(anchor, WGComponent):
+        if isinstance(anchor, _WGComponent):
             if anchor._active_anchor is None:
                 raise ValueError(f'You must specify an active achor for the joined component: {anchor}')
             anchor = anchor._active_anchor
@@ -162,9 +164,11 @@ class WGComponent:
         
         return self
     
+    def face(self, name: str) -> FaceSelection:
+        anchor = getattr(self, name)._active_anchor
+        return self.air.face_from_anchor(anchor)
     
-    
-class WGRect(WGComponent):
+class WGRect(_WGComponent):
     
     def __init__(self, length: float, config: WGConfig):
         self.length: float = length
@@ -209,17 +213,123 @@ class WGRect(WGComponent):
         self._a1 = Anchor((0,0,0))
         self._a2 = Anchor((0,0,L))
 
-class WGETurnRound(WGComponent):
+def _turn_leg_length(w: float, angle: float, ratio: float, inside_radius: float, lead: float | None) -> float:
+    """The centreline length Lc of both legs of a waveguide bend of width w, see _turn_polygon.
+
+    The legs are just long enough for the outer corner fillet (tangent length ratio·w·tan(angle/2)) and the
+    inner corner, plus the lead.
+    """
+    T = np.tan(abs(angle)/2)
+    R = ratio*w
+    if lead is None:
+        lead = w/2 if ratio >= 1.0 else 0.0
+    if ratio >= 1.0 and lead <= 0:
+        # A fillet that consumes a whole edge leaves slivers in OCC
+        raise ValueError(f'A waveguide bend needs a lead > 0 for ratio >= 1, got {lead}.')
+
+    Lc = T*max(R - w/2, w/2) + lead
+    Li = Lc - T*w/2
+    if inside_radius > 0.0 and inside_radius*T >= Li:
+        raise ValueError(f'The inside radius {inside_radius} does not fit on the inner leg of length {Li}. Increase the lead.')
+    return Lc
+
+
+def _turn_polygon(w: float, Lc: float, angle: float, R: float, inside_radius: float, miter: bool,
+                  t: float = 0.0, e: float = 0.0) -> em.geo.XYPolygon:
+    """The 2D profile of a waveguide bend of width w in the bend plane, offset outwards by t.
+
+    With t=0 this is the air: an input leg along +y from y=0 with its centreline on x=0 and an output leg
+    in the direction d=(sin(angle), cos(angle)), both with a centreline length of Lc. The outer corner
+    (node 1) is filleted with radius R and the inner corner (node 4) with inside_radius. With miter=True the
+    corners are cut straight between the same points, an inset of radius·tan(angle/2) from the corner along
+    both edges. A negative angle mirrors the profile in x.
+
+    With t>0 this is the outline of the walls: the offset of the air by t. Both legs are extended by e beyond
+    the port planes, which can be cut off afterwards.
+    """
+    sign = np.sign(angle)
+    angle = abs(angle)
+    T = np.tan(angle/2)
+    h = w/2 + t
+    d = np.array([np.sin(angle), np.cos(angle)])
+    n_out = np.array([-np.cos(angle), np.sin(angle)])   # The outer side of the output leg
+    m = (np.array([-1.0, 0.0]) + n_out)/(1 + np.cos(angle))
+    C = np.array([0.0, Lc])
+    E = C + Lc*d
+    up = np.array([0.0, 1.0])
+
+    # The miter inset of an offset corner grows (outer) or shrinks (inner) by k·t
+    k = 1/np.cos(angle/2)**2 - 1/np.cos(angle/2)
+    if miter:
+        Ro, ri = R*T + k*t, inside_radius*T - k*t
+    else:
+        Ro, ri = R + t, inside_radius - t
+
+    P0 = np.array([-h, -e])
+    P1 = C + h*m
+    P2 = E + e*d + h*n_out
+    P3 = E + e*d - h*n_out
+    P4 = C - h*m
+    P5 = np.array([h, -e])
+
+    pts = [P0, P1, P2, P3]
+    inner = Lc + e - h*T > 1e-12
+    if inner:
+        pts += [P4, P5]
+    if inner and ri > 0.0:
+        if miter:
+            pts[4:5] = [P4 + ri*d, P4 - ri*up]
+    if miter:
+        pts[1:2] = [P1 - Ro*up, P1 + Ro*d]
+
+    xs = np.array([pt[0] for pt in pts])*sign
+    ys = np.array([pt[1] for pt in pts])
+    poly = em.geo.XYPolygon(xs, ys)
+    if not miter:
+        poly.fillet(Ro, 1)
+        if inner and ri > 0.0:
+            poly.fillet(ri, 4)
+    return poly
+
+
+class WGTurnGeneric(_WGComponent):
+    """The base class of the waveguide bends.
+
+    A subclass sets the bend plane and the corner shape:
+     - _plane = 'E': the bend is in the plane of the narrow side b, so the bend width w is b.
+     - _plane = 'H': the bend is in the plane of the broad side a, so the bend width w is a.
+     - _miter = False: the corners are rounded with fillets, _miter = True: they are cut straight.
+    """
+    _plane: Literal['E', 'H'] | None = None
+    _miter: bool = False
     
     def __init__(self, 
                  config: WGConfig, 
-                 ratio: float = 1.2, 
-                 angle_deg: float = 90):
-        
+                 ratio: float = 1.2,
+                 angle_deg: float = 90,
+                 inside_radius: float = 0.0,
+                 lead: float | None = None):
+        """A waveguide bend of width w (b for an E-plane and a for an H-plane bend).
+
+        Args:
+            config (WGConfig): The waveguide configuration.
+            ratio (float, optional): The outer corner radius divided by w. A miter cuts the corner between the
+                same points as the fillet. Defaults to 1.2.
+            angle_deg (float, optional): The bend angle in degrees, between -90 and 90 and not 0. A positive
+                angle bends towards +Y (E-plane) or +X (H-plane). Defaults to 90.
+            inside_radius (float, optional): The inner corner radius in meters, 0 for a sharp corner. Defaults to 0.
+            lead (float | None, optional): The length of a straight section in meters added to both legs
+                before the bend. Must be > 0 for ratio >= 1. Defaults to w/2 for ratio >= 1 and 0 otherwise.
+        """
+        if self._plane is None:
+            raise TypeError('WGTurnGeneric is a base class, use WGETurnRound, WGHTurnRound, WGETurnMiter or WGHTurnMiter.')
+        if not (0 < abs(angle_deg) <= 90):
+            raise ValueError(f'The bend angle must be between -90 and 90 degrees and not 0, got {angle_deg}.')
         self.ratio: float = ratio
+        self.lead: float | None = lead
         self.angle: float = angle_deg * np.pi/180
         self.config: WGConfig = config
-
+        self.inside_radius: float = inside_radius
         self.air: GeoVolume = None
         self.metal: GeoVolume = None
         
@@ -231,35 +341,97 @@ class WGETurnRound(WGComponent):
     
     def build(self) -> None:
         a,b = self.config.a, self.config.b
+        th = self.config.thmm
         
-        zex_in = b*max(0.0, self.ratio - 1.0)
-        zex_out = b*max(0.0, 1.0 - self.ratio)
+        # w is the width in the bend plane, h the height of the extrusion
+        w, h = (b, a) if self._plane == 'E' else (a, b)
+        R = self.ratio*w
+        Lc = _turn_leg_length(w, self.angle, self.ratio, self.inside_radius, self.lead)
         
-        R = self.ratio*b
-        if self.ratio < 1.0:
-            poly = em.geo.XYPolygon([-b/2, -b/2],[0, zex_out])\
-                .parametric(lambda t: -b/2 + R*(1 - np.cos(t*np.pi/2)), lambda t: zex_out + R*np.sin(t*np.pi/2))\
-                .extend([zex_out, b/2, b/2], [b, b, 0])
-            air = poly.extrude(a, em.YZPLANE.cs(-a/2,0,0))
-            self._a1 = Anchor((0,0,0))
-            self._a2 = Anchor((0,b/2,b/2), (1,0,0), (0,0,-1), (0,1,0))
-            
-        self.air = air
+        def extrude(poly: em.geo.XYPolygon, t: float) -> GeoVolume:
+            if self._plane == 'E':
+                return poly.extrude(h + 2*t, em.YZPLANE.cs(-h/2 - t, 0, 0))
+            return poly.extrude(h + 2*t, em.XZPLANE.cs(0, h/2 + t, 0))
+        
+        self.air = extrude(_turn_polygon(w, Lc, self.angle, R, self.inside_radius, self._miter), 0.0)
+        
+        # The exit centre and the output direction in the bend plane
+        s, c = np.sin(self.angle), np.cos(self.angle)
+        Eu, Ev = Lc*s, Lc*(1 + c)
+        
+        if self.config.model_walls:
+            # The walls are the air offset by th with legs extended beyond the port planes, which are cut off
+            e = w + 2*th
+            outer = extrude(_turn_polygon(w, Lc, self.angle, R, self.inside_radius, self._miter, th, e), th)
+            B = 2*(Lc + e + w)
+            d = np.array([s, c])
+            n = np.array([-c, s])
+            E = np.array([Eu, Ev])
+            behind_input = em.geo.XYPolygon([-B, B, B, -B], [-B, -B, 0, 0])
+            beyond_output = [E + B*n, E + B*n + B*d, E - B*n + B*d, E - B*n]
+            beyond_output = em.geo.XYPolygon([pt[0] for pt in beyond_output], [pt[1] for pt in beyond_output])
+            outer = em.geo.subtract(outer, extrude(behind_input, 2*th))
+            outer = em.geo.subtract(outer, extrude(beyond_output, 2*th))
+            self.metal = em.geo.subtract(outer, self.air, remove_tool=False).set_material(self.config.material)
+        
+        # The output anchor is the input anchor rotated by the bend angle
+        self._a1 = Anchor((0,0,0))
+        if self._plane == 'E':
+            self._a2 = Anchor((0, Eu, Ev), (1,0,0), (0, c, -s), (0, s, c))
+        else:
+            self._a2 = Anchor((Eu, 0, Ev), (c, 0, -s), (0,1,0), (s, 0, c))
 
     @property
     def anchors(self) -> list[Anchor]:
         return (self._a1, self._a2)
     
     @property
-    def front(self) -> WGRect:
+    def front(self) -> WGTurnGeneric:
         self._active_anchor = self._a1
         return self
     
     @property
-    def back(self) -> WGRect:
+    def back(self) -> WGTurnGeneric:
         self._active_anchor = self._a2
         return self
     
     @property
     def _comps(self):
-        return [self.air]
+        return [self.air, self.metal]
+
+
+class WGETurnRound(WGTurnGeneric):
+    """An E-plane waveguide bend (in the plane of the narrow side b) with rounded corners.
+
+    The outer corner has a radius of ratio·b and the inner corner a radius of inside_radius.
+    """
+    _plane = 'E'
+
+
+class WGHTurnRound(WGTurnGeneric):
+    """An H-plane waveguide bend (in the plane of the broad side a) with rounded corners.
+
+    The outer corner has a radius of ratio·a and the inner corner a radius of inside_radius.
+    """
+    _plane = 'H'
+
+
+class WGETurnMiter(WGTurnGeneric):
+    """An E-plane waveguide bend (in the plane of the narrow side b) with straight (mitered) corners.
+
+    The cuts start at the same inset distances from the corners as the fillets of WGETurnRound: ratio·b for
+    the outer corner and inside_radius for the inner corner.
+    """
+    _plane = 'E'
+    _miter = True
+
+
+class WGHTurnMiter(WGTurnGeneric):
+    """An H-plane waveguide bend (in the plane of the broad side a) with straight (mitered) corners.
+
+    The cuts start at the same inset distances from the corners as the fillets of WGHTurnRound: ratio·a for
+    the outer corner and inside_radius for the inner corner.
+    """
+    _plane = 'H'
+    _miter = True
+

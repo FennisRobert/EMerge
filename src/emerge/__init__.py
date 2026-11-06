@@ -34,7 +34,7 @@ warnings.filterwarnings(
 
 import os
 
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 
 NTHREADS = "1"
 os.environ.setdefault("EMERGE_STD_LOGLEVEL", "INFO")
@@ -88,6 +88,7 @@ from ._emerge.elements.dofsets import ElementSpace, DoFSet
 from ._emerge.attributes import VoidAttribute, PhysicalAttribute, PhysicalAttributeSet, FiniteThickness, SurfaceRoughness, WavePortAttribute, LumpedPortAttribute, MetalCoating, LumpedElementAttribute
 from . import optycal
 from . import plot 
+from . import wg
 howto = _HowtoClass()
 
 

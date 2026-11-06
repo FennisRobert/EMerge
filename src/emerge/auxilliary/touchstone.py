@@ -421,7 +421,7 @@ class TouchstoneData:
             
             B = z0 * ((1 + s11) * (1 + s22) - s12 * s21) / (2 * s21)
             
-            return Zfmodel(B, Z)
+            return Zfmodel(self.Fdata, B)
     def generate_Z_param(self) -> np.ndarray:
         """Returns the (n_freq,n,n) Z-parameters of this S-parameter component
 
@@ -455,12 +455,23 @@ class TouchstoneData:
         return self.Sdata[:, i-1, j-1].squeeze()
     
     def interp_S(self, f: np.ndarray) -> np.ndarray:
-        """Compute the interpolate S-parameter matrix
+        """Interpolate the S-parameter matrix at the given frequencies.
+
+        Args:
+            f (np.ndarray): The frequencies in Hz. They must lie within the frequency range of the file.
 
         Returns:
-            np.ndarray: _description_
+            np.ndarray: The S-parameters with the shape (n_freq, n_ports, n_ports)
         """
         f = np.atleast_1d(f)
+        fmin, fmax = np.min(self.Fdata), np.max(self.Fdata)
+        tol = 1e-9 * fmax
+        if np.min(f) < fmin - tol or np.max(f) > fmax + tol:
+            raise ValueError(
+                f"The Touchstone file covers {fmin/1e9:.6g} to {fmax/1e9:.6g} GHz, but S-parameters are needed "
+                f"from {np.min(f)/1e9:.6g} to {np.max(f)/1e9:.6g} GHz. Use a file that covers the simulated frequencies."
+            )
+        f = np.clip(f, fmin, fmax)
         n = f.shape[0]
         nps = self.n_ports
         Sout = np.zeros((n,nps,nps), dtype=np.complex128)

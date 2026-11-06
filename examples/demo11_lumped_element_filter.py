@@ -31,7 +31,7 @@ def Cf(C):
 pack = "0603"  # package footprint for lumped components
 # Create simulation and PCB layouter with substrate thickness and material
 model = em.Simulation("LumpedFilter")
-model.check_version("3.0.0")  # Checks version compatibility.
+model.check_version("3.0.1")  # Checks version compatibility.
 
 th = 0.5  # substrate thickness (meters)
 Hair = 2.0
@@ -111,6 +111,8 @@ model.view()
 # Add lumped element BCs for each element
 for le in LEs:
     model.mw.bc.LumpedElement(le)
+p1, p2 = model.mw.bc.get_ports()
+
 
 # --- Run frequency-domain simulation ------------------------------------
 data = model.mw.run_sweep()

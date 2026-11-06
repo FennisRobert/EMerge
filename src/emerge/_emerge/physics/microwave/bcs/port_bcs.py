@@ -38,6 +38,8 @@ class PortBC(RobinBC, Saveable):
     _texture: str = "tex5.png"
     _name: str = "PortBC"
     dim: int = 2
+    # [Written by Claude] Treat the port face as homogeneous without checking its materials (see assume_homogeneous)
+    _assume_homogeneous: bool = False
 
     def __init__(self, face: FaceSelection | GeoSurface):
         """(DO NOT USE) A generalization of the Port boundary condition.
@@ -65,6 +67,29 @@ class PortBC(RobinBC, Saveable):
     def voltage(self) -> complex | None:
         """The port voltage, None if it is not defined for this port type."""
         return None
+
+    # [Written by Claude]
+    def assume_homogeneous(self, active: bool = True) -> "PortBC":
+        """Treat the port face as one homogeneous material, without checking the materials on it.
+
+        The modes of a homogeneous port are solved once and scaled analytically to the other frequencies:
+        β² = β_ref² + εr·μr (k0² - k0_ref²) for TE and TM modes (with the mean εr·μr of the face), β ∝ k0 for TEM
+        modes, which keeps the effective permittivity of a quasi-TEM line. The mode shapes are taken frequency
+        independent, so dispersion of an inhomogeneous line (microstrip at a high frequency·thickness) is ignored.
+
+        Changing the setting clears the modes computed so far. It has no effect on ports without a modal analysis.
+
+        Args:
+            active (bool, optional): Whether to assume a homogeneous port face. Defaults to True.
+
+        Returns:
+            PortBC: This port
+        """
+        active = bool(active)
+        if active != self._assume_homogeneous and hasattr(self, "clear_modes"):
+            self.clear_modes()
+        self._assume_homogeneous = active
+        return self
 
     def smatrix_index(self, mode_nr: int = 1) -> int | float:
         """The S-matrix index of port mode mode_nr, to read the results with (data.scalar.grid.S(i, j)).
@@ -301,8 +326,8 @@ class ModalPort(PortBC, Saveable):
         power: float = 1,
         modetype: Literal["TE", "TM", "TEM","any"] | None = None,
         number_of_modes: int = 1,
-        mixed_materials: bool = False,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
+        assume_homogeneous: bool = False,
     ):
         """Generes a ModalPort boundary condition for a port that requires eigenmode solutions for the mode.
 
@@ -314,6 +339,9 @@ class ModalPort(PortBC, Saveable):
         All modal ports require the execution of a .modal_analysis() by the physics class to define
         the port mode.
 
+        The modes are solved as few times as possible. On a homogeneous, lossless and non-dispersive port face
+        they are solved once and scaled analytically to the other frequencies, otherwise at every frequency.
+
         Args:
             face (FaceSelection | GeoSurface): The port mode face
             port_number (int): The port number as an integer
@@ -321,10 +349,9 @@ class ModalPort(PortBC, Saveable):
             power (float, optional): The radiated power. Defaults to 1.
             modetype (Literal["TE", "TM", "TEM","any"] | None, optional): Force the port mode type (None selects automatically). Defaults to None.
             number_of_modes (int, optional): The number of port modes to compute. Defaults to 1.
-            mixed_materials (bool, optional): Recompute the port modes at every frequency. Without it the modes
-                are still recomputed at every frequency, unless the port face has one material and only TEM modes,
-                whose fields do not change with frequency. Defaults to False.
             impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed: from power and voltage, power and current, or voltage and current. Defaults to "PV".
+            assume_homogeneous (bool, optional): Treat the port face as homogeneous without checking its
+                materials, see .assume_homogeneous(). Defaults to False.
         """
         super().__init__(face)
 
@@ -344,7 +371,7 @@ class ModalPort(PortBC, Saveable):
 
         self._desired_number_of_modes: int = number_of_modes
         self.forced_modetype: Literal["TE", "TM", "TEM","any"] | None = modetype
-        self.mixed_materials: bool = mixed_materials
+        self._assume_homogeneous: bool = bool(assume_homogeneous)
         self.initialized: bool = False
         self._first_k0: float | None = None
         self._last_k0: float | None = None
@@ -354,6 +381,12 @@ class ModalPort(PortBC, Saveable):
         self._ermur: complex = 1.0
         self._ermur_max: float = 1.0
         self._nmodes_solved: int = 0
+        # [Written by Claude] Whether the modes of k0 = _k0_ref are scaled to the other frequencies instead of solved
+        # (Microwave3D._port_scalable, _scale_port_modes). None: not decided yet.
+        self._scalable: bool | None = None
+        self._k0_ref: float | None = None
+        # The surface basis, μr and inward normal of the last port solve
+        self._mode_basis: tuple | None = None
 
         self.plus_terminal: list[tuple[int, int]] = []
         self.minus_terminal: list[tuple[int, int]] = []
@@ -413,6 +446,8 @@ class ModalPort(PortBC, Saveable):
         self._first_k0 = None
         self.available_modes: dict[float, list[PortMode]] = dict()
         self.initialized: bool = False
+        self._scalable = None
+        self._k0_ref = None
         self.plus_terminal: list[tuple[int, int]] = []
         self.minus_terminal: list[tuple[int, int]] = []
 
@@ -667,6 +702,8 @@ class ModalPort(PortBC, Saveable):
         """Clear all port mode data"""
         self.available_modes = dict()
         self.initialized = False
+        self._scalable = None
+        self._k0_ref = None
 
     # [Written by Claude]
     def _discard_modes_at(self, k0: float) -> None:
@@ -737,13 +774,6 @@ class ModalPort(PortBC, Saveable):
             beta = np.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
         return beta
 
-    # [Written by Claude]
-    @property
-    def _frequency_scalable(self) -> bool:
-        """True if the modes of one frequency hold at every frequency: one material and only TEM modes."""
-        modes = self.available_modes.get(self._last_k0, []) if self._last_k0 is not None else []
-        return self._homogeneous and len(modes) > 0 and all(m.modetype == "TEM" for m in modes)
-
     def get_gamma(self, k0: float) -> complex:
         return 1j * self.get_beta(k0)
 
@@ -804,6 +834,7 @@ class WavePort(ModalPort, Saveable):
         number_of_modes: int | None = 1,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
         modetype: Literal["TE", "TM", "TEM", "any"] | None = None,
+        assume_homogeneous: bool = False,
     ):
         """A wave port that absorbs and excites each of its modes with the mode's own propagation constant.
 
@@ -824,6 +855,9 @@ class WavePort(ModalPort, Saveable):
         are normalized to |1/2 ∬ (e × h)·n dS| = 1 and their S-parameters are amplitude ratios, not power
         ratios.
 
+        On a homogeneous, lossless and non-dispersive port face the modes are solved once at the highest
+        frequency and scaled analytically to the other frequencies instead of followed by solving.
+
         Args:
             face (FaceSelection | GeoSurface): The port mode face
             port_number (int): The port number as an integer
@@ -835,6 +869,8 @@ class WavePort(ModalPort, Saveable):
                 from power and voltage, power and current, or voltage and current. Defaults to "PV".
             modetype (Literal["TE", "TM", "TEM", "any"] | None, optional): Only accept port modes of this type.
                 None or "any" accepts all modes. Defaults to None.
+            assume_homogeneous (bool, optional): Treat the port face as homogeneous without checking its
+                materials, see .assume_homogeneous(). Defaults to False.
         """
         super().__init__(
             face,
@@ -843,8 +879,8 @@ class WavePort(ModalPort, Saveable):
             power=power,
             modetype=modetype,
             number_of_modes=1 if number_of_modes is None else number_of_modes,
-            mixed_materials=True,
             impedance_definition=impedance_definition,
+            assume_homogeneous=assume_homogeneous,
         )
         # None: all modes that propagate at the highest frequency, counted by the mode selection
         self._all_propagating: bool = number_of_modes is None
@@ -853,12 +889,6 @@ class WavePort(ModalPort, Saveable):
         self._tracks: list[dict] = []
         # Per frequency the field overlap (CMAC) of each mode with the mode at the previous frequency
         self._track_quality: dict[float, np.ndarray] = {}
-        # A homogeneous port face: the modes of the highest frequency (k0 = _k0_ref) are scaled to the other
-        # frequencies instead of solved (Microwave3D._scale_wave_port_modes)
-        self._scalable: bool = False
-        self._k0_ref: float | None = None
-        # The surface basis, μr and inward normal of the last port solve
-        self._mode_basis: tuple | None = None
 
     def reset(self) -> None:
         super().reset()
@@ -868,8 +898,6 @@ class WavePort(ModalPort, Saveable):
         super().clear_modes()
         self._tracks = []
         self._track_quality = {}
-        self._scalable = False
-        self._k0_ref = None
 
     @property
     def solved_frequencies(self) -> list[float]:

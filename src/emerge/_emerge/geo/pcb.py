@@ -215,7 +215,7 @@ class RouteElement:
 
     @property
     def z(self) -> float:
-        """The resolved Z-height (in meters) of this element, computed on demand from its layer index."""
+        """The resolved Z-height (in PCB units) of this element, computed on demand from its layer index."""
         pcb = _GlobalHandler.active().pcbmanager.pcb
         if pcb is None:
             raise RouteException(
@@ -237,7 +237,7 @@ class RouteElement:
         )
         uz = np.array(_GlobalHandler.active().pcbmanager.cs.in_local_basis(0.0, 0.0, 1.0))
         gx, gy, gz = cs.in_global_cs(
-            self.x * _GlobalHandler.active().pcbmanager.unit, self.y * _GlobalHandler.active().pcbmanager.unit, self.z
+            self.x * unit, self.y * unit, self.z * unit
         )
         return Anchor((gx, gy, gz), ux, uy, uz)
 
@@ -1043,13 +1043,8 @@ class StripPath:
 
         After creation, the trace continues after the lumped component.
 
-        You can add the components to your model as following:
-
-        >>> lumped_elements = pcb.lumped_elments
-        for le in lumped_elements:
-            model.mw.bc.LumpedElement(le)
-
-        The impedance function and geometry is automatically passed on with the lumped element added.
+        The lumped elements are in pcb.lumped_elements. Their boundary conditions are added automatically from the
+        impedance function and geometry stored on each element, so you do not have to add them yourself.
 
         Args:
             impedance_function (Callable): A function that computes the component impedance as a function of frequency.
@@ -1115,13 +1110,8 @@ class StripPath:
 
         After creation, the trace continues after the lumped component.
 
-        You can add the components to your model as following:
-
-        >>> lumped_elements = pcb.lumped_elments
-        for le in lumped_elements:
-            model.mw.bc.LumpedElement(le)
-
-        The impedance function and geometry is automatically passed on with the lumped element added.
+        The lumped elements are in pcb.lumped_elements. Their boundary conditions are added automatically from the
+        impedance function and geometry stored on each element, so you do not have to add them yourself.
 
         Args:
             filename (str): The Touchstone file with the S-parameters of the component.
@@ -1191,9 +1181,11 @@ class StripPath:
             y0l = y*self.pcb.unit - Ry
             dlx = length*dx*self.pcb.unit
             dly = length*dy*self.pcb.unit
+            z_top = self.z*self.pcb.unit
+            dz_m = (self.z-z_gnd)*self.pcb.unit
             dz = np.abs(self.z-z_gnd)
-            poly_shunt1 = Plate((x0l, y0l, self.z), (Rx*2,Ry*2,0),(0,0,-(self.z-z_gnd)))
-            poly_shunt2 = Plate((x0l+dlx, y0l+dly, self.z), (Rx*2,Ry*2,0),(0,0,-(self.z-z_gnd)))
+            poly_shunt1 = Plate((x0l, y0l, z_top), (Rx*2,Ry*2,0),(0,0,-dz_m))
+            poly_shunt2 = Plate((x0l+dlx, y0l+dly, z_top), (Rx*2,Ry*2,0),(0,0,-dz_m))
 
             self.pcb._lumped_element(poly, td.z_series_pi(), width, length)
             self.pcb._lumped_element(poly_shunt1, td.z_shunt_pi_1(), width, dz)
@@ -1812,12 +1804,12 @@ class PCB:
 
     @property
     def top(self) -> float:
-        """The top conductor later height (z-value in meters)."""
+        """The top conductor layer height (z-value in PCB units)."""
         return self._zs[-1]
 
     @property
     def bottom(self) -> float:
-        """The bottom conductor layer height (z-value in meters)"""
+        """The bottom conductor layer height (z-value in PCB units)."""
         return self._zs[0]
 
     ############################################################
@@ -1836,6 +1828,9 @@ class PCB:
             geopoly = poly._finalize(self.cs, name=name)
         else:
             geopoly = change_coordinate_system(poly, self.cs)
+        # width and length are in PCB units, the attribute and mesh size are in meters
+        width = width*self.unit
+        length = length*self.unit
         area = width*length
         Npts = 50
         ds = (area/Npts)**0.5
@@ -2543,8 +2538,8 @@ class PCB:
         The lumped port will be drawn and extruded from the line specified by two points.
 
         Args:
-            p1 (tuple[float, float]): Point one of the line to be extruded
-            p2 (tuple[float, float]): Point two of the line to be extruded
+            p1 (tuple[float, float]): Point one of the line to be extruded (PCB units)
+            p2 (tuple[float, float]): Point two of the line to be extruded (PCB units)
             layer (int): The PCB layer the port starts at
             port_number (int): The port number assigned to the lumped port
             ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
@@ -2555,13 +2550,13 @@ class PCB:
             GeoPolygon: The rectangular shaped lumped port object
         """
 
-        xy1 = p1
-        xy2 = p2
-        z = self.z(layer)
-        z_ground = self.z(ground_layer)
+        xy1 = np.array(p1) * self.unit
+        xy2 = np.array(p2) * self.unit
+        z = self.z(layer) * self.unit
+        z_ground = self.z(ground_layer) * self.unit
         height = z - z_ground
 
-        width = abs(np.linalg.norm(np.array(xy1) - np.array(xy2)))
+        width = abs(np.linalg.norm(xy1 - xy2))
         x1, y1, z1 = self.cs.in_global_cs(
             xy1[0], xy1[1], z_ground
         )
@@ -2608,6 +2603,7 @@ class PCB:
         width: float | None = None,
         mode_type: Literal['TEM','TE','TM','any'] = 'any',
         name: str | None = "ModalPort",
+        assume_homogeneous: bool = False,
     ) -> GeoSurface:
         """Generate a wave-port as a GeoSurface.
 
@@ -2624,6 +2620,10 @@ class PCB:
             width (float | None, optional): The absolute port width, overrides width_multiplier. Defaults to None.
             mode_type (Literal['TEM','TE','TM','any'], optional): The mode type of the port. Defaults to 'any'.
             name (str | None, optional): The name of the object. Defaults to "ModalPort".
+            assume_homogeneous (bool, optional): Treat the port face (substrate and air) as homogeneous: the
+                modes are solved once and scaled to the other frequencies with a constant effective permittivity,
+                see ModalPort.assume_homogeneous(). This ignores the dispersion of the line, which is small
+                at a low frequency·substrate thickness. Defaults to False.
 
         Returns:
             GeoSurface: The GeoSurface object that can be used for the waveguide.
@@ -2653,7 +2653,7 @@ class PCB:
 
         plate = Plate(np.array([x0, y0, z0]) * self.unit, ax1, ax2, name=name)
         plate = change_coordinate_system(plate, self.cs)
-        plate.properties += WavePortAttribute(port_number, mode_type)
+        plate.properties += WavePortAttribute(port_number, mode_type, assume_homogeneous)
         return plate  # type: ignore
 
     @overload

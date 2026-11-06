@@ -1480,6 +1480,31 @@ class GeoVolume(GeoObject):
         if exclude:
             selname = selname + "Except[" + ",".join(exclude) + "]"
         return FaceSelection([t for d, t in dimtags if t not in tags])._named(selname)
+    
+    def face_from_anchor(self, anchor: Anchor) -> FaceSelection:
+        """Returns the boundary faces that lie in the plane of an anchor.
+
+        The anchor origin is a point on the face and its Z-axis the face normal (either sign). Like .face(),
+        all boundary faces of this object in that plane are selected.
+
+        Args:
+            anchor (Anchor): The anchor to use as face pointer
+
+        Returns:
+            FaceSelection: The selected faces
+        """
+        if self._cached:
+            # After commit_geometry the boundary is cached, so this works without GMSH (e.g. after loading)
+            dimtags, origins, normals = self._get_boundary_cache, self._origins_cache, self._normals_cache
+        else:
+            gmsh.model.occ.synchronize()
+            dimtags = gmsh.model.get_boundary(self.dimtags, True, False)
+            normals = [gmsh.model.get_normal(t, [0, 0]) for d, t in dimtags]
+            origins = [gmsh.model.occ.get_center_of_mass(d, t) for d, t in dimtags]
+        tags = _FacePointer(anchor.c0, anchor._z).find(dimtags, origins, normals)
+        if not tags:
+            logger.warning(f"No face of {self} lies in the plane of {anchor}.")
+        return FaceSelection(tags)._named("FaceFromAnchor")
 
     def face(
         self,

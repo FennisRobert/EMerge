@@ -2604,6 +2604,7 @@ class PCB:
         mode_type: Literal['TEM','TE','TM','any'] = 'any',
         name: str | None = "ModalPort",
         assume_homogeneous: bool = False,
+        target_neff: float | None = None,
     ) -> GeoSurface:
         """Generate a wave-port as a GeoSurface.
 
@@ -2624,9 +2625,16 @@ class PCB:
                 modes are solved once and scaled to the other frequencies with a constant effective permittivity,
                 see ModalPort.assume_homogeneous(). This ignores the dispersion of the line, which is small
                 at a low frequency·substrate thickness. Defaults to False.
+            target_neff (float | None, optional): The effective index β/k0 of the wanted mode, e.g. about
+                sqrt(εr) for a microstrip mode. The first mode search looks around it and the mode closest to it
+                is the port mode, see ModalPort. None searches around the mean of the largest and smallest εr
+                of the port face. Defaults to None.
 
         Returns:
             GeoSurface: The GeoSurface object that can be used for the waveguide.
+
+        The trace is the positive terminal of the port and the closest other conductor the negative one, which
+        fixes the sign of the mode and the voltage path of its characteristic impedance.
         """
 
         if not isinstance(point, StripLine):
@@ -2653,7 +2661,10 @@ class PCB:
 
         plate = Plate(np.array([x0, y0, z0]) * self.unit, ax1, ax2, name=name)
         plate = change_coordinate_system(plate, self.cs)
-        plate.properties += WavePortAttribute(port_number, mode_type, assume_homogeneous)
+        signal_point = np.array(self.cs.in_global_cs(
+            point.x * self.unit, point.y * self.unit, self.z(point.layer) * self.unit
+        ), dtype=float)
+        plate.properties += WavePortAttribute(port_number, mode_type, assume_homogeneous, target_neff, signal_point)
         return plate  # type: ignore
 
     @overload

@@ -328,6 +328,7 @@ class ModalPort(PortBC, Saveable):
         number_of_modes: int = 1,
         impedance_definition: Literal["PV", "PI", "VI"] = "PV",
         assume_homogeneous: bool = False,
+        target_neff: float | None = None,
     ):
         """Generes a ModalPort boundary condition for a port that requires eigenmode solutions for the mode.
 
@@ -347,11 +348,19 @@ class ModalPort(PortBC, Saveable):
             port_number (int): The port number as an integer
             cs (CoordinateSystem, optional): The local coordinate system of the port face. Defaults to None.
             power (float, optional): The radiated power. Defaults to 1.
-            modetype (Literal["TE", "TM", "TEM","any"] | None, optional): Force the port mode type (None selects automatically). Defaults to None.
+            modetype (Literal["TE", "TM", "TEM","any"] | None, optional): Force the port mode type (None selects
+                automatically). "TE" or "TM" only accepts modes of that type. "TEM" treats every mode as (quasi-)TEM,
+                so a quasi-TEM mode that is classified as TE or TM (settings.qtem_limit) still gets a characteristic
+                impedance and its sign from the voltage. Defaults to None.
             number_of_modes (int, optional): The number of port modes to compute. Defaults to 1.
             impedance_definition (Literal["PV", "PI", "VI"], optional): How the characteristic impedance is computed: from power and voltage, power and current, or voltage and current. Defaults to "PV".
             assume_homogeneous (bool, optional): Treat the port face as homogeneous without checking its
                 materials, see .assume_homogeneous(). Defaults to False.
+            target_neff (float | None, optional): The effective mode index β/k0 of the wanted mode. The first
+                modal analysis searches around it and the modes are ordered by their distance to it, so mode 1
+                is the mode closest to target_neff. At the next frequencies the mode is followed from the
+                previous one. None searches around the mean of the largest and smallest εr·μr of the port face
+                and orders the modes by β. Defaults to None.
         """
         super().__init__(face)
 
@@ -372,6 +381,9 @@ class ModalPort(PortBC, Saveable):
         self._desired_number_of_modes: int = number_of_modes
         self.forced_modetype: Literal["TE", "TM", "TEM","any"] | None = modetype
         self._assume_homogeneous: bool = bool(assume_homogeneous)
+        if target_neff is not None and not target_neff > 0:
+            raise ValueError(f"target_neff must be positive, not {target_neff}.")
+        self.target_neff: float | None = target_neff
         self.initialized: bool = False
         self._first_k0: float | None = None
         self._last_k0: float | None = None
@@ -390,6 +402,8 @@ class ModalPort(PortBC, Saveable):
 
         self.plus_terminal: list[tuple[int, int]] = []
         self.minus_terminal: list[tuple[int, int]] = []
+        # [Written by Claude] A point on the positive conductor, set for PCB ports (the trace)
+        self._signal_point: np.ndarray | None = None
         self.N_mesh_tris: int = 50
         self.impedance_definition: Literal["PV", "PI", "VI"] = impedance_definition
 
@@ -440,7 +454,7 @@ class ModalPort(PortBC, Saveable):
         self.voltage_integration_line.append(Line.from_points(c1, c2, N))
 
     def reset(self) -> None:
-        """Clear all computed modes and terminal assignments."""
+        """Clear all computed modes. The terminal assignment (.set_terminals) is kept."""
         self._island_cache = None
         self._last_k0 = None
         self._first_k0 = None
@@ -448,8 +462,6 @@ class ModalPort(PortBC, Saveable):
         self.initialized: bool = False
         self._scalable = None
         self._k0_ref = None
-        self.plus_terminal: list[tuple[int, int]] = []
-        self.minus_terminal: list[tuple[int, int]] = []
 
     def portZ0(self, k0: float) -> complex | float | None:
         return self.get_modes(k0)[0].Z0
@@ -561,7 +573,8 @@ class ModalPort(PortBC, Saveable):
                 )
 
     def sort_modes(self) -> None:
-        """Sorts the port modes based on propagation constant"""
+        """Sorts the port modes: by the alignment vectors if given, else by the distance of their effective
+        index to target_neff if given, else by propagation constant."""
 
         if len(self.alignment_vectors) > 0:
             logger.trace(
@@ -593,7 +606,10 @@ class ModalPort(PortBC, Saveable):
                 self.available_modes[k0] = new_modes
             return
         for k0, modes in self.available_modes.items():
-            self.available_modes[k0] = sorted(modes, key=lambda m: m.beta, reverse=True)
+            if self.target_neff is not None:
+                self.available_modes[k0] = sorted(modes, key=lambda m: abs(np.real(m.beta) / k0 - self.target_neff))
+            else:
+                self.available_modes[k0] = sorted(modes, key=lambda m: m.beta, reverse=True)
 
     def get_modes(self, k0: float) -> list[PortMode]:
         """Returns a list of mode solution in the form of a PortMode object for a specific k0.

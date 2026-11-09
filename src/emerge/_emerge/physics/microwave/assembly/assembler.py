@@ -286,12 +286,14 @@ class Assembler:
         self._periodic_patterns: tuple[tuple, csc_matrix, csc_matrix] | None = None
         self.settings: Settings = settings
         self._precon_cache: tuple[int, PreconData | None] | None = None
+        self._conductor_report: list[str] | None = None
 
     def reset_cache(self) -> None:
         """Discards the cached sparsity pattern, boundary matrices, volume matrices and preconditioner data."""
         self._system = None
         self._periodic_patterns = None
         self._precon_cache = None
+        self._conductor_report = None
 
     # [Written by Claude]
     def _precon_dataset(self, field: Nedelec2, has_periodic: bool) -> PreconData | None:
@@ -358,6 +360,45 @@ class Assembler:
 
         return np.flatnonzero(mask)
 
+    # [Written by Claude]
+    def _log_conductor_domains(
+        self, field: Nedelec2, mat_assy: MaterialAssignment, bcs: list[BoundaryCondition], cond: np.ndarray
+    ) -> None:
+        """Logs (debug) how the tets of every conducting or void domain are treated: as a PEC volume
+        (σ > mw_3d_peclim), as a surface impedance conductor whose interior is removed
+        (σ > mw_3d_surfimplim), as a lossy volume that is assembled, or as a void. Only logged when
+        the treatment changes, not at every frequency."""
+        sigma = np.real(cond[0, 0, :])
+        peclim, surfimplim = self.settings.mw_3d_peclim, self.settings.mw_3d_surfimplim
+        is_void = np.zeros(sigma.shape[0], dtype=bool)
+        for bc in bcs:
+            if isinstance(bc, Void):
+                is_void[field.mesh.get_tetrahedra(bc.tags)] = True
+
+        lines = []
+        for mat, _, ids in mat_assy.iter_materials():
+            ids = ids[ids < sigma.shape[0]]
+            s, void = sigma[ids], is_void[ids]
+            counts = {
+                "void": np.count_nonzero(void),
+                "PEC volume": np.count_nonzero(~void & (s > peclim)),
+                "surface impedance (interior removed)": np.count_nonzero(~void & (s <= peclim) & (s > surfimplim)),
+                "lossy volume (assembled)": np.count_nonzero(~void & (s <= min(peclim, surfimplim)) & (s > 0)),
+            }
+            if not any(counts.values()):
+                continue
+            names = [geo.name for geo in mat_assy._geos if geo.dim == 3 and geo.material is mat]
+            treatment = ", ".join(f"{n} tets {kind}" for kind, n in counts.items() if n)
+            lines.append(f" - {mat.name} [{', '.join(names)}] (σ ≤ {s.max():.3g} S/m): {treatment}")
+
+        if lines == self._conductor_report:
+            return
+        self._conductor_report = lines
+        if lines:
+            logger.debug(f"Conducting domains (mw_3d_peclim = {peclim:.3g}, mw_3d_surfimplim = {surfimplim:.3g} S/m):")
+            for line in lines:
+                logger.debug(line)
+
     def _collect_pec_dofs(
         self, field: Nedelec2, mesh, bcs: list[BoundaryCondition], conductor_tets: np.ndarray, cond: np.ndarray
     ) -> tuple[set[int], list[int]]:
@@ -371,11 +412,7 @@ class Assembler:
         for itet in conductor_tets:
             pec_ids.extend(field.tet_to_field[:, itet])
             pec_tris.extend(field.mesh.tet_to_tri[:, itet])
-        
-        if len(conductor_tets):
-            logger.trace(
-                f" - Extended PEC with {len(conductor_tets)} tets with a conductivity > {self.settings.mw_3d_peclim}."
-            )
+
         pec_ids_set = set(pec_ids)
 
         # Step 2: Remove all Robin Bcs
@@ -395,8 +432,8 @@ class Assembler:
             pec_ids_set.update(field.tri_to_field[:, tri_ids].flatten())
             pec_tris.extend(tri_ids)
 
-        # Step 4: add back pec tets
-        pec_dofs = np.unique(field.tet_to_field[:, np.flatnonzero(cond[0,0,:] > self.settings.mw_2dbc_peclim)].flatten())
+        # Step 4: add back the surface DoFs of PEC volumes, which step 2 freed if a SurfaceImpedance was assigned
+        pec_dofs = np.unique(field.tet_to_field[:, np.flatnonzero(cond[0,0,:] > self.settings.mw_3d_peclim)].flatten())
         pec_ids_set.update(pec_dofs)
         
         return pec_ids_set, pec_tris
@@ -778,7 +815,7 @@ class Assembler:
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
-        logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
+        self._log_conductor_domains(field, mat_assy, bcs, cond)
 
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         port_bcs: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
@@ -863,6 +900,7 @@ class Assembler:
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
+        self._log_conductor_domains(field, mat_assy, bcs, cond)
 
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
@@ -941,6 +979,7 @@ class Assembler:
 
         er, ur, cond, _ = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
+        self._log_conductor_domains(field, mat_assy, bcs, cond)
 
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]

@@ -74,5 +74,9 @@ class Settings:
 
         self.qtem_limit: float = 0.1
 
+    def reset_defaults(self) -> None:
+        """Resets every setting to its default value."""
+        self.__init__()
+
 
 DEFAULT_SETTINGS = Settings()

@@ -352,7 +352,8 @@ class SurfaceRoughness(PhysicalAttribute):
 class WavePortAttribute(PhysicalAttribute):
     name: str = 'WavePort'
 
-    def __init__(self, port_number: int, mode_type: Literal['TEM','TE','TM'] = 'TEM', assume_homogeneous: bool = False):
+    def __init__(self, port_number: int, mode_type: Literal['TEM','TE','TM'] = 'TEM', assume_homogeneous: bool = False,
+                 target_neff: float | None = None, signal_point: np.ndarray | None = None):
         """Mark a surface as a wave port.
 
         Args:
@@ -360,10 +361,16 @@ class WavePortAttribute(PhysicalAttribute):
             mode_type (Literal['TEM','TE','TM'], optional): The mode type of the port. Defaults to 'TEM'.
             assume_homogeneous (bool, optional): Treat the port face as homogeneous, see
                 ModalPort.assume_homogeneous(). Defaults to False.
+            target_neff (float | None, optional): The effective index of the wanted mode, see ModalPort.
+                Defaults to None.
+            signal_point (np.ndarray | None, optional): A point (global coordinates) on the positive conductor
+                of the port. Defaults to None.
         """
         self.port_number: int = port_number
         self.mode_type: str = mode_type
         self.assume_homogeneous: bool = assume_homogeneous
+        self.target_neff: float | None = target_neff
+        self.signal_point: np.ndarray | None = signal_point
 
     def __descr__(self):
         return f'{self.port_number}, {self.mode_type}'

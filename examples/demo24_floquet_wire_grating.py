@@ -29,7 +29,7 @@ H = 20 * mm          # distance from the wires to each port
 C0 = 299792458
 
 model = em.Simulation("WireGrating")
-model.check_version("3.0.1")  # Checks version compatibility
+model.check_version("3.0.2")  # Checks version compatibility
 
 # The unit cell is a rectangle of period x depth in the XY-plane
 cell = em.RectCell(period, depth)

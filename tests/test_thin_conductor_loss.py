@@ -41,7 +41,7 @@ def test_thin_conductor_stripline_loss():
     th, w0, ds, L = 1.0 * mm, 1.3 * mm, 3 * mm, 100 * mm
 
     em.cleanup()
-    sim = em.Simulation("ThinConductorLoss", loglevel="ERROR")
+    sim = em.Simulation("ThinConductorLoss", loglevel="ERROR", reset_settings=True)
     pcb = em.geo.PCB(th, unit=1.0, layers=3, thick_traces=False, trace_material=em.lib.COPPER)
     pcb.new(0, 0, w0, (1, 0), 1)[0].straight(L)[1]
     trace = pcb.compile_paths(True)
@@ -65,4 +65,48 @@ def test_thin_conductor_stripline_loss():
 
     rel_error = np.abs(p_loss_sim / p_loss_theory - 1)
     assert np.all(rel_error < 0.05), dict(freq=g.freq, sim=p_loss_sim, theory=p_loss_theory, rel_error=rel_error)
+    em.cleanup()
+
+
+# [Written by Claude]
+def test_thin_conductor_sheet_resistance():
+    """A ThinConductor strip much thinner than the skin depth has the DC resistance of its thickness (issue #95).
+
+    A 20 x 100 µm strip with σt = 1 S (Rs = 1 Ω/sq, R = 5 Ω), 10 µm over a PEC ground, fed by a lumped port and
+    shorted at the far end. At 10 MHz the skin depth (~100 µm) is far larger than t = 0.2 µm. Both sides of the
+    sheet carry the surface impedance, so each side must be 2/(σt) for the strip to have Re Z = 5 Ω.
+    """
+    import emerge as em
+
+    um, S = 1e-6, 1000.0
+    gu = um * S
+    metal = em.Material(cond=5e6, er=1, name="metal", _metal=True)
+
+    em.cleanup()
+    m = em.Simulation("ThinConductorSheet", loglevel="ERROR", reset_settings=True)
+    m.settings.mw_3d_surfimplim = 3.9e7
+    m.mw.set_basis_space(element_order=1, complete=True)
+    m.set_scale_factor(S)
+
+    def plate(o, a, b, name):
+        return em.geo.Plate(tuple(v * gu for v in o), tuple(v * gu for v in a), tuple(v * gu for v in b), name=name)
+
+    air = em.geo.Box(220 * gu, 300 * gu, 110 * gu, position=(-100 * gu, -100 * gu, -50 * gu), name="Air")
+    air.set_material(em.lib.AIR).background()
+    plate((-40, -40, 0), (100, 0, 0), (0, 180, 0), "gnd").set_material(em.lib.PEC)
+    plate((0, 100, 0), (20, 0, 0), (0, 0, 10), "ret").set_material(em.lib.PEC)
+    port = plate((0, 0, 0), (20, 0, 0), (0, 0, 10), "port")
+    strip = plate((0, 0, 10), (20, 0, 0), (0, 100, 0), "strip")
+    m.mw.set_frequency([1e7])
+    m.commit_geometry()
+    m.mesher.max_size = 30 * um
+    m.mesher.min_size = 0.05 * um
+    m.mesher.set_face_size(strip, 4 * gu)
+    m.generate_mesh()
+    m.mw.bc.LumpedPort(port, 1, width=20 * um, height=10 * um, direction=em.ZAX, Z0=5.0)
+    m.mw.bc.ThinConductor(strip, metal, thickness=0.2 * um)
+    m.mw.bc.AbsorbingBoundary(air.boundary())
+    s = np.asarray(m.mw.run_sweep().scalar.grid.S(1, 1)).ravel()[0]
+    z = 5.0 * (1 + s) / (1 - s)
+    assert abs(z.real - 5.0) < 0.05, z
     em.cleanup()

@@ -924,9 +924,12 @@ class ThinConductor(RobinBC, Saveable):
         if self.thickness is not None:
             eps_c = eps - 1j * sigma / w0
             gamma_m = 1j * w0 * (mu * eps_c) ** 0.5
-            R = R / np.tanh(gamma_m * self.thickness)
+            # Both sides of the sheet carry this impedance in parallel. With the same tangential E on both
+            # sides, each side of a slab of thickness t sees Zs·coth(γt/2): 2/(σt) per side at low frequency
+            # (1/(σt) in parallel) and Zs per side when t is many skin depths.
+            R = R / np.tanh(gamma_m * self.thickness / 2)
             logger.trace(
-                f"Impedance scaler due to thickness: {1 / np.tanh(gamma_m * self.thickness):.4f}"
+                f"Impedance scaler due to thickness: {1 / np.tanh(gamma_m * self.thickness / 2):.4f}"
             )
         if self._sr_model == "Hammerstad-Jensen" and self._sr > 0.0:
             R = R * (1 + 2 / np.pi * np.arctan(1.4 * (self._sr / d_skin) ** 2))

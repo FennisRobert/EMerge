@@ -1,5 +1,45 @@
 # Changelog
 
+## 3.0.2 — changes since 3.0.1
+
+### New features
+
+- **`target_neff` for ModalPorts.** `ModalPort(..., target_neff=...)` and `pcb.modal_port(..., target_neff=...)`
+  set the effective index β/k0 of the wanted mode. The first modal analysis searches around it, and the modes are
+  ordered by their distance to it, so mode 1 is the mode closest to `target_neff`. At the following frequencies
+  the mode is followed from the previous one. Use it when the default search finds another mode first, e.g. a box
+  mode of a large mm-wave port instead of the microstrip or CPWG mode. Without it the search is unchanged.
+- **`em.Simulation(..., reset_settings=True)`** resets `sim.settings` to their defaults. The settings are shared
+  by every Simulation in the process, so changes made for an earlier Simulation otherwise carry over.
+  `Settings.reset_defaults()` does the same.
+- **Debug log of the conducting domains.** At the debug level the assembler lists every conducting or void
+  domain and how it is treated: PEC volume, surface impedance (interior removed), lossy volume or void.
+
+### Bug fixes
+
+- **`ThinConductor` was twice as conductive as a film of the same thickness** (#95). Both sides of the sheet
+  carried the impedance Zs·coth(γt) of one face of the slab, so at a thickness below a few skin depths the sheet
+  resistance came out half the expected value. Each side now carries Zs·coth(γt/2): 2/(σt) per side at low
+  frequency (1/(σt) together) and Zs per side for a thick conductor. PCB traces with a finite thickness use
+  this condition too; at many skin depths (e.g. 35 µm copper above about 100 MHz) nothing changes.
+- **Volume conductors above `mw_2dbc_peclim` were made PEC** (#94), even with `mw_3d_peclim` and
+  `mw_3d_surfimplim` raised above their conductivity. The 3D assembler now only makes volumes above
+  `mw_3d_peclim` PEC; `mw_2dbc_peclim` only applies to 2D surfaces.
+- **`ModalPort(modetype='TEM')` dropped quasi-TEM modes** that `settings.qtem_limit` classifies as TE or TM,
+  e.g. a dispersive microstrip mode at a high frequency. A ModalPort forced to TEM now treats its modes as
+  (quasi-)TEM, so they get a characteristic impedance and their sign from the voltage. `pcb.modal_port(...,
+  mode_type='TEM')` does the same. A `WavePort` with `modetype` still only accepts modes of that type.
+- **Sign of the voltage path between the port conductors:**
+  - `set_terminals()` was ignored when the port face has exactly two conductors. It is now always used.
+    With only one terminal given, the other one is the closest other conductor.
+  - A PCB port (`pcb.modal_port`) takes its trace as the positive terminal and the closest other conductor
+    as the negative one, also with more than two conductors on the port face.
+  - Without terminals, the positive conductor of a two-conductor port is the one with the shortest boundary
+    (the signal or inner conductor), as before.
+  - A conductor is only matched to a terminal by the objects that touch that conductor alone, not by objects
+    such as the port face that touch all of them.
+  - `ModalPort.reset()` no longer clears the terminals.
+
 ## 3.0.1 — changes since 3.0.0
 
 ### Breaking API changes
@@ -409,7 +449,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.1")`.
+1. Update the version check: `model.check_version("3.0.2")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

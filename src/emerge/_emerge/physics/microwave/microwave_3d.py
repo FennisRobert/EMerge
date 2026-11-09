@@ -59,7 +59,7 @@ from itertools import product
 import numpy as np
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 import psutil
 
 
@@ -776,8 +776,11 @@ class Microwave3D(GenericPhysics3D):
                     logger.info(f'   - {attr}')
 
             if wpattr := geometry.properties.get(WavePortAttribute):
-                self.bc.ModalPort(geometry, wpattr.port_number, modetype=wpattr.mode_type,
-                                  assume_homogeneous=getattr(wpattr, 'assume_homogeneous', False))
+                modal_port = self.bc.ModalPort(geometry, wpattr.port_number, modetype=wpattr.mode_type,
+                                               assume_homogeneous=getattr(wpattr, 'assume_homogeneous', False),
+                                               target_neff=getattr(wpattr, 'target_neff', None))
+                # [Written by Claude] The trace of a PCB port is its positive terminal (_find_two_pec_islands)
+                modal_port._signal_point = getattr(wpattr, 'signal_point', None)
                 for attr in geometry.properties:
                     logger.info(f'   - {attr}')
 
@@ -1105,29 +1108,59 @@ class Microwave3D(GenericPhysics3D):
 
         logger.debug(f" - Found {len(pec_islands)} PEC islands.")
 
-        if len(pec_islands) != 2:
-            pec_island_tags = {
-                i: self.mesh._get_dimtags(edges=pec_edge_group)
-                for i, pec_edge_group in enumerate(pec_islands)
-            }
-            plus_term = None
-            min_term = None
+        # [Written by Claude] The order of the islands sets the sign of the voltage and so of the mode: the voltage
+        # is integrated from the positive island (first) to the negative one. The terminals of .set_terminals come
+        # first. Without them the positive island is the one closest to the signal point of a PCB port (the trace)
+        # or, for two islands, the one with the shortest boundary (the inner or signal conductor).
+        pec_island_tags = {
+            i: self.mesh._get_dimtags(edges=pec_edge_group)
+            for i, pec_edge_group in enumerate(pec_islands)
+        }
 
+        # Objects that touch several islands (e.g. the port face itself) do not identify a terminal
+        tag_count = Counter(dt for dimtags in pec_island_tags.values() for dt in set(dimtags))
+
+        def terminal_island(terminal: list[tuple[int, int]]) -> int | None:
             for i, dimtags in pec_island_tags.items():
-                if not set(dimtags).isdisjoint(port.plus_terminal):
-                    plus_term = i
+                if not {dt for dt in dimtags if tag_count[dt] == 1}.isdisjoint(terminal):
+                    return i
+            return None
 
-                if not set(dimtags).isdisjoint(port.minus_terminal):
-                    min_term = i
+        def island_nodes(i: int) -> np.ndarray:
+            return mesh.nodes[:, np.unique(mesh.edges[:, list(pec_islands[i])])]
 
-            if plus_term is None or min_term is None:
-                logger.error(
-                    f" - Found {len(pec_islands)} PEC islands without a terminal definition. Please use .set_terminals() to define which conductors are which polarity, or define the integration line manually."
-                )
-                return None, None
-            logger.debug(f"Positive island = {pec_island_tags[plus_term]}")
-            logger.debug(f"Negative island = {pec_island_tags[min_term]}")
-            pec_islands = [pec_islands[plus_term], pec_islands[min_term]]
+        def island_distance(i: int, j: int) -> float:
+            from scipy.spatial import cKDTree
+            return float(np.min(cKDTree(island_nodes(j).T).query(island_nodes(i).T)[0]))
+
+        def closest_other(i: int) -> int:
+            return min((j for j in range(len(pec_islands)) if j != i), key=lambda j: island_distance(i, j))
+
+        plus_term = terminal_island(port.plus_terminal)
+        min_term = terminal_island(port.minus_terminal)
+        if plus_term is None and min_term is None:
+            if port._signal_point is not None and len(pec_islands) >= 2:
+                point = np.asarray(port._signal_point, dtype=float)[:, None]
+                plus_term = int(np.argmin([np.min(np.linalg.norm(island_nodes(i) - point, axis=0))
+                                           for i in range(len(pec_islands))]))
+            elif len(pec_islands) == 2:
+                lengths = [np.sum(mesh.edge_lengths[list(island)]) for island in pec_islands]
+                plus_term = int(np.argmin(lengths))
+        # One terminal known: the other one is the closest other conductor (with more than two conductors, e.g.
+        # the ground next to a CPW trace)
+        if plus_term is not None and min_term is None and len(pec_islands) >= 2:
+            min_term = closest_other(plus_term)
+        elif min_term is not None and plus_term is None and len(pec_islands) >= 2:
+            plus_term = closest_other(min_term)
+
+        if plus_term is None or min_term is None or plus_term == min_term:
+            logger.error(
+                f" - Found {len(pec_islands)} PEC islands without a terminal definition. Please use .set_terminals() to define which conductors are which polarity, or define the integration line manually."
+            )
+            return None, None
+        logger.debug(f"Positive island = {pec_island_tags[plus_term]}")
+        logger.debug(f"Negative island = {pec_island_tags[min_term]}")
+        pec_islands = [pec_islands[plus_term], pec_islands[min_term]]
 
         groups = []
         for island in pec_islands:
@@ -1906,6 +1939,8 @@ class Microwave3D(GenericPhysics3D):
             neff_estimate = port.neff_estimate(k0)
             if neff_estimate is not None:
                 target_kz = neff_estimate * k0
+            elif port.target_neff is not None:
+                target_kz = port.target_neff * k0
             else:
                 target_kz = ((ermax * urmax + ermin * urmin) / 2) ** 0.5 * 1.0 * k0
 
@@ -2066,7 +2101,13 @@ class Microwave3D(GenericPhysics3D):
 
             # Figure out if TE, TM, or TEM mode
             if port.forced_modetype is not None and port.forced_modetype.lower().strip() != 'any':
-                if port.forced_modetype != mode_type:
+                if port.forced_modetype == "TEM" and not isinstance(port, WavePort):
+                    # [Written by Claude] A ModalPort forced to TEM treats its modes as (quasi-)TEM, also when
+                    # Ez or Hz exceeds settings.qtem_limit (e.g. a dispersive microstrip mode)
+                    if mode_type != "TEM":
+                        logger.debug(f".. Treating the {mode_type} mode as quasi-TEM (modetype='TEM').")
+                        mode_type = "TEM"
+                elif port.forced_modetype != mode_type:
                     logger.debug(
                         f".. Ignoring port mode({mode_type}) because its not a {port.forced_modetype} mode."
                     )

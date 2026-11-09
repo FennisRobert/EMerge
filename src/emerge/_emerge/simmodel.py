@@ -117,6 +117,7 @@ class Simulation:
         write_log: bool = False,
         path_suffix: str = ".EMResults",
         store_system: Literal["msgpack", "joblib"] = "msgpack",
+        reset_settings: bool = False,
     ):
         """Generate a Simulation class object.
 
@@ -131,6 +132,8 @@ class Simulation:
             write_log (bool, optional): If a file should be created that contains the entire log of the simulation. Defaults to False.
             path_suffix (str, optional): The suffix that will be added to the results directory. Defaults to ".EMResults".
             store_system: ("msgpack","joblib", optional): The serialization module to use. Uses Joblib by default for legacy reasons. Msgpack is safe.
+            reset_settings (bool, optional): Reset the settings to their defaults. The settings are shared by every
+                Simulation in the process, so changes made for an earlier Simulation otherwise carry over. Defaults to False.
         """
 
         base_path = _get_caller_dir()
@@ -144,6 +147,8 @@ class Simulation:
         self.state: SimState = SimState(self.modelname, self.modelpath)
         self.select: Selector = Selector()
         self.settings: Settings = DEFAULT_SETTINGS
+        if reset_settings:
+            self.settings.reset_defaults()
         self.opt: Optimizer = Optimizer()
         self.opt.callback = self._optim_callback
         self.settings._save_method = store_system

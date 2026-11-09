@@ -17,6 +17,24 @@ from collections import defaultdict
 from .portmode import PortMode
 
 
+# [Written by Claude]
+def _decaying_beta(beta2: complex) -> complex:
+    """The propagation constant beta from beta^2 on the branch of a wave leaving the port, exp(-j beta z):
+    Re(beta) >= 0 and Im(beta) <= 0. Below cutoff beta^2 < 0 and beta = -j alpha, so gamma = j beta = alpha decays.
+    np.sqrt alone picks +j alpha or -j alpha by the sign of the zero imaginary part of beta^2 (+0.0 or -0.0),
+    which differs between ports and runs."""
+    b = np.sqrt(complex(beta2))
+    return complex(abs(b.real), -abs(b.imag))
+
+
+# [Written by Claude]
+def _extrapolated_beta(mode: "PortMode", k0: float) -> complex:
+    """beta of a TE/TM mode solved at mode.k0, at k0: beta^2 = beta0^2 + n^2 (k0^2 - k00^2), with n^2 = er ur of
+    the port face (exact for a uniformly filled guide; the mean over a mixed face otherwise)."""
+    n2 = getattr(mode, "fill_n2", None) or 1.0
+    return _decaying_beta(mode.beta**2 + n2 * (k0**2 - mode.k0**2))
+
+
 class BoundaryConditionError(Exception):
     pass
 
@@ -619,6 +637,9 @@ class ModalPort(PortBC, Saveable):
         if k0 in self.available_modes:
             logger.debug(f"{self}: replacing the {len(self.available_modes[k0])} modes stored for k0={k0:.3f} rad/m")
             del self.available_modes[k0]
+            if self._last_k0 == k0:
+                # the new analysis may find none (below cutoff): the modes of the nearest frequency stay in use
+                self._last_k0 = min(self.available_modes, key=lambda k: abs(k - k0)) if self.available_modes else None
 
     def try_add_mode(
         self,
@@ -644,7 +665,8 @@ class ModalPort(PortBC, Saveable):
         """
         mode = PortMode(field, E_function, H_function, k0, beta, freq=freq)
         # Evanescent modes (Re(beta) ~ 0) carry no power and cannot be power normalized.
-        if mode.energy * np.real(beta) < 1e-8:
+        # [Written by Claude] Below cutoff in a lossy filling Re(beta) is small but not zero: |Im| > |Re| decays.
+        if mode.energy * np.real(beta) < 1e-8 or abs(np.imag(beta)) > abs(np.real(beta)):
             logger.debug(f"Ignoring mode due to a low mode energy or no propagation: energy {mode.energy}, beta {beta}")
             return None
 
@@ -677,8 +699,7 @@ class ModalPort(PortBC, Saveable):
         if mode.modetype == "TEM":
             beta = mode.beta / mode.k0 * k0
         else:
-            freq = k0 * 299792458 / (2 * np.pi)
-            beta = np.sqrt(mode.beta**2 + k0**2 * (1 - ((mode.freq / freq) ** 2)))
+            beta = _extrapolated_beta(mode, k0)
         return beta
 
     def get_gamma(self, k0: float) -> complex:
@@ -908,8 +929,7 @@ class MultiModeWavePort(WavePortIH, Saveable):
         mode = modes[min(mode_nr, len(modes)) - 1]
         if mode.modetype == "TEM":
             return mode.beta / mode.k0 * k0
-        freq = k0 * 299792458 / (2 * np.pi)
-        return np.sqrt(mode.beta**2 + k0**2 * (1 - ((mode.freq / freq) ** 2)))
+        return _extrapolated_beta(mode, k0)
 
     # [Written by Claude]
     def get_modepf_kappa_all(
@@ -1344,7 +1364,7 @@ class RectangularWaveguide(PortBC, Saveable):
         """
         width = self.dims[0]
         height = self.dims[1]
-        beta = np.sqrt(
+        beta = _decaying_beta(
             self.er * k0**2
             - (np.pi * self.mode[0] / width) ** 2
             - (np.pi * self.mode[1] / height) ** 2

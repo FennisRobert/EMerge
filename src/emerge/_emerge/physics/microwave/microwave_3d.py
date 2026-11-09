@@ -1113,11 +1113,49 @@ class Microwave3D(GenericPhysics3D):
                 TEM = True
             else:
                 TEM = False
-            self.modal_analysis(
-                bc, bc._desired_number_of_modes, direct=False, freq=freq, TEM=TEM
-            )
+            if bc._last_k0 is None:
+                # [Written by Claude] no mode found so far: below cutoff, the mode shape comes from a higher frequency
+                self._compute_modes_below_cutoff(bc, freq, TEM)
+            else:
+                self.modal_analysis(
+                    bc, bc._desired_number_of_modes, direct=False, freq=freq, TEM=TEM
+                )
 
             bc._check_mode_betas()
+
+    # [Written by Claude]
+    def _compute_modes_below_cutoff(self, bc: ModalPort, freq: float, TEM: bool,
+                                    steps: int = 8, factor: float = 1.5) -> None:
+        """Mode analysis of a port at freq; if freq lies below the cutoff of its modes (the analysis keeps
+        propagating modes only, so it finds none), the analysis is repeated at freq * factor^n until the modes
+        propagate. Their shape is kept and the propagation constant at freq follows from the dispersion of the
+        mode (ModalPort.get_beta): beta = -j alpha, so the port absorbs and excites a decaying mode.
+
+        Args:
+            bc (ModalPort): The port
+            freq (float): The simulation frequency
+            TEM (bool): Whether the port mode is forced to be TEM
+            steps (int): The number of higher frequencies tried. Defaults to 8 (up to 25.6 x freq).
+            factor (float): The frequency step. Defaults to 1.5.
+        """
+        from .bcs.port_bcs import BoundaryConditionError
+        f = freq
+        for i in range(steps + 1):
+            try:
+                self.modal_analysis(bc, bc._desired_number_of_modes, direct=False, freq=f, TEM=TEM)
+            except BoundaryConditionError:
+                if i == steps:
+                    raise
+                f *= factor
+                continue
+            if i > 0:
+                k0 = 2 * np.pi * freq / C0
+                beta = bc.get_beta(k0) if not isinstance(bc, MultiModeWavePort) else bc.get_beta(k0, 1)
+                logger.warning(
+                    f"Port {bc.port_number}: no propagating mode at {freq / 1e9:.4g} GHz (below cutoff); mode shape "
+                    f"from {f / 1e9:.4g} GHz, decaying with alpha = {abs(np.imag(beta)):.4g} Np/m"
+                )
+            return
 
     ############################################################
     #             SHARED JOB DISPATCH / ORCHESTRATION          #
@@ -1633,6 +1671,8 @@ class Microwave3D(GenericPhysics3D):
                 continue
 
             mode.modetype = mode_type
+            # [Written by Claude] er ur of the filling, for the dispersion of the mode at other frequencies
+            mode.fill_n2 = float(np.real(ermean * urmean))
 
             # Port power normalization. Rescaling or flipping the mode cannot change the sign of its power,
             # so a non-positive flux into the model means E and H (or the normal) are inconsistent.
@@ -1736,6 +1776,14 @@ class Microwave3D(GenericPhysics3D):
                     mode.Z0 = np.abs(voltage) / np.abs(current)
 
                 logger.info(f"Port Z0 = {mode.Z0:.1f} Ω ({impedance_type})")
+
+        # [Written by Claude] No propagating mode at this frequency (below cutoff) while modes of other frequencies
+        # exist: this frequency keeps the modes of the nearest one, so that the excitation, absorption and
+        # S-parameters of this frequency use the same mode (shape and power normalization), whatever is solved later.
+        if k0 not in port.available_modes and port.available_modes:
+            port.available_modes[k0] = port.get_modes(k0)
+            logger.debug(f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz, the modes of the "
+                         "nearest frequency decay with the propagation constant of their dispersion")
 
         # Sort the port modes on propagation constant.
         port.sort_modes()

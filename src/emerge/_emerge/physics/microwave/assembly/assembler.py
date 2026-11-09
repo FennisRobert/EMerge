@@ -435,7 +435,15 @@ class Assembler:
         # Step 4: add back the surface DoFs of PEC volumes, which step 2 freed if a SurfaceImpedance was assigned
         pec_dofs = np.unique(field.tet_to_field[:, np.flatnonzero(cond[0,0,:] > self.settings.mw_3d_peclim)].flatten())
         pec_ids_set.update(pec_dofs)
-        
+
+        # [Written by Claude] Step 5: DoFs that only removed conductor tets touch stay PEC, also when step 2 freed them.
+        # A port face that cuts a conductor (the ground and trace of a planar port) would leave them with only the
+        # port term, which for a WavePort is zero there: an exactly zero column.
+        assembled = np.ones(field.tet_to_field.shape[1], dtype=bool)
+        assembled[conductor_tets] = False
+        inner = np.setdiff1d(field.tet_to_field[:, conductor_tets], field.tet_to_field[:, assembled])
+        pec_ids_set.update(inner.tolist())
+
         return pec_ids_set, pec_tris
 
 

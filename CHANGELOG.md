@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.3 — changes since 3.0.2
+
+### Bug fixes
+
+- **A WavePort whose face cuts a metal conductor failed with SPARTA**: "front N failed at column 1: zero column
+  (rank deficient)". This happened on every planar WavePort with copper (or another surface impedance conductor)
+  as ground or trace, because the port face runs through them. The DoFs of the port face inside the copper were
+  freed again with the port, but no assembled tetrahedron touches them, and the WavePort term is zero inside
+  the metal, so their matrix columns were exactly zero. Pardiso and AASDS solved the singular system anyway,
+  SPARTA stopped. DoFs that only removed conductor tetrahedra touch now always stay PEC. The S-parameters do not
+  change. ModalPorts were not affected (their Robin term kept the matrix regular), nor were PEC metals.
+
 ## 3.0.2 — changes since 3.0.1
 
 ### New features
@@ -449,7 +461,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.2")`.
+1. Update the version check: `model.check_version("3.0.3")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

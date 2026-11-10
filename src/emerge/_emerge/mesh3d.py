@@ -1365,7 +1365,7 @@ class Mesh3D(Mesh, Saveable):
         return port_normal
 
 
-class SurfaceMesh(Mesh):
+class SurfaceMesh(Mesh, Saveable):
     """The surface mesh class is used to assemble the Modal port matrix.
 
 

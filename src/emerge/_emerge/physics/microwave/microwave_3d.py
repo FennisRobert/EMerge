@@ -1215,14 +1215,51 @@ class Microwave3D(GenericPhysics3D):
             self._check_modal_port_count(port, freq)
             return
 
-        self.modal_analysis(
-            port, max(port._desired_number_of_modes, port._nmodes_solved), direct=False, freq=freq,
-            TEM=port.forced_modetype == "TEM",
-        )
+        nmodes, TEM = max(port._desired_number_of_modes, port._nmodes_solved), port.forced_modetype == "TEM"
+        if port.available_modes:
+            self.modal_analysis(port, nmodes, direct=False, freq=freq, TEM=TEM)
+        else:
+            # [Written by Claude] the first modes of the port: if freq is below cutoff, take them from a higher frequency
+            self._modal_port_modes_below_cutoff(port, nmodes, freq, TEM)
         port._check_mode_betas()
         if port._scalable is None:
-            self._decide_modal_port_scaling(port, k0)
+            # the k0 the modes were solved at (above freq, if freq is below cutoff)
+            self._decide_modal_port_scaling(port, port._last_k0)
         self._check_modal_port_count(port, freq)
+
+    # [Written by Claude]
+    def _modal_port_modes_below_cutoff(self, port: ModalPort, nmodes: int, freq: float, TEM: bool,
+                                       steps: int = 8, factor: float = 1.5) -> None:
+        """Modal analysis of a ModalPort without modes at freq. If freq is below the cutoff of its modes (the
+        analysis keeps propagating modes only, so it finds none), it is repeated at freq * factor^n until the modes
+        propagate. modal_analysis stores them under freq too: their shape is kept, and ModalPort.get_beta gives
+        the decaying β = -jα at freq, so the port absorbs and excites the decaying mode.
+
+        Args:
+            port (ModalPort): The port
+            nmodes (int): The number of modes to solve
+            freq (float): The simulation frequency
+            TEM (bool): Whether the port mode is forced to be TEM
+            steps (int): The number of higher frequencies tried. Defaults to 8 (up to 25.6 x freq).
+            factor (float): The frequency step. Defaults to 1.5.
+        """
+        f = freq
+        for i in range(steps + 1):
+            try:
+                self.modal_analysis(port, nmodes, direct=False, freq=f, TEM=TEM)
+            except BoundaryConditionError:
+                if i == steps:
+                    raise
+                f *= factor
+                continue
+            if i > 0:
+                k0 = 2 * np.pi * freq / 299792458
+                port.available_modes[k0] = port.get_modes(k0)
+                logger.warning(
+                    f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz (below cutoff); mode shape "
+                    f"from {f / 1e9:.4g} GHz, decaying with α = {abs(np.imag(port.get_beta(k0))):.4g} Np/m"
+                )
+            return
 
     # [Written by Claude]
     def _decide_modal_port_scaling(self, port: ModalPort, k0: float) -> None:
@@ -1533,6 +1570,9 @@ class Microwave3D(GenericPhysics3D):
                 beta = np.emath.sqrt(ref.beta**2 + port._ermur * (k0**2 - k_ref**2))
                 beta = np.conj(beta) if np.imag(beta) > 0 else beta
             if not isinstance(port, WavePort) and not np.real(beta**2) > 0:
+                # [Written by Claude] Below cutoff a ModalPort keeps the propagating reference mode: its power
+                # normalization holds, and ModalPort.get_beta gives the decaying β = -jα at k0.
+                modes.append(ref)
                 continue
             field = ref.modefield * ref.E_function.constant
             if ref.modetype == "TM":
@@ -2244,6 +2284,14 @@ class Microwave3D(GenericPhysics3D):
                     mode.Z0 = np.abs(voltage) / np.abs(current)
 
                 logger.info(f"Port Z0 = {mode.Z0:.1f} Ω ({impedance_type})")
+
+        # [Written by Claude] A ModalPort without a propagating mode at this frequency (below cutoff), while modes of
+        # other frequencies exist: it keeps the modes of the nearest one, with the decaying β of ModalPort.get_beta,
+        # so the excitation, absorption and S-parameters of this frequency all use the same mode.
+        if not isinstance(port, WavePort) and k0 not in port.available_modes and port.available_modes:
+            port.available_modes[k0] = port.get_modes(k0)
+            logger.debug(f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz, the modes of the "
+                         "nearest frequency decay with the propagation constant of their dispersion")
 
         # Sort the port modes on propagation constant.
         port.sort_modes()

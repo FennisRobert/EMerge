@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.0.4 — changes since 3.0.3
+
+### New features
+
+- **`em.macro.CoaxAssy`**: a coaxial line (pin, dielectric and shield) along the z-axis of a coordinate system,
+  with `rout` or `Z0` given. Each end is `'none'` (flush), `'pin'` (the pin sticks out `pin_length`, e.g. as a
+  probe) or `'port'` (a wave port on the end face of the dielectric, closed behind by a void and the shield).
+  The constructor checks that the arguments fit the chosen ends, e.g. a `pin_length` for a pin end and a port
+  number for a port end.
+- **`Axis.construct_cs(x, y, z)`** takes the origin as three coordinates, e.g.
+  `em.YAX.construct_cs(a/4, 0, L/2)`. `construct_cs((x, y, z))` and `construct_cs(origin=(x, y, z))` still work.
+
+### Changed behaviour
+
+- **ModalPorts work below the cutoff of their mode.** A sweep point slightly below the band of a waveguide no
+  longer stops the simulation with "ModalPort could find no modes". Below cutoff the mode does not propagate but
+  decays, β = -jα. A ModalPort normalizes its mode to 1 W, which a decaying mode cannot carry, so it now keeps
+  the shape of the mode at the nearest frequency where it propagates and only takes the decaying β there. The
+  excitation, absorption and S-parameters of that frequency all use that mode. If no frequency has a propagating
+  mode yet, the modal analysis is repeated at 1.5, 2.25, ... (at most 25.6) times the frequency, with a warning.
+  In a WR-90 guide, S21 below cutoff now follows exp(-αL) (−30.9 dB at 5 GHz over 40 mm), also with a lossy
+  filling. A ModalPort that finds some, but fewer than `number_of_modes`, propagating modes still reports an
+  error.
+
+### Bug fixes
+
+- **Below cutoff a port could absorb a growing instead of a decaying mode.** β came from `np.sqrt` of a
+  negative β², and which of the two roots (+jα or −jα) it returned depended on the sign of a zero imaginary part,
+  which differed between the ports of one guide. `ModalPort.get_beta` now always takes β = −jα.
+  `RectangularWaveguide.get_beta` returned `nan` below cutoff; it now also gives β = −jα.
+- **Gerber import: "Could not create line"** on some layouts with regions that contain cut-ins (keyholes). The
+  de-keyholed polygons can contain points 0.1 µm apart, which OCC merges into one point. Points closer than
+  0.5 µm to the previous one are now dropped.
+
 ## 3.0.3 — changes since 3.0.2
 
 ### Bug fixes
@@ -461,7 +495,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.3")`.
+1. Update the version check: `model.check_version("3.0.4")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

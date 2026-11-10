@@ -177,7 +177,15 @@ class _OCCBuilder:
         out = []
 
         def loop(xs, ys) -> int:
-            pts = [occ.addPoint(x, y, 0) for x, y in zip(xs, ys)]
+            # [Written by Claude] Drop points closer than _EPS to the previous kept one (also across the closing
+            # segment): dekeyhole_polygon leaves gaps of 1e-7 m, which OCC merges, so addLine fails.
+            kept: list[tuple[float, float]] = []
+            for x, y in zip(xs, ys):
+                if not kept or math.hypot(x - kept[-1][0], y - kept[-1][1]) >= _EPS*MM:
+                    kept.append((x, y))
+            while len(kept) > 1 and math.hypot(kept[0][0] - kept[-1][0], kept[0][1] - kept[-1][1]) < _EPS*MM:
+                kept.pop()
+            pts = [occ.addPoint(x, y, 0) for x, y in kept]
             return occ.addCurveLoop([occ.addLine(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))])
 
         def add(p: cad.Polygon) -> None:

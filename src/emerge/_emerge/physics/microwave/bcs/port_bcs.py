@@ -727,6 +727,9 @@ class ModalPort(PortBC, Saveable):
         if k0 in self.available_modes:
             logger.debug(f"{self}: replacing the {len(self.available_modes[k0])} modes stored for k0={k0:.3f} rad/m")
             del self.available_modes[k0]
+            if self._last_k0 == k0:
+                # [Written by Claude] the new analysis may find none (below cutoff): the nearest modes stay in use
+                self._last_k0 = min(self.available_modes, key=lambda k: abs(k - k0)) if self.available_modes else None
 
     def try_add_mode(
         self,
@@ -787,7 +790,10 @@ class ModalPort(PortBC, Saveable):
         else:
             # [Written by Claude] β² = εr·μr·k0² - kc² of a homogeneously filled port. This used to leave out εr·μr,
             # which gave the wrong β for dielectric-filled waveguides away from the frequency of the modal analysis.
-            beta = np.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
+            beta = np.emath.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
+            # [Written by Claude] Below cutoff β² < 0: take β = -jα, the mode that decays away from the port.
+            # np.sqrt picked +jα or -jα by the sign of the zero imaginary part of β², which differs between ports.
+            beta = np.conj(beta) if np.imag(beta) > 0 else beta
         return beta
 
     def get_gamma(self, k0: float) -> complex:
@@ -1769,12 +1775,13 @@ class RectangularWaveguide(PortBC, Saveable):
         """
         width = self.dims[0]
         height = self.dims[1]
-        beta = np.sqrt(
+        beta = np.emath.sqrt(
             self.er * k0**2
             - (np.pi * self.mode[0] / width) ** 2
             - (np.pi * self.mode[1] / height) ** 2
         )
-        return beta
+        # [Written by Claude] Below cutoff β = -jα, the decaying mode (np.sqrt of a negative float gave nan)
+        return np.conj(beta) if np.imag(beta) > 0 else beta
 
     def get_gamma(self, k0: float) -> complex:
         """Computes the γ-constant for matrix assembly (Robin boundary condition).

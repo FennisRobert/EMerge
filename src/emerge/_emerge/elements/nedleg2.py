@@ -28,7 +28,7 @@ from .dofsets import DoFSet
 ## TODO: TEMPORARY SOLUTION FIX THIS
 
 
-class FieldFunctionClass:
+class FieldFunctionClass(Saveable):
     """This Class serves as a picklable class so that ModalPort boundary conditions
     can actually be stored with the Simulation class. Functions aren't picklable in
     Python.

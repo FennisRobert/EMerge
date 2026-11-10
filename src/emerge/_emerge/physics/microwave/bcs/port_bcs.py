@@ -35,6 +35,29 @@ def _extrapolated_beta(mode: "PortMode", k0: float) -> complex:
     return _decaying_beta(mode.beta**2 + n2 * (k0**2 - mode.k0**2))
 
 
+# [Written by Claude]
+def _mode_at_frequency(mode: "PortMode", k0: float) -> "PortMode":
+    """A copy of mode (solved at mode.k0) for the frequency k0: same shape and power normalization, with the
+    propagation constant of its dispersion at k0 (beta = -j alpha below cutoff) in the mode profile
+    gamma e_t + grad e_z, kappa and H that the wave port boundary condition and S-parameters use."""
+    import copy
+    beta = mode.beta / mode.k0 * k0 if mode.modetype == "TEM" else _extrapolated_beta(mode, k0)
+    E = copy.copy(mode.E_function)
+    H = copy.copy(mode.H_function)
+    E.field = np.array(mode.E_function.field, copy=True)
+    H.field = np.array(mode.H_function.field, copy=True)
+    H.constant = H.constant * mode.k0 / k0          # H = j/(w mu0) curl E
+    new = PortMode(np.array(mode.modefield, copy=True), E, H, k0, beta, freq=k0 * 299792458 / (2 * np.pi))
+    new.energy = mode.energy
+    new.norm_factor = mode.norm_factor
+    new.Z0 = mode.Z0
+    new.modetype = mode.modetype
+    new.fill_n2 = getattr(mode, "fill_n2", None)
+    if hasattr(mode, "polarity"):
+        new.polarity = mode.polarity
+    return new
+
+
 class BoundaryConditionError(Exception):
     pass
 

@@ -736,9 +736,6 @@ class SurfaceImpedance(RobinBC, Saveable):
         self.sigma: float = 0.0
         self.thickness: float | None = thickness
 
-        if isinstance(face, GeoObject) and thickness is None:
-            self.thickness = face._load("thickness")
-
         if material is not None:
             self.sigma = material.cond.scalar(1e9)
             self._mur = material.ur
@@ -855,9 +852,6 @@ class ThinConductor(RobinBC, Saveable):
         self._epsr: float | complex = 1.0
         self.sigma: float = 0.0
         self.thickness: float | None = thickness
-
-        if isinstance(face, GeoObject) and thickness is None:
-            self.thickness = face._load("thickness")
 
         if material is not None:
             self.sigma = material.cond.scalar(1e9)

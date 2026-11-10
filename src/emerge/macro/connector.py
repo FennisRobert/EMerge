@@ -8,7 +8,7 @@ class SMAConnector:
 
 
     def __init__(self, thpcb: float,  cs: em.CoordinateSystem, Nsections: int = 12):
-        """The 
+        """A simple convenience function for an edge mounted PCB SMA connector.
 
         Args:
             thpcb (float): _description_
@@ -39,7 +39,7 @@ class SMAConnector:
         cri = 0.76*mm/2
 
         w = 9.53*mm 
-        d = (cri+self.th+1.68*mm)*2
+        d = (cri+self.th+1.68*mm) + w/2
         th = 1.65*mm
         
         ro = 6.35*mm
@@ -47,12 +47,12 @@ class SMAConnector:
 
         cro = em.coax_rout(0.76*mm/2, eps_r=2.1, Z0=50)
         
-
+        y0 = -(cri+self.th+1.68*mm)
         hv = 1*mm
         # brass
-        box = em.geo.Box(w, d, th, (-w/2, -d/2+dy0, 0))
+        box = em.geo.Box(w, d, th, (-w/2, y0+dy0, 0))
         cylout = em.geo.Cylinder(ro/2, 9.53*mm, em.cs(origin=(0, dy0,0)), Nsections=self.ns)
-        p1l = em.geo.Box(1.02*mm, 1.68*mm, 4.75*mm, (-w/2, -d/2+dy0, -4.75*mm))
+        p1l = em.geo.Box(1.02*mm, 1.68*mm, 4.75*mm, (-w/2, y0+dy0, -4.75*mm))
         p2l = em.geo.Box(1.02*mm, 1.02*mm, 4.75*mm, (-w/2, 0, -4.75*mm))
         p1r = em.geo.mirror(p1l, (0,0,0), (1,0,0))
         p2r = em.geo.mirror(p2l, (0,0,0), (1,0,0))

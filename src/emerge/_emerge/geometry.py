@@ -1693,19 +1693,7 @@ class GeoSurface(GeoObject):
             self.tags = [
                 tag,
             ]
-
-    def assign_thickness(self, thickness: float) -> GeoSurface:
-        """Assign a virtual thickness to this surface object. The thickness will be used
-        by the EM assembler to assign the ThinCondutor boundary condition.
-
-        Args:
-            thickness (float): The thickness in meters
-
-        Returns:
-            GeoSurface: The same object
-        """
-        self._store("thickness", thickness)
-        return self
+            
 
 class GeoPolygon(GeoSurface):
     _default_name: str = "GeoPolygon"

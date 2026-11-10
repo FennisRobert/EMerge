@@ -27,9 +27,18 @@ from .solver_base import Solver, SolverType, SolveReport, SimulationError, _pfx
 try:
     import corvid  # type: ignore
     AVAILABLE = True
+    # [Written by Claude] corvid.Solver(threads=...) exists from CORVID 0.4.2 on
+    _HAS_THREADS = hasattr(corvid, "set_num_threads")
+    # [Written by Claude] From CORVID 0.5.0 one Solver is kept across a sweep: factorize() per frequency
+    # refactors in place (or keeps the factors of a nearby frequency) and solve() starts from the
+    # previous frequencies' solutions
+    import inspect as _inspect
+    _HAS_SWEEP = "warm_start" in _inspect.signature(corvid.Solver).parameters
 except ModuleNotFoundError:
     logger.trace("CORVID Interface not found. (not harmful)")
     AVAILABLE = False
+    _HAS_THREADS = False
+    _HAS_SWEEP = False
 
 
 class SolverCorvid(Solver):
@@ -55,13 +64,17 @@ class SolverCorvid(Solver):
         super().__init__(pre)
         self.own_preconditioner = True
         self.method: Literal["gmres", "cocg"] = "cocg"
-        self.order: int = 1
+        self.order: int = 3  # [Written by Claude] order 3: fewer (serial) coarse solves per solve
         self.rtol: float = 1e-6
         self.maxiter: int = 500
         self.restart: int = 100
+        self.nthreads: int | None = None
         self._topology = None
         self._topology_key: tuple | None = None
         self._k0: float | None = None
+        # [Written by Claude] the CORVID solver kept across the frequencies of a sweep, and its settings
+        self._sol = None
+        self._sol_key: tuple | None = None
 
     def set_options(
         self,
@@ -86,6 +99,22 @@ class SolverCorvid(Solver):
             self.maxiter = maxiter
         if restart is not None:
             self.restart = restart
+        return self
+
+    # [Written by Claude]
+    def set_nthreads(self, nthreads: int | None) -> SolverCorvid:
+        """Install the number of CPU threads CORVID uses for its factorization (vertex blocks and the exact
+        level's LDL^T) and its Krylov solves. None leaves it to CORVID (corvid.get_num_threads():
+        RAYON_NUM_THREADS, otherwise the number of cores up to 8).
+
+        Args:
+            nthreads (int | None): The number of threads.
+        """
+        if not _HAS_THREADS:
+            return super().set_nthreads(nthreads)
+        if nthreads is not None and int(nthreads) < 1:
+            raise ValueError(f"CORVID needs at least one thread, got {nthreads}")
+        self.nthreads = None if nthreads is None else int(nthreads)
         return self
 
     def set_symmetry(self, complex_symmetric: bool) -> None:
@@ -122,30 +151,44 @@ class SolverCorvid(Solver):
         self._topology = None
         self._topology_key = None
         self._k0 = None
+        self._sol = None
+        self._sol_key = None
 
     def duplicate(self) -> Solver:
         new_solver = self.__class__(self.pre)
         new_solver.set_options(self.order, self.rtol, self.maxiter, self.restart)
-        return new_solver
+        # [Written by Claude] Worker copies keep the thread count
+        return new_solver.set_nthreads(self.nthreads)
 
     def solve(self, A: csc_matrix, b: np.ndarray, precon, id: int = -1) -> tuple[np.ndarray, SolveReport]:
         if self._topology is None:
             raise SimulationError("CORVID needs the mesh topology. Call set_precon_data() before solve().")
-        logger.info(f"{_pfx(self.pre, id)} Calling CORVID solver ({self.method}).")
-        sol = corvid.Solver(
-            self._topology,
-            order=self.order,
-            method=self.method,
-            rtol=self.rtol,
-            maxiter=self.maxiter,
-            restart=self.restart,
-        ).factorize(A, k0=self._k0)
+        # [Written by Claude] threads only exists from CORVID 0.4.2 on
+        thread_kw = {"threads": self.nthreads} if _HAS_THREADS else {}
+        threads = self.nthreads if self.nthreads is not None else (corvid.get_num_threads() if _HAS_THREADS else "default")
+        logger.info(f"{_pfx(self.pre, id)} Calling CORVID solver ({self.method}, {threads} threads).")
+        # [Written by Claude] keep one CORVID solver per topology and settings across the sweep
+        key = (self._topology_key, self.order, self.method, self.rtol, self.maxiter, self.restart, self.nthreads)
+        if self._sol is None or self._sol_key != key or not _HAS_SWEEP:
+            self._sol = None
+            self._sol = corvid.Solver(
+                self._topology,
+                order=self.order,
+                method=self.method,
+                rtol=self.rtol,
+                maxiter=self.maxiter,
+                restart=self.restart,
+                **thread_kw,
+            )
+            self._sol_key = key
+        sol = self._sol.factorize(A, k0=self._k0)
         x = sol.solve(b)
         iterations = [info["iterations"] for info in sol.info]
         residuals = [info["residual"] for info in sol.info]
         converged = all(info["converged"] for info in sol.info)
+        state = ("kept factors" if sol.reused else "refactored" if sol.refactored else "factorized") if _HAS_SWEEP else "factorized"
         logger.info(
-            f"{_pfx(self.pre, id)} CORVID {self.method}: iterations {iterations} ({sol.n_exact} extra exact rows)"
+            f"{_pfx(self.pre, id)} CORVID {self.method}: iterations {iterations} ({state}, {sol.n_exact} extra exact rows)"
         )
         return x, SolveReport(
             solver=str(self),

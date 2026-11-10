@@ -3029,7 +3029,8 @@ class Microwave3D(GenericPhysics3D):
         def run_job_single(job: SimJob):
             A, bmat, ids, aux = job.get_Ab()
             solution, report = self.solveroutine.solve(
-                A, bmat, ids, matrix_type=job.mtype, id=job.id, nthreads=nthreads
+                A, bmat, ids, matrix_type=job.mtype, id=job.id, precon_dataset=job._precon, k0=job.k0,
+                direct=self._direct, nthreads=nthreads,
             )
             report.add(**aux)
             job.submit_solution(solution, report)
@@ -3049,6 +3050,7 @@ class Microwave3D(GenericPhysics3D):
             self.bc.boundary_conditions,
             frequency,
             cache_matrices=self.cache_matrices,
+            iterative=self._iterative,
         )
 
         job.id = 0

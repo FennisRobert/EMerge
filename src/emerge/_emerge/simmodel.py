@@ -1336,6 +1336,9 @@ class Simulation:
         reject_emsolver(solver)
         logger.trace(f"Setting solver to {solver}")
         self.mw.solveroutine.set_solver(solver)
+        if solver.needs_precon_data:
+            # An iterative solver such as Corvid needs the mesh data that is only assembled with the iterative method
+            self.mw.set_method('iterative')
         return self.get_solver(solver) if isinstance(solver, type) else solver
 
     # [Written by Claude]

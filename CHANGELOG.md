@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.0.5 — changes since 3.0.4
+
+### New features
+
+- **Corvid with thin conductors**: Corvid now also runs on models with `ThinConductor` sheets (e.g. copper
+  traces and patches). Before, the split DoFs of a sheet had no mesh data and the solve fell back to a direct
+  solver. The sheet is now described as a cut through the mesh, with copied vertices, edges and triangles.
+- **Corvid 0.5.0 support**: one Corvid solver is kept across the frequencies of a sweep, so nearby
+  frequencies keep or refactor the factorization in place and start from earlier solutions.
+  `set_nthreads()` sets Corvid's thread count (Corvid 0.4.2 and later). The default order is now 3.
+
+### Changed behaviour
+
+- **`model.set_solver(em.solvers.Corvid)`** now also switches the simulation to the iterative method. Before,
+  `model.mw.set_method('iterative')` was needed as well; without it the mesh data Corvid needs was never
+  assembled and the solve fell back to a direct solver with a warning about periodic boundaries or thin
+  conductors.
+
+### Removed
+
+- **`GeoSurface.assign_thickness()`**: give a surface its thickness with the `FiniteThickness` attribute
+  (`surf.properties += em.FiniteThickness(t)`). `SurfaceImpedance` and `ThinConductor` no longer read a
+  thickness stored on the surface.
+
+### Bug fixes
+
+- **`adaptive_mesh_refinement` ignored `set_method('iterative')`**: the refinement passes always assembled and
+  solved as direct, so Corvid fell back to a direct solver. They now follow `set_method` like `run_sweep`.
+
 ## 3.0.4 — changes since 3.0.3
 
 ### New features
@@ -495,7 +524,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.4")`.
+1. Update the version check: `model.check_version("3.0.5")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

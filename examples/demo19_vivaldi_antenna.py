@@ -22,7 +22,7 @@ For ARM MacOS users it is reccommended to install the Accelerate solver using:
 """
 
 model = em.Simulation("Vivaldi")
-model.check_version("3.0.4")
+model.check_version("3.0.5")
 
 mm = 0.001  # Millimeter
 g = 0.3 * mm  # Narrow exponential taper slot gap size
@@ -157,7 +157,7 @@ model.commit_geometry()
 
 # We set our frequency range from 3GHz to 10GHz in 21 setps.
 model.mw.set_frequency_range(3e9, 8e9, 15)
-model.mw.set_resolution(0.33)
+model.mw.set_resolution(0.2)
 
 # Here we set our boundary conditions. The Absorbing boundary surfaace is the outside of the airbox.
 abc = airbox.outside()

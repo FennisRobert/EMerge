@@ -1120,8 +1120,64 @@ class Microwave3D(GenericPhysics3D):
                 self.modal_analysis(
                     bc, bc._desired_number_of_modes, direct=False, freq=freq, TEM=TEM
                 )
+            if isinstance(bc, MultiModeWavePort):
+                # [Written by Claude] some of the modes below their cutoff: added as decaying modes
+                self._complete_modes_below_cutoff(bc, freq, TEM)
 
             bc._check_mode_betas()
+
+    # [Written by Claude]
+    def _complete_modes_below_cutoff(self, bc: MultiModeWavePort, freq: float, TEM: bool,
+                                     steps: int = 8, factor: float = 1.5) -> None:
+        """The mode analysis keeps propagating modes only, so below the cutoff of some of the modes of a port
+        with several modes it finds fewer than requested (TE10 alone below the cutoff of TE20 in a waveguide),
+        and the S-matrix would miss the others. The missing modes are taken from the nearest frequency at which
+        all modes propagate (a mode analysis at freq * factor^n if there is none yet), in their order of
+        propagation constant, and decay at freq with the propagation constant of their dispersion.
+
+        Args:
+            bc (MultiModeWavePort): The port
+            freq (float): The simulation frequency
+            TEM (bool): Whether the port mode is forced to be TEM
+            steps (int): The number of higher frequencies tried. Defaults to 8 (up to 25.6 x freq).
+            factor (float): The frequency step. Defaults to 1.5.
+        """
+        from .bcs.port_bcs import _mode_at_frequency
+        n = bc._desired_number_of_modes
+        k0 = 2 * np.pi * freq / C0
+        # modes solved at freq (below the cutoff of all modes the analysis stores those of the nearest frequency)
+        found = [m for m in bc.available_modes.get(k0, []) if m.k0 == k0]
+        if len(found) >= n:
+            return
+
+        def full_sets():
+            return [k for k, modes in bc.available_modes.items() if len(modes) >= n and k > k0]
+
+        f = freq
+        for _ in range(steps):
+            if full_sets():
+                break
+            f *= factor
+            bc._discard_modes_at(2 * np.pi * f / C0)
+            try:
+                self.modal_analysis(bc, n, direct=False, freq=f, TEM=TEM)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"Port {bc.port_number}: mode analysis at {f / 1e9:.4g} GHz failed: {e}")
+        keys = full_sets()
+        if not keys:
+            logger.warning(f"Port {bc.port_number}: only {len(found)} of {n} modes found at {freq / 1e9:.4g} GHz, "
+                           f"also at higher frequencies")
+            return
+        kref = min(keys)
+        ref = sorted(bc.available_modes[kref], key=lambda m: np.real(m.beta), reverse=True)
+        added = [_mode_at_frequency(m, k0) for m in ref[len(found):n]]
+        bc.available_modes[k0] = found + added
+        bc._last_k0 = k0
+        logger.warning(
+            f"Port {bc.port_number}: {len(added)} of {n} mode(s) below cutoff at {freq / 1e9:.4g} GHz; their shape "
+            f"comes from {kref * C0 / (2 * np.pi) / 1e9:.4g} GHz, decaying with alpha = "
+            + ", ".join(f"{abs(np.imag(m.beta)):.4g}" for m in added) + " Np/m"
+        )
 
     # [Written by Claude]
     def _compute_modes_below_cutoff(self, bc: ModalPort, freq: float, TEM: bool,
@@ -1480,8 +1536,9 @@ class Microwave3D(GenericPhysics3D):
         urmean = np.mean(urp[urp > 0].flatten())
         ermax = np.max(er[:, :, itri_port].flatten())
         urmax = np.max(ur[:, :, itri_port].flatten())
-        ermin = np.min(er[:, :, itri_port].flatten())
-        urmin = np.min(ur[:, :, itri_port].flatten())
+        # [Written by Claude] from the diagonal: the zero off-diagonal entries of an isotropic tensor are no minimum
+        ermin = np.min(erp[[0, 1, 2], [0, 1, 2], :].flatten())
+        urmin = np.min(urp[[0, 1, 2], [0, 1, 2], :].flatten())
 
         # Compute k0
         k0 = 2 * np.pi * freq / 299792458
@@ -1511,7 +1568,9 @@ class Microwave3D(GenericPhysics3D):
         if target_kz is None:
             neff_estimate = port.neff_estimate(k0)
             if neff_estimate is not None:
-                target_kz = neff_estimate * k0
+                # [Written by Claude] just above the first mode: a shift on an eigenvalue makes the factorization
+                # singular and leaves the other modes unconverged
+                target_kz = neff_estimate * k0 * 1.01
             else:
                 target_kz = ((ermax * urmax + ermin * urmin) / 2) ** 0.5 * 1.0 * k0
 
@@ -2525,6 +2584,10 @@ class Microwave3D(GenericPhysics3D):
                 self.mesh.nodes, self.mesh.tris[:, tris], portfE, portfH, inward_normal
             )
 
+            if abs(power) < 1e-3:
+                # [Written by Claude] a mode below its cutoff carries no real power; modes are normalized to 1 W
+                p_constants[smat_index] = 1.0
+                continue
             p_constants[smat_index] = 1 / (abs(power)) ** 0.5
             logger.debug(f"Port {active_port} power = {power:.4f} [W]")
         return p_constants

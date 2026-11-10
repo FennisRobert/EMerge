@@ -2009,7 +2009,8 @@ class SolverARPACK_BMA(EigSolver):
                 continue
 
             # Process candidates retrieved from this shift
-            for i_sol in range(k_request):
+            # [Written by Claude] nearest to the shift first: the first nmodes accepted ones are the modes nearest the target
+            for i_sol in np.argsort(np.abs(eigen_values - sigma)):
                 eigen_mode = eigen_modes[:, i_sol]
                 eigen_value = eigen_values[i_sol]
 

@@ -448,7 +448,6 @@ class Microwave3D(GenericPhysics3D):
         self.current_frequency = 0
 
         self.dofset: DoFSet = ElementSpace.SECOND_MIXED_VOLAKIS.get_set()
-        self.dofset_em: DoFSet = ElementSpace.SECOND_MIXED_SAVAGE.get_set()
 
         self.resolution: float = (
             0.33  # Resolution of the mesh as the fraction of the wavelength
@@ -1956,7 +1955,7 @@ class Microwave3D(GenericPhysics3D):
 
         # Assemble matrix A and B for the generalized eigenvalue problem: Ax = λBx
         Amatrix, Bmatrix, solve_ids, nlf = self.assembler.assemble_bma_matrices(
-            self.basis, er, ur, cond, k0, port, self.bc, self.dofset_em
+            self.basis, er, ur, cond, k0, port, self.bc, self.dofset
         )
 
         # [Written by Claude] to rebuild the modes of a homogeneous port at other frequencies

@@ -26,6 +26,7 @@ from ..bcs import (
     MWBoundaryConditionSet,
     SurfaceImpedance,
     WavePort,
+    ModalPort,
     FloquetPort,
     Void,
 )
@@ -444,6 +445,16 @@ class Assembler:
         inner = np.setdiff1d(field.tet_to_field[:, conductor_tets], field.tet_to_field[:, assembled])
         pec_ids_set.update(inner.tolist())
 
+        # Step 6: the cubic gradient DoFs on the faces of ports with a computed mode are zero, as in the mode analysis
+        edge_pos, face_pos = field.dofset.unmatched_gradients()
+        if edge_pos or face_pos:
+            for bc in select_bc(bcs, ModalPort):
+                tri_ids = mesh.get_triangles(bc.tags)
+                for i in edge_pos:
+                    pec_ids_set.update(field.tri_to_field[3 * i:3 * (i + 1), tri_ids].flatten().tolist())
+                for j in face_pos:
+                    pec_ids_set.update(field.tri_to_field[3 * field.nedof + j, tri_ids].tolist())
+
         return pec_ids_set, pec_tris
 
 
@@ -781,6 +792,13 @@ class Assembler:
                     continue
                 eids = nedlegfield.edge_to_field[:, i2]
                 pec_ids.extend(list(eids))
+
+        # The cubic gradient DoFs have no cubic Lagrange partner for E_z here: pinned to zero (see DoFSet.unmatched_gradients)
+        edge_pos, face_pos = dofset.unmatched_gradients()
+        for i in edge_pos:
+            pec_ids.extend(nedlegfield.edge_to_field[i, :])
+        for j in face_pos:
+            pec_ids.extend(nedlegfield.tri_to_field[3 * nedlegfield.dofset2d.n_edge_dofs + j, :])
 
         pec_ids_set: set[int] = set(pec_ids)
 

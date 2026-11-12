@@ -1,6 +1,25 @@
 # Changelog
 
-## 3.0.5 — changes since 3.0.4
+## 3.0.6 — changes since 3.0.6
+
+### Changed behaviour
+
+- **The port mode analysis uses the basis functions of the simulation** (`set_basis_space`). Before, the modes
+  of every `ModalPort` and `WavePort` were always computed with the second-order mixed set, whatever the 3D
+  basis. With `element_order=1, complete=False` (Whitney edges only) the port modes are now first order too,
+  which is less accurate (β about 15 % off on a coarse TEM line) but consistent with the volume: power is
+  conserved.
+
+### Bug fixes
+
+- **Ports lost power with the second-order complete basis** (#98). On a lossless line |S11|² + |S21|² was about
+  0.88 with a `ModalPort`, and a `WavePort` reflected nearly everything. The complete sets add cubic gradient
+  DoFs (edge DoF 3 and face DoF 6) that the port mode cannot contain. They carried a field on the port face that
+  the port absorbed but the S-parameters did not count. These DoFs are now pinned to zero on the faces of
+  `ModalPort`s and `WavePort`s and in their mode analysis; the volume keeps the complete basis. On the TEM test
+  line the S21 phase error stays about 3.5× smaller than with the mixed basis.
+
+## 3.0.6 — changes since 3.0.4
 
 ### New features
 
@@ -524,7 +543,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.5")`.
+1. Update the version check: `model.check_version("3.0.6")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

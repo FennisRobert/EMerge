@@ -25,7 +25,7 @@ OBJECT = "PEC SPHERE"
 air_radius = 1.5
 # First we create our simulation object
 model = em.Simulation("RCS")
-model.check_version("3.0.5")  # Checks version compatibility
+model.check_version("3.0.6")  # Checks version compatibility
 
 # We select the material of choice
 if OBJECT == "PEC SPHERE":
@@ -64,7 +64,6 @@ scat = model.mw.bc.ScatteredField(air.boundary(), definition='EA')
 
 # +Y Polarization
 scat.set_excitations(polarizations=90)
-
 
 # We can improve the absorption of the waves by specifying a curvature radius for the absorbing boundary.
 scat.radius = air_radius

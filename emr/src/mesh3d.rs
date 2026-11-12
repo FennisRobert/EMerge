@@ -17,32 +17,34 @@ fn sorted_tet(tets: &ArrayView2<i64>, itet: usize) -> [i64; 4] {
 
 /// Unique edges (2, nE) and triangles (3, nR) of a tet mesh, each with ascending vertex ids, sorted lexicographically.
 pub fn extract_edges_tris(tets: &ArrayView2<i64>) -> (Array2<i64>, Array2<i64>) {
-    let nt = tets.shape()[1];
-    let (mut edges, mut tris): (Vec<[i64; 2]>, Vec<[i64; 3]>) = (0..nt)
-        .into_par_iter()
-        .map(|itet| {
-            let [i1, i2, i3, i4] = sorted_tet(tets, itet);
-            (
-                vec![[i1, i2], [i1, i3], [i1, i4], [i2, i3], [i2, i4], [i3, i4]],
-                vec![[i1, i2, i3], [i1, i2, i4], [i1, i3, i4], [i2, i3, i4]],
-            )
-        })
-        .reduce(
-            || (Vec::new(), Vec::new()),
-            |(mut ea, mut ta), (eb, tb)| {
-                ea.extend(eb);
-                ta.extend(tb);
-                (ea, ta)
-            },
-        );
-    edges.par_sort_unstable();
-    edges.dedup();
-    tris.par_sort_unstable();
-    tris.dedup();
-    (
-        Array2::from_shape_fn((2, edges.len()), |(r, c)| edges[c][r]),
-        Array2::from_shape_fn((3, tris.len()), |(r, c)| tris[c][r]),
-    )
+    crate::pool::install(|| {
+        let nt = tets.shape()[1];
+        let (mut edges, mut tris): (Vec<[i64; 2]>, Vec<[i64; 3]>) = (0..nt)
+            .into_par_iter()
+            .map(|itet| {
+                let [i1, i2, i3, i4] = sorted_tet(tets, itet);
+                (
+                    vec![[i1, i2], [i1, i3], [i1, i4], [i2, i3], [i2, i4], [i3, i4]],
+                    vec![[i1, i2, i3], [i1, i2, i4], [i1, i3, i4], [i2, i3, i4]],
+                )
+            })
+            .reduce(
+                || (Vec::new(), Vec::new()),
+                |(mut ea, mut ta), (eb, tb)| {
+                    ea.extend(eb);
+                    ta.extend(tb);
+                    (ea, ta)
+                },
+            );
+        edges.par_sort_unstable();
+        edges.dedup();
+        tris.par_sort_unstable();
+        tris.dedup();
+        (
+            Array2::from_shape_fn((2, edges.len()), |(r, c)| edges[c][r]),
+            Array2::from_shape_fn((3, tris.len()), |(r, c)| tris[c][r]),
+        )
+    })
 }
 
 /// Index of the lexicographically sorted key in sorted_keys, or MISSING_ID.
@@ -55,65 +57,71 @@ fn bsearch<const K: usize>(sorted_keys: &[([i64; K], i64)], key: &[i64; K]) -> i
 
 /// Sorted (key, column index) table of the columns of a (K, N) array, each column sorted ascending first.
 fn key_table<const K: usize>(table: &ArrayView2<i64>) -> Vec<([i64; K], i64)> {
-    let mut keys: Vec<([i64; K], i64)> = (0..table.shape()[1])
-        .into_par_iter()
-        .map(|c| {
-            let mut k = [0i64; K];
-            for (r, v) in k.iter_mut().enumerate() {
-                *v = table[[r, c]];
-            }
-            k.sort_unstable();
-            (k, c as i64)
-        })
-        .collect();
-    keys.par_sort_unstable();
-    keys
+    crate::pool::install(|| {
+        let mut keys: Vec<([i64; K], i64)> = (0..table.shape()[1])
+            .into_par_iter()
+            .map(|c| {
+                let mut k = [0i64; K];
+                for (r, v) in k.iter_mut().enumerate() {
+                    *v = table[[r, c]];
+                }
+                k.sort_unstable();
+                (k, c as i64)
+            })
+            .collect();
+        keys.par_sort_unstable();
+        keys
+    })
 }
 
 /// Edge (6, nT) and triangle (4, nT) indices of every tet in the EMerge local ordering.
 pub fn tet_to_edge_tri(tets: &ArrayView2<i64>, edges: &ArrayView2<i64>, tris: &ArrayView2<i64>) -> (Array2<i64>, Array2<i64>) {
-    let nt = tets.shape()[1];
-    let ekeys = key_table::<2>(edges);
-    let tkeys = key_table::<3>(tris);
-    let per_tet: Vec<([i64; 6], [i64; 4])> = (0..nt)
-        .into_par_iter()
-        .map(|itet| {
-            let t = [tets[[0, itet]], tets[[1, itet]], tets[[2, itet]], tets[[3, itet]]];
-            let e = IDSET1.map(|(i, j)| {
-                let mut k = [t[i], t[j]];
-                k.sort_unstable();
-                bsearch(&ekeys, &k)
-            });
-            let f = IDSET2.map(|(i, j, l)| {
-                let mut k = [t[i], t[j], t[l]];
-                k.sort_unstable();
-                bsearch(&tkeys, &k)
-            });
-            (e, f)
-        })
-        .collect();
-    (
-        Array2::from_shape_fn((6, nt), |(r, c)| per_tet[c].0[r]),
-        Array2::from_shape_fn((4, nt), |(r, c)| per_tet[c].1[r]),
-    )
+    crate::pool::install(|| {
+        let nt = tets.shape()[1];
+        let ekeys = key_table::<2>(edges);
+        let tkeys = key_table::<3>(tris);
+        let per_tet: Vec<([i64; 6], [i64; 4])> = (0..nt)
+            .into_par_iter()
+            .map(|itet| {
+                let t = [tets[[0, itet]], tets[[1, itet]], tets[[2, itet]], tets[[3, itet]]];
+                let e = IDSET1.map(|(i, j)| {
+                    let mut k = [t[i], t[j]];
+                    k.sort_unstable();
+                    bsearch(&ekeys, &k)
+                });
+                let f = IDSET2.map(|(i, j, l)| {
+                    let mut k = [t[i], t[j], t[l]];
+                    k.sort_unstable();
+                    bsearch(&tkeys, &k)
+                });
+                (e, f)
+            })
+            .collect();
+        (
+            Array2::from_shape_fn((6, nt), |(r, c)| per_tet[c].0[r]),
+            Array2::from_shape_fn((4, nt), |(r, c)| per_tet[c].1[r]),
+        )
+    })
 }
 
 /// For every query column (K, M) the column index in table (K, N) with the same vertex set, or MISSING_ID.
 pub fn find_columns(table: &ArrayView2<i64>, queries: &ArrayView2<i64>) -> Array1<i64> {
     fn run<const K: usize>(table: &ArrayView2<i64>, queries: &ArrayView2<i64>) -> Array1<i64> {
-        let keys = key_table::<K>(table);
-        let out: Vec<i64> = (0..queries.shape()[1])
-            .into_par_iter()
-            .map(|c| {
-                let mut k = [0i64; K];
-                for (r, v) in k.iter_mut().enumerate() {
-                    *v = queries[[r, c]];
-                }
-                k.sort_unstable();
-                bsearch(&keys, &k)
-            })
-            .collect();
-        Array1::from(out)
+        crate::pool::install(|| {
+            let keys = key_table::<K>(table);
+            let out: Vec<i64> = (0..queries.shape()[1])
+                .into_par_iter()
+                .map(|c| {
+                    let mut k = [0i64; K];
+                    for (r, v) in k.iter_mut().enumerate() {
+                        *v = queries[[r, c]];
+                    }
+                    k.sort_unstable();
+                    bsearch(&keys, &k)
+                })
+                .collect();
+            Array1::from(out)
+        })
     }
     match table.shape()[0] {
         1 => run::<1>(table, queries),

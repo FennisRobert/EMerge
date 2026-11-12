@@ -61,26 +61,28 @@ pub fn _matrix_builder(
     tri_ids: &ArrayView1<i64>,
     dofcodes: &ArrayView1<i64>,
 ) -> (Array1<c64>, Array1<c64>) {
-    let codes = dofcodes.to_vec();
-    let nsq = codes.len() * codes.len();
-    let ntris = tri_ids.len();
-    let mut curl = vec![c64::new(0.0, 0.0); ntris * nsq];
-    let mut div = vec![c64::new(0.0, 0.0); ntris * nsq];
-    curl.par_chunks_mut(nsq.max(1))
-        .zip(div.par_chunks_mut(nsq.max(1)))
-        .enumerate()
-        .for_each(|(itri_sub, (cc, dd))| {
-            let itri = tri_ids[itri_sub] as usize;
-            let tri_nodes = Array2::from_shape_fn((3, 3), |(r, v)| nodes[[r, tris[[v, itri]] as usize]]);
-            let sub = _abc_order_2_terms(&tri_nodes.view(), &codes);
-            for (k, v) in sub.index_axis(ndarray::Axis(0), 0).iter().enumerate() {
-                cc[k] += *v;
-            }
-            for (k, v) in sub.index_axis(ndarray::Axis(0), 1).iter().enumerate() {
-                dd[k] += *v;
-            }
-        });
-    (Array1::from(curl), Array1::from(div))
+    crate::pool::install(|| {
+        let codes = dofcodes.to_vec();
+        let nsq = codes.len() * codes.len();
+        let ntris = tri_ids.len();
+        let mut curl = vec![c64::new(0.0, 0.0); ntris * nsq];
+        let mut div = vec![c64::new(0.0, 0.0); ntris * nsq];
+        curl.par_chunks_mut(nsq.max(1))
+            .zip(div.par_chunks_mut(nsq.max(1)))
+            .enumerate()
+            .for_each(|(itri_sub, (cc, dd))| {
+                let itri = tri_ids[itri_sub] as usize;
+                let tri_nodes = Array2::from_shape_fn((3, 3), |(r, v)| nodes[[r, tris[[v, itri]] as usize]]);
+                let sub = _abc_order_2_terms(&tri_nodes.view(), &codes);
+                for (k, v) in sub.index_axis(ndarray::Axis(0), 0).iter().enumerate() {
+                    cc[k] += *v;
+                }
+                for (k, v) in sub.index_axis(ndarray::Axis(0), 1).iter().enumerate() {
+                    dd[k] += *v;
+                }
+            });
+        (Array1::from(curl), Array1::from(div))
+    })
 }
 
 #[pyfunction]

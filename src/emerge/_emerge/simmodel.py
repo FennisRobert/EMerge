@@ -31,11 +31,11 @@ from .plot.pyvista import PVDisplay
 from .periodic import PeriodicCell
 from .cacherun import get_build_section, get_run_section
 from .settings import DEFAULT_SETTINGS, Settings
-from .solver import EMSolver, Solver
+from .solvers import Solver, EigSolver, unavailable_message, reject_emsolver
 from .simstate import SimState
 from .selection import Selector, Selection, FaceSelection, DomainSelection
 from .optim import Optimizer
-from typing import Literal, Generator, Any, Callable
+from typing import Literal, Generator, Any, Callable, TypeVar
 from loguru import logger
 import numpy as np
 import gmsh  # type: ignore
@@ -68,6 +68,9 @@ Known problems/solutions:
 --------------------------
 """
 
+
+# [Written by Claude] The solver class passed to set_solver / get_solver is the type returned
+_S = TypeVar("_S", bound=Solver | EigSolver)
 
 class SimulationError(Exception):
     pass
@@ -114,6 +117,7 @@ class Simulation:
         write_log: bool = False,
         path_suffix: str = ".EMResults",
         store_system: Literal["msgpack", "joblib"] = "msgpack",
+        reset_settings: bool = False,
     ):
         """Generate a Simulation class object.
 
@@ -123,11 +127,13 @@ class Simulation:
         Args:
             modelname (str): The name of the simulation model. This will be used for filenames and path names when saving data.
             loglevel (Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"], optional): The loglevel to use for loguru. Defaults to 'INFO'.
-            load_file (bool, optional): If the simulatio model should be loaded from a file. Defaults to False.
+            load_file (bool, optional): If the simulation model should be loaded from a file. Defaults to False.
             save_file (bool, optional): if the simulation file should be stored to a file. Defaults to False.
             write_log (bool, optional): If a file should be created that contains the entire log of the simulation. Defaults to False.
             path_suffix (str, optional): The suffix that will be added to the results directory. Defaults to ".EMResults".
             store_system: ("msgpack","joblib", optional): The serialization module to use. Uses Joblib by default for legacy reasons. Msgpack is safe.
+            reset_settings (bool, optional): Reset the settings to their defaults. The settings are shared by every
+                Simulation in the process, so changes made for an earlier Simulation otherwise carry over. Defaults to False.
         """
 
         base_path = _get_caller_dir()
@@ -141,6 +147,8 @@ class Simulation:
         self.state: SimState = SimState(self.modelname, self.modelpath)
         self.select: Selector = Selector()
         self.settings: Settings = DEFAULT_SETTINGS
+        if reset_settings:
+            self.settings.reset_defaults()
         self.opt: Optimizer = Optimizer()
         self.opt.callback = self._optim_callback
         self.settings._save_method = store_system
@@ -1307,29 +1315,71 @@ class Simulation:
             filename (str): The filename
         """
         logger.trace(f"Writing geometry to {filename}")
+        gmsh.option.setString("Geometry.OCCTargetUnit", "M")
         gmsh.write(filename)
 
-    def set_solver(self, solver: EMSolver | Solver) -> Solver:
-        """Set a given Solver class instance as the main solver.
+    def set_solver(self, solver: type[_S] | _S) -> _S:
+        """Use a specific solver, for example model.set_solver(em.solvers.Pardiso).
+
+        em.solvers lists every solver; em.solvers.available() lists the ones installed on this system.
         Solvers will be checked on validity for the given problem.
 
         Args:
-            solver (EMSolver | Solver): The solver objects
-        """
-        logger.trace(f"Setting solver to {solver}")
-        self.mw.solveroutine.set_solver(solver)
-        return self.get_solver(solver)
+            solver (type[Solver] | Solver): The solver class (or a solver object)
 
-    def get_solver(self, solver: EMSolver | Solver) -> Solver | None:
-        """Return the solver of a specific type
-
-        Args:
-            solver (EMSolver | Solver): _description_
+        Raises:
+            RuntimeError: If the solver is not available on this system
 
         Returns:
-            _type_: _description_
+            Solver: The solver object, to configure it further (e.g. .set_nthreads(8))
         """
-        return self.mw.solveroutine.solvers[solver]
+        reject_emsolver(solver)
+        logger.trace(f"Setting solver to {solver}")
+        self.mw.solveroutine.set_solver(solver)
+        if solver.needs_precon_data:
+            # An iterative solver such as Corvid needs the mesh data that is only assembled with the iterative method
+            self.mw.set_method('iterative')
+        return self.get_solver(solver) if isinstance(solver, type) else solver
+
+    # [Written by Claude]
+    def set_device(self, device: Literal["CPU", "GPU", "HYBRID"]) -> None:
+        """Set the hardware the direct solvers use, for example model.set_device("GPU").
+
+         - "CPU" (default): CPU solvers only. SPARTA, when installed, runs its CPU path, which is the fastest
+           direct solver on Apple silicon.
+         - "GPU": SPARTA on the Apple GPU, otherwise cuDSS on an NVIDIA GPU (pip install emerge[cudss]). Without
+           either, the CPU solvers are used and a warning is given.
+         - "HYBRID": SPARTA's combined GPU + CPU factorization (Apple silicon only). Without it, "GPU" is used.
+
+        Systems with fewer than 10,000 unknowns, eigenmode problems and run_sweep_distributed(worker_type="thread")
+        keep using CPU solvers. A solver set with set_solver() is used as is, except that SPARTA's mode follows the
+        device.
+
+        Args:
+            device (Literal["CPU", "GPU", "HYBRID"]): The device
+
+        Raises:
+            ValueError: If the device is not one of the options
+        """
+        logger.trace(f"Setting the solver device to {device}")
+        self.mw.solveroutine.set_device(device)
+
+    def get_solver(self, solver: type[_S]) -> _S:
+        """Return the solver object of a solver class, for example model.get_solver(em.solvers.Pardiso).
+
+        Args:
+            solver (type[Solver]): The solver class
+
+        Raises:
+            RuntimeError: If the solver is not available on this system
+
+        Returns:
+            Solver: The solver object used by this simulation
+        """
+        reject_emsolver(solver)
+        if not solver.available:
+            raise RuntimeError(unavailable_message(solver))
+        return self.mw.solveroutine.solvers[solver]  # type: ignore
     
     @staticmethod
     def from_simulations(name: str, *sims: Simulation, **kwargs) -> Simulation:
@@ -1386,6 +1436,7 @@ class Simulation:
         strip_gated: bool = True,
         project_boundaries: bool = True,
         cavity: bool = False,
+        nthreads: int | None = None,
     ) -> SimulationDataset:
         """Adaptive mesh refinement by local refinement of the existing mesh (AURA).
 
@@ -1425,6 +1476,8 @@ class Simulation:
             cavity: hzAURA. Where bisection cannot move a new boundary node onto the curved geometry, put it
                 there anyway and re-mesh the tets around it (constrained Delaunay cavity), instead of leaving it
                 closer to the chord.
+            nthreads: The preferred number of CPU threads of the solver, for solvers that support it. None keeps
+                the solver's own setting.
 
         Returns:
             SimulationDataset: The data set that was stashed before refinement.
@@ -1484,7 +1537,7 @@ class Simulation:
 
             fields, Smats = [], []
             for sf in sim_freqs:
-                data, solve_ids = self.mw._run_adaptive_mesh(step, sf)
+                data, solve_ids = self.mw._run_adaptive_mesh(step, sf, nthreads=nthreads)
                 fields.append(data.field[-1])
                 Smats.append(data.scalar[-1].Sp)
             S_matrices.append(Smats)

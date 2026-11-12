@@ -153,7 +153,7 @@ def test():
         p2 = mf.mw.bc.RectangularWaveguide(feed2.face('back'), 2)
 
         # Run frequency-domain sweep and extract S-parameters
-        data = mf.mw.run_sweep(parallel=True, n_workers=3, frequency_groups=8)
+        data = mf.mw.run_sweep_distributed(n_workers=3, frequency_groups=8)
         grid = data.scalar.grid
         freqs = grid.freq
         fdense = np.linspace(freqs[0], freqs[-1], 51)

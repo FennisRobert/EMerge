@@ -3,7 +3,7 @@ import numpy as np
 
 import emerge as em
 
-""" Wave ports with several modes of different propagation constant (MultiModeWavePort)."""
+""" Wave ports with several modes of different propagation constant (WavePort)."""
 
 mm = 0.001
 
@@ -23,10 +23,10 @@ def _coupled_microstrip(port: str):
     sim.mesher.set_boundary_size(em.select(s1, s2), 0.3 * mm)
     sim.generate_mesh()
     faces = [em.select(sub.face("-y"), air.face("-y")), em.select(sub.face("+y"), air.face("+y"))]
-    if port == "MultiModeWavePort":
-        ports = [sim.mw.bc.MultiModeWavePort(f, i + 1, number_of_modes=2) for i, f in enumerate(faces)]
+    if port == "WavePort":
+        ports = [sim.mw.bc.WavePort(f, i + 1, number_of_modes=2) for i, f in enumerate(faces)]
     else:
-        ports = [sim.mw.bc.ModalPort(f, i + 1, number_of_modes=2, mixed_materials=True) for i, f in enumerate(faces)]
+        ports = [sim.mw.bc.ModalPort(f, i + 1, number_of_modes=2) for i, f in enumerate(faces)]
     data = sim.mw.run_sweep()
     k0 = 2 * np.pi * 4e9 / 299792458
     betas = [np.real(m.beta) for m in ports[0].get_modes(k0)]
@@ -36,7 +36,7 @@ def _coupled_microstrip(port: str):
 
 
 def test_coupled_microstrip_even_and_odd_mode_without_reflection():
-    Sp, betas = _coupled_microstrip("MultiModeWavePort")
+    Sp, betas = _coupled_microstrip("WavePort")
     assert len(betas) == 2 and abs(betas[0] - betas[1]) / betas[0] > 0.05, betas
     for S in Sp:
         # Uniform lines: every mode passes without reflection and without conversion into the other mode.
@@ -63,8 +63,8 @@ def test_two_wires_degenerate_modes():
     sim.commit_geometry()
     sim.mw.set_frequency(3e9)
     sim.generate_mesh()
-    sim.mw.bc.MultiModeWavePort(air.face("-z"), 1, number_of_modes=2)
-    sim.mw.bc.MultiModeWavePort(air.face("+z"), 2, number_of_modes=2)
+    sim.mw.bc.WavePort(air.face("-z"), 1, number_of_modes=2)
+    sim.mw.bc.WavePort(air.face("+z"), 2, number_of_modes=2)
     S = sim.mw.run_sweep().scalar.grid.Sp[0]
     em.cleanup()
     assert np.abs(S.conj().T @ S - np.eye(4)).max() < 1e-5
@@ -80,8 +80,8 @@ def test_waveguide_te10_and_te20():
     sim.mw.set_frequency(9e9)
     sim.mw.set_resolution(0.05)
     sim.generate_mesh()
-    sim.mw.bc.MultiModeWavePort(box.face("-z"), 1, number_of_modes=2, modetype=None)
-    sim.mw.bc.MultiModeWavePort(box.face("+z"), 2, number_of_modes=2, modetype=None)
+    sim.mw.bc.WavePort(box.face("-z"), 1, number_of_modes=2, modetype=None)
+    sim.mw.bc.WavePort(box.face("+z"), 2, number_of_modes=2, modetype=None)
     S = sim.mw.run_sweep().scalar.grid.Sp[0]
     em.cleanup()
     assert np.abs(S.conj().T @ S - np.eye(4)).max() < 1e-2

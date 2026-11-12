@@ -1,4 +1,4 @@
-from ._emerge.solver import Solver, EigSolver, Preconditioner, Sorter
+from ._emerge.solvers import Solver, EigSolver, Preconditioner, Sorter
 from ._emerge.geometry import (
     GeoVolume,
     GeoSurface,

@@ -55,23 +55,25 @@ pub fn generate_points_3d(
     dpts: &ArrayView2<f64>,
     surf_triangle_indices: &ArrayView1<i64>,
 ) -> (Array1<f64>, Array1<f64>, Array1<f64>) {
-    let ns = surf_triangle_indices.len();
-    let nd = dpts.shape()[1];
-    let pts: Vec<[f64; 3]> = (0..nd * ns)
-        .into_par_iter()
-        .map(|idx| {
-            let (j, i) = (idx / ns, idx % ns);
-            let itri = surf_triangle_indices[i] as usize;
-            let v = [0, 1, 2].map(|k| tris[[k, itri]] as usize);
-            let (d1, d2, d3) = (dpts[[1, j]], dpts[[2, j]], dpts[[3, j]]);
-            [0, 1, 2].map(|r| vertices[[r, v[0]]] * d1 + vertices[[r, v[1]]] * d2 + vertices[[r, v[2]]] * d3)
-        })
-        .collect();
-    (
-        Array1::from_iter(pts.iter().map(|p| p[0])),
-        Array1::from_iter(pts.iter().map(|p| p[1])),
-        Array1::from_iter(pts.iter().map(|p| p[2])),
-    )
+    crate::pool::install(|| {
+        let ns = surf_triangle_indices.len();
+        let nd = dpts.shape()[1];
+        let pts: Vec<[f64; 3]> = (0..nd * ns)
+            .into_par_iter()
+            .map(|idx| {
+                let (j, i) = (idx / ns, idx % ns);
+                let itri = surf_triangle_indices[i] as usize;
+                let v = [0, 1, 2].map(|k| tris[[k, itri]] as usize);
+                let (d1, d2, d3) = (dpts[[1, j]], dpts[[2, j]], dpts[[3, j]]);
+                [0, 1, 2].map(|r| vertices[[r, v[0]]] * d1 + vertices[[r, v[1]]] * d2 + vertices[[r, v[2]]] * d3)
+            })
+            .collect();
+        (
+            Array1::from_iter(pts.iter().map(|p| p[0])),
+            Array1::from_iter(pts.iter().map(|p| p[1])),
+            Array1::from_iter(pts.iter().map(|p| p[2])),
+        )
+    })
 }
 
 /// Local triangle frame data: basis, barycentric coefficients, area and local quadrature coordinates.
@@ -138,28 +140,30 @@ pub fn ned2_tri_force_scat(
 
 /// Sums per triangle vectors into Bvec using 20 contiguous chunks with private buffers (fixed summation order).
 fn chunked_force_sum<F: Fn(usize) -> (Vec<i64>, Array1<c64>) + Sync>(bvec: &mut ArrayViewMut1<c64>, niter: usize, tri_vec: F) {
-    let chunk_size = niter.div_ceil(N_THREADS);
-    let n = bvec.len();
-    let private: Vec<Vec<c64>> = (0..N_THREADS)
-        .into_par_iter()
-        .map(|t| {
-            let mut buf = vec![c64::new(0.0, 0.0); n];
-            let start = t * chunk_size;
-            let end = (start + chunk_size).min(niter);
-            for i in start..end {
-                let (indices, b) = tri_vec(i);
-                for (k, &idx) in indices.iter().enumerate() {
-                    buf[idx as usize] += b[k];
+    crate::pool::install(|| {
+        let chunk_size = niter.div_ceil(N_THREADS);
+        let n = bvec.len();
+        let private: Vec<Vec<c64>> = (0..N_THREADS)
+            .into_par_iter()
+            .map(|t| {
+                let mut buf = vec![c64::new(0.0, 0.0); n];
+                let start = t * chunk_size;
+                let end = (start + chunk_size).min(niter);
+                for i in start..end {
+                    let (indices, b) = tri_vec(i);
+                    for (k, &idx) in indices.iter().enumerate() {
+                        buf[idx as usize] += b[k];
+                    }
                 }
+                buf
+            })
+            .collect();
+        for idx in 0..n {
+            for buf in private.iter() {
+                bvec[idx] += buf[idx];
             }
-            buf
-        })
-        .collect();
-    for idx in 0..n {
-        for buf in private.iter() {
-            bvec[idx] += buf[idx];
         }
-    }
+    })
 }
 
 /// Adds the Robin forcing vectors of all selected triangles into Bvec.
@@ -249,19 +253,21 @@ pub fn compute_bc_entries(
     gamma: &ArrayView1<c64>,
     dofcodes: &ArrayView1<i64>,
 ) {
-    let codes = dofcodes.to_vec();
-    let n = codes.len() * codes.len();
-    bmat.par_chunks_mut(n.max(1))
-        .take(surf_triangle_indices.len())
-        .enumerate()
-        .for_each(|(i, chunk)| {
-            let itri = surf_triangle_indices[i] as usize;
-            let verts = tri_global_vertices(vertices, tris, itri);
-            let bsub = ned2_tri_stiff(&verts.view(), gamma[i], &codes);
-            for (k, v) in bsub.iter().enumerate() {
-                chunk[k] += *v;
-            }
-        });
+    crate::pool::install(|| {
+        let codes = dofcodes.to_vec();
+        let n = codes.len() * codes.len();
+        bmat.par_chunks_mut(n.max(1))
+            .take(surf_triangle_indices.len())
+            .enumerate()
+            .for_each(|(i, chunk)| {
+                let itri = surf_triangle_indices[i] as usize;
+                let verts = tri_global_vertices(vertices, tris, itri);
+                let bsub = ned2_tri_stiff(&verts.view(), gamma[i], &codes);
+                for (k, v) in bsub.iter().enumerate() {
+                    chunk[k] += *v;
+                }
+            });
+    })
 }
 
 #[pyfunction]

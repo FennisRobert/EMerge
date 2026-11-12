@@ -120,8 +120,14 @@ def test():
     assert nf.E.shape == (3, 9)
     scale = R * np.exp(1j * data.field[0].k0 * R)
     assert np.allclose(nf.E * scale, ff._E, rtol=0, atol=1e-3 * np.abs(ff._E).max())
-    # the far field uses H = r x E / Z0, the near field integrates H itself (differs by the FEM surface field error)
-    assert np.allclose(nf.H * scale, ff._H, rtol=0, atol=1e-2 * np.abs(ff._H).max())
+    # The far field uses H = r x E / Z0; the near field integrates H itself. The transverse part matches. The near field
+    # also has a radial H ~ 1/R from the (n·H) term, which only cancels for exact surface fields: it measures the error
+    # of the normal FEM H on the surface (a few % here) and is not part of the far field.
+    rhat = np.array([np.sin(thetas) * np.cos(phis), np.sin(thetas) * np.sin(phis), np.cos(thetas)])
+    Hnf = nf.H * scale
+    Hradial = np.sum(Hnf * rhat, axis=0) * rhat
+    assert np.allclose(Hnf - Hradial, ff._H, rtol=0, atol=1e-3 * np.abs(ff._H).max())
+    assert np.abs(Hradial).max() < 0.1 * np.abs(ff._H).max()
 
     # Normalize to free-space impedance and convert to dB
 

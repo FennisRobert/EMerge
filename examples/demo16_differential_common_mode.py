@@ -11,7 +11,7 @@ from emerge.plot import plot_sp
 mm = 0.001  # meter units helper: 1 mm
 
 model = em.Simulation('DiffCommon')  # simulation container
-model.check_version("3.0.0") # Checks version compatibility.
+model.check_version("3.0.5") # Checks version compatibility.
 
 # PCB stack: 1 mm substrate, RO3003 dielectric, 0.05 mm copper thickness, thick traces enabled
 pcb = em.geo.PCBNew(1, mm, material=em.lib.DIEL_RO3003, trace_thickness=0.05*mm, thick_traces=True)
@@ -48,8 +48,7 @@ model.generate_mesh()  # build volume mesh
 
 model.view()  # optional mesh preview
 
-
-data = model.mw.run_sweep(True, 4)  # frequency sweep, parallel workers=4
+data = model.mw.run_sweep_distributed(n_workers=4)  # frequency sweep, 4 frequency points at a time
 
 g = data.scalar.grid  # reshape scalar results to an N-D grid helper
 

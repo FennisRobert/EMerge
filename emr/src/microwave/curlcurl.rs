@@ -161,45 +161,47 @@ pub fn _matrix_builder(
     tetids: &ArrayView1<i64>,
     dofcodes: &ArrayView1<i64>,
 ) -> CooC {
-    let codes = dofcodes.to_vec();
-    let ndof = codes.len();
-    let nsq = ndof * ndof;
-    let nnz = tetids.len() * nsq;
-    let (typearry, indexarry) = parse_dofcode(&codes);
-    let mut rows = vec![0i64; nnz];
-    let mut cols = vec![0i64; nnz];
-    let mut data_e = vec![c64::new(0.0, 0.0); nnz];
-    let mut data_b = vec![c64::new(0.0, 0.0); nnz];
-    rows.par_chunks_mut(nsq.max(1))
-        .zip(cols.par_chunks_mut(nsq.max(1)))
-        .zip(data_e.par_chunks_mut(nsq.max(1)))
-        .zip(data_b.par_chunks_mut(nsq.max(1)))
-        .enumerate()
-        .for_each(|(iassy, (((r, c), de), db))| {
-            let itet = tetids[iassy] as usize;
-            let urt = mat3_at(ur, itet);
-            let ert = mat3_at(er, itet);
-            let local_tri_map = local_tet_to_triid(tet_to_tri, tets, tris, itet);
-            let local_edge_map = local_tet_to_edgeid(tet_to_edge, tets, edges, itet);
-            let verts = tet_vertices(nodes, tets, itet);
-            let (esub, bsub) = ned2_tet_stiff_mass(
-                &verts.view(),
-                &local_edge_map,
-                &local_tri_map,
-                &matinv(&urt),
-                &ert,
-                &codes,
-                &typearry,
-                &indexarry,
-            );
-            let indices: Vec<i64> = (0..ndof).map(|f| tet_to_field[[f, itet]]).collect();
-            write_block_rowcol(&indices, r, c);
-            for (k, (e, b)) in esub.iter().zip(bsub.iter()).enumerate() {
-                de[k] = *e;
-                db[k] = *b;
-            }
-        });
-    (Array1::from(data_e), Array1::from(data_b), Array1::from(rows), Array1::from(cols))
+    crate::pool::install(|| {
+        let codes = dofcodes.to_vec();
+        let ndof = codes.len();
+        let nsq = ndof * ndof;
+        let nnz = tetids.len() * nsq;
+        let (typearry, indexarry) = parse_dofcode(&codes);
+        let mut rows = vec![0i64; nnz];
+        let mut cols = vec![0i64; nnz];
+        let mut data_e = vec![c64::new(0.0, 0.0); nnz];
+        let mut data_b = vec![c64::new(0.0, 0.0); nnz];
+        rows.par_chunks_mut(nsq.max(1))
+            .zip(cols.par_chunks_mut(nsq.max(1)))
+            .zip(data_e.par_chunks_mut(nsq.max(1)))
+            .zip(data_b.par_chunks_mut(nsq.max(1)))
+            .enumerate()
+            .for_each(|(iassy, (((r, c), de), db))| {
+                let itet = tetids[iassy] as usize;
+                let urt = mat3_at(ur, itet);
+                let ert = mat3_at(er, itet);
+                let local_tri_map = local_tet_to_triid(tet_to_tri, tets, tris, itet);
+                let local_edge_map = local_tet_to_edgeid(tet_to_edge, tets, edges, itet);
+                let verts = tet_vertices(nodes, tets, itet);
+                let (esub, bsub) = ned2_tet_stiff_mass(
+                    &verts.view(),
+                    &local_edge_map,
+                    &local_tri_map,
+                    &matinv(&urt),
+                    &ert,
+                    &codes,
+                    &typearry,
+                    &indexarry,
+                );
+                let indices: Vec<i64> = (0..ndof).map(|f| tet_to_field[[f, itet]]).collect();
+                write_block_rowcol(&indices, r, c);
+                for (k, (e, b)) in esub.iter().zip(bsub.iter()).enumerate() {
+                    de[k] = *e;
+                    db[k] = *b;
+                }
+            });
+        (Array1::from(data_e), Array1::from(data_b), Array1::from(rows), Array1::from(cols))
+    })
 }
 
 #[pyfunction]

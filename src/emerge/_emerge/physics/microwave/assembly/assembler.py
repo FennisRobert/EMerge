@@ -25,8 +25,8 @@ from ..bcs import (
     PortBC,
     MWBoundaryConditionSet,
     SurfaceImpedance,
-    WavePortIH,
-    MultiModeWavePort,
+    WavePort,
+    FloquetPort,
     Void,
 )
 from ...material_assignment import MaterialAssignment
@@ -286,12 +286,14 @@ class Assembler:
         self._periodic_patterns: tuple[tuple, csc_matrix, csc_matrix] | None = None
         self.settings: Settings = settings
         self._precon_cache: tuple[int, PreconData | None] | None = None
+        self._conductor_report: list[str] | None = None
 
     def reset_cache(self) -> None:
         """Discards the cached sparsity pattern, boundary matrices, volume matrices and preconditioner data."""
         self._system = None
         self._periodic_patterns = None
         self._precon_cache = None
+        self._conductor_report = None
 
     # [Written by Claude]
     def _precon_dataset(self, field: Nedelec2, has_periodic: bool) -> PreconData | None:
@@ -358,6 +360,45 @@ class Assembler:
 
         return np.flatnonzero(mask)
 
+    # [Written by Claude]
+    def _log_conductor_domains(
+        self, field: Nedelec2, mat_assy: MaterialAssignment, bcs: list[BoundaryCondition], cond: np.ndarray
+    ) -> None:
+        """Logs (debug) how the tets of every conducting or void domain are treated: as a PEC volume
+        (σ > mw_3d_peclim), as a surface impedance conductor whose interior is removed
+        (σ > mw_3d_surfimplim), as a lossy volume that is assembled, or as a void. Only logged when
+        the treatment changes, not at every frequency."""
+        sigma = np.real(cond[0, 0, :])
+        peclim, surfimplim = self.settings.mw_3d_peclim, self.settings.mw_3d_surfimplim
+        is_void = np.zeros(sigma.shape[0], dtype=bool)
+        for bc in bcs:
+            if isinstance(bc, Void):
+                is_void[field.mesh.get_tetrahedra(bc.tags)] = True
+
+        lines = []
+        for mat, _, ids in mat_assy.iter_materials():
+            ids = ids[ids < sigma.shape[0]]
+            s, void = sigma[ids], is_void[ids]
+            counts = {
+                "void": np.count_nonzero(void),
+                "PEC volume": np.count_nonzero(~void & (s > peclim)),
+                "surface impedance (interior removed)": np.count_nonzero(~void & (s <= peclim) & (s > surfimplim)),
+                "lossy volume (assembled)": np.count_nonzero(~void & (s <= min(peclim, surfimplim)) & (s > 0)),
+            }
+            if not any(counts.values()):
+                continue
+            names = [geo.name for geo in mat_assy._geos if geo.dim == 3 and geo.material is mat]
+            treatment = ", ".join(f"{n} tets {kind}" for kind, n in counts.items() if n)
+            lines.append(f" - {mat.name} [{', '.join(names)}] (σ ≤ {s.max():.3g} S/m): {treatment}")
+
+        if lines == self._conductor_report:
+            return
+        self._conductor_report = lines
+        if lines:
+            logger.debug(f"Conducting domains (mw_3d_peclim = {peclim:.3g}, mw_3d_surfimplim = {surfimplim:.3g} S/m):")
+            for line in lines:
+                logger.debug(line)
+
     def _collect_pec_dofs(
         self, field: Nedelec2, mesh, bcs: list[BoundaryCondition], conductor_tets: np.ndarray, cond: np.ndarray
     ) -> tuple[set[int], list[int]]:
@@ -371,11 +412,7 @@ class Assembler:
         for itet in conductor_tets:
             pec_ids.extend(field.tet_to_field[:, itet])
             pec_tris.extend(field.mesh.tet_to_tri[:, itet])
-        
-        if len(conductor_tets):
-            logger.trace(
-                f" - Extended PEC with {len(conductor_tets)} tets with a conductivity > {self.settings.mw_3d_peclim}."
-            )
+
         pec_ids_set = set(pec_ids)
 
         # Step 2: Remove all Robin Bcs
@@ -395,10 +432,18 @@ class Assembler:
             pec_ids_set.update(field.tri_to_field[:, tri_ids].flatten())
             pec_tris.extend(tri_ids)
 
-        # Step 4: add back pec tets
-        pec_dofs = np.unique(field.tet_to_field[:, np.flatnonzero(cond[0,0,:] > self.settings.mw_2dbc_peclim)].flatten())
+        # Step 4: add back the surface DoFs of PEC volumes, which step 2 freed if a SurfaceImpedance was assigned
+        pec_dofs = np.unique(field.tet_to_field[:, np.flatnonzero(cond[0,0,:] > self.settings.mw_3d_peclim)].flatten())
         pec_ids_set.update(pec_dofs)
-        
+
+        # [Written by Claude] Step 5: DoFs that only removed conductor tets touch stay PEC, also when step 2 freed them.
+        # A port face that cuts a conductor (the ground and trace of a planar port) would leave them with only the
+        # port term, which for a WavePort is zero there: an exactly zero column.
+        assembled = np.ones(field.tet_to_field.shape[1], dtype=bool)
+        assembled[conductor_tets] = False
+        inner = np.setdiff1d(field.tet_to_field[:, conductor_tets], field.tet_to_field[:, assembled])
+        pec_ids_set.update(inner.tolist())
+
         return pec_ids_set, pec_tris
 
 
@@ -482,11 +527,9 @@ class Assembler:
         Excitation vectors are accumulated in place into whichever of
         port_vectors (driven ports) or background_fields (scattered field)
         is given; eigenmode assembly passes neither. For a WPBC bc the port
-        excitation reuses assemble_wpbc's own vector (same mode overlap
+        excitation reuses assemble_wpbc_multimode's own vectors (same mode overlaps
         already computed for the matrix term).
         """
-        from .wpbc import assemble_wpbc
-
         for bc in robin_bcs:
             logger.trace(f"   - Implementing {bc}")
             tri_ids = mesh.get_triangles(bc.tags)
@@ -503,19 +546,18 @@ class Assembler:
 
             wpbc_bvec = None
             if bc_has_matrix_term(bc):
-                if isinstance(bc, MultiModeWavePort):
+                if isinstance(bc, WavePort):
                     # [Written by Claude] one dense WPBC term per port mode
                     from .wpbc_multimode import assemble_wpbc_multimode
                     logger.debug("    - Assembling dense Wave Port Boundary Condition of all port modes.")
                     modes = bc.get_modepf_kappa_all(K0, mesh.nodes, mesh.tris[:, tri_ids])
                     values, wpbc_bvec = assemble_wpbc_multimode(field, tri_ids, system.wave_port_dofs(bc), modes, K0)
                     system.add_wave_port_term(out, bc, values, scale)
-                elif isinstance(bc, WavePortIH):
-                    logger.debug("    - Assembling dense Wave Port Boundary Condition.")
-                    mprof, mode_xy, kappa_m = bc.get_modepf_kappa(K0, mesh.nodes, mesh.tris[:, tri_ids])
-                    values, wpbc_bvec = assemble_wpbc(
-                        field, tri_ids, system.wave_port_dofs(bc), mprof, mode_xy, kappa_m, gamma_bc, K0
-                    )
+                elif isinstance(bc, FloquetPort):
+                    # [Written by Claude] Robin term with γ_r plus the dense projection on the Floquet modes
+                    from .wpbc_multimode import assemble_floquet_port
+                    system.add_robin_term(out, bc, gamma, scale)
+                    values, wpbc_bvec = assemble_floquet_port(field, tri_ids, system.wave_port_dofs(bc), bc, K0)
                     system.add_wave_port_term(out, bc, values, scale)
                 else:
                     system.add_robin_term(out, bc, gamma, scale)
@@ -543,7 +585,7 @@ class Assembler:
 
         if not (bc._include_force and bc.driven and not isinstance(bc, ScatteredField)):
             return
-        if isinstance(wpbc_bvec, dict):  # [Written by Claude] MultiModeWavePort: one vector per mode
+        if isinstance(wpbc_bvec, dict):  # [Written by Claude] WavePort: one vector per mode
             for number, vec in wpbc_bvec.items():
                 port_vectors[number] += vec
             return
@@ -786,7 +828,7 @@ class Assembler:
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
-        logger.debug(f' - Total of {len(conductor_tets)} PEC Tetrahedrons')
+        self._log_conductor_domains(field, mat_assy, bcs, cond)
 
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         port_bcs: list[PortBC] = [bc for bc in bcs if isinstance(bc, PortBC)]
@@ -871,6 +913,7 @@ class Assembler:
 
         er, ur, cond, is_frequency_dependent = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
+        self._log_conductor_domains(field, mat_assy, bcs, cond)
 
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]
@@ -949,6 +992,7 @@ class Assembler:
 
         er, ur, cond, _ = self._assemble_materials(mat_assy, field, frequency)
         conductor_tets = self._find_conductor_tets(field, bcs, cond)
+        self._log_conductor_domains(field, mat_assy, bcs, cond)
 
         robin_bcs: list[RobinBC] = [bc for bc in bcs if isinstance(bc, RobinBC)]
         periodic_bcs: list[Periodic] = [bc for bc in bcs if isinstance(bc, Periodic)]

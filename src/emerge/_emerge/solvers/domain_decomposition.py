@@ -1,4 +1,4 @@
-# solver_dd.py
+# solvers/domain_decomposition.py
 """
 Domain-decomposition solver support.
 
@@ -7,7 +7,7 @@ and can then be reused for repeated solves against new right-hand-side
 vectors, plus a lightweight `DDSolver` manager that keeps a dict of these
 per subdomain.
 
-Currently only EMSolver.SUPERLU is supported. Support for solvers backed by
+Currently only SolverSuperLU is supported. Support for solvers backed by
 persistent external contexts (PARDISO, MUMPS, AASDS, cuDSS) is deliberately
 left out until their interfaces are confirmed safe to run as multiple
 concurrent, independent factorizations.
@@ -22,13 +22,15 @@ from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu, SuperLU  # type: ignore
 from loguru import logger
 
-from .solver import EMSolver, SolveReport, _SKSP_AVAILABLE, _pfx  # adjust to your actual module name
+from .solver_base import Solver, SolveReport, _pfx
+from .superlu import SolverSuperLU
+from .cholmod import AVAILABLE as _SKSP_AVAILABLE
 
 if _SKSP_AVAILABLE:
     from sksparse.cholmod import metis  # type: ignore
 
 
-_SUPPORTED_DD_SOLVERS = (EMSolver.SUPERLU,)
+_SUPPORTED_DD_SOLVERS = (SolverSuperLU,)
 
 
 class Factorization:
@@ -36,7 +38,7 @@ class Factorization:
     against many right-hand-side vectors b without refactorizing.
 
     Typical use:
-        f = Factorization(EMSolver.SUPERLU)
+        f = Factorization(SolverSuperLU)
         f.factorize(A, solve_ids=free_dofs)
         x1, report1 = f.solve(b1)
         x2, report2 = f.solve(b2)   # reuses the same LU factors
@@ -44,17 +46,17 @@ class Factorization:
 
     def __init__(
         self,
-        solver_type: EMSolver = EMSolver.SUPERLU,
+        solver_type: type[Solver] = SolverSuperLU,
         pre: str = "",
         pivoting_threshold: float = 0.001,
     ):
         if solver_type not in _SUPPORTED_DD_SOLVERS:
             raise NotImplementedError(
                 f"Factorization currently only supports {[s.name for s in _SUPPORTED_DD_SOLVERS]}, "
-                f"got {solver_type.name}. Extend solver_dd.py once the corresponding solver "
+                f"got {solver_type.name}. Extend solvers/domain_decomposition.py once the corresponding solver "
                 f"interface is confirmed safe for multiple independent, concurrent factorizations."
             )
-        self.solver_type: EMSolver = solver_type
+        self.solver_type: type[Solver] = solver_type
         self.pre: str = pre
         self._pivoting_threshold: float = pivoting_threshold
         self.options: dict[str, str] = dict(
@@ -219,8 +221,8 @@ class DDSolver:
         x1_new = dd.solve("dom1", b1_updated)   # no refactorization
     """
 
-    def __init__(self, solver_type: EMSolver = EMSolver.SUPERLU):
-        self.solver_type: EMSolver = solver_type
+    def __init__(self, solver_type: type[Solver] = SolverSuperLU):
+        self.solver_type: type[Solver] = solver_type
         self.factorizations: dict[Hashable, Factorization] = {}
 
     def __contains__(self, key: Hashable) -> bool:

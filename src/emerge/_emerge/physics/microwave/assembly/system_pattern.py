@@ -46,7 +46,7 @@ from scipy.sparse import csc_matrix, spmatrix, sparray
 
 from ....mth.csc_cast import CSCMapping
 from ....elements.nedelec2 import Nedelec2
-from ..bcs import RobinBC, ThinConductor, WavePortIH
+from ..bcs import RobinBC, ThinConductor, WavePort, FloquetPort
 from .emr_microwave import assemble_robin_bc
 from .emr_microwave import abc_order_2_matrix
 from .wpbc import wpbc_dofs, wpbc_rowcol
@@ -153,11 +153,12 @@ class SystemPattern:
         for bc in robin_bcs:
             tri_ids = mesh.get_triangles(bc.tags)
             if bc_has_matrix_term(bc):
-                if isinstance(bc, WavePortIH):
+                if isinstance(bc, (WavePort, FloquetPort)):
                     dofs = wpbc_dofs(field, tri_ids)
                     self._wave_port_dofs[id(bc)] = dofs
                     self._wave_port_terms[id(bc)] = _BoundaryTerm([wpbc_rowcol(dofs)], None, 0)
-                else:
+                # [Written by Claude] a FloquetPort has both: the dense projection on its modes and a Robin term
+                if not isinstance(bc, WavePort):
                     unit_values, rows, cols = assemble_robin_bc(field, tri_ids, np.ones(tri_ids.shape[0], dtype=np.complex128))
                     coo_indices = [(rows, cols)]
                     if isinstance(bc, ThinConductor):
@@ -213,7 +214,7 @@ class SystemPattern:
         """
         cond_hash = hashlib.sha1(np.ascontiguousarray(conductor_tets, dtype=np.int64).tobytes()).hexdigest()
         bc_sig = tuple(
-            (id(bc), bc_has_matrix_term(bc), bc_has_abc2_term(bc), isinstance(bc, WavePortIH),
+            (id(bc), bc_has_matrix_term(bc), bc_has_abc2_term(bc), isinstance(bc, (WavePort, FloquetPort)),
              isinstance(bc, ThinConductor), tuple(bc.tags))
             for bc in robin_bcs
         )

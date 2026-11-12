@@ -26,7 +26,7 @@ def test_mode_analysis_finds_the_dominant_modes_of_an_overmoded_guide():
     sim.mw.set_frequency(f)
     sim.mw.set_resolution(0.2)
     sim.generate_mesh()
-    port = sim.mw.bc.MultiModeWavePort(box.face("-y"), 1, number_of_modes=2, modetype=None)
+    port = sim.mw.bc.WavePort(box.face("-y"), 1, number_of_modes=2, modetype=None)
     sim.mw.modal_analysis(port, 2, direct=False, freq=f)
     k0 = 2 * np.pi * f / C0
     betas = [m.beta.real for m in port.get_modes(k0)]
@@ -47,8 +47,8 @@ def test_mode_below_cutoff_of_a_two_mode_port_decays():
     sim.mw.set_frequency(max(freqs))
     sim.mw.set_resolution(0.2)
     sim.generate_mesh()
-    sim.mw.bc.MultiModeWavePort(box.face("-z"), 1, number_of_modes=2, modetype=None)
-    sim.mw.bc.MultiModeWavePort(box.face("+z"), 2, number_of_modes=2, modetype=None)
+    sim.mw.bc.WavePort(box.face("-z"), 1, number_of_modes=2, modetype=None)
+    sim.mw.bc.WavePort(box.face("+z"), 2, number_of_modes=2, modetype=None)
     sim.mw.set_frequency(freqs)
     Sp = sim.mw.run_sweep().scalar.grid.Sp
     em.cleanup()

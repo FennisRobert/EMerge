@@ -49,85 +49,87 @@ pub fn gradient_kernel(
     out_cols: &mut [i64],
     out_res: &mut [f64],
 ) {
-    let n_tets = tets.shape()[1];
-    let ndof = dofcodes.len();
-    let npts = bary.shape()[1];
-    let n_nodes = nodes.shape()[1];
-    let (pv, pr, pc, pres) = (
-        SyncPtr(out_vals.as_mut_ptr()),
-        SyncPtr(out_rows.as_mut_ptr()),
-        SyncPtr(out_cols.as_mut_ptr()),
-        SyncPtr(out_res.as_mut_ptr()),
-    );
-    (0..n_tets).into_par_iter().for_each(|itet| {
-        let verts = tet_vertices(nodes, tets, itet);
-        let (coeff, _v) = bary_coeff(&verts.view());
-        let coords = Array2::from_shape_fn((3, npts), |(c, q)| {
-            let mut acc = 0.0;
-            for m in 0..4 {
-                acc += verts[[c, m]] * bary[[m, q]];
-            }
-            acc
-        });
-        let lem = local_tet_to_edgeid(tet_to_edge, tets, edges, itet);
-        let ltm = local_tet_to_triid(tet_to_tri, tets, tris, itet);
-        let mut a = DMatrix::<f64>::zeros(3 * npts, ndof);
-        let mut buf = Array2::<c64>::zeros((3, npts));
-        for j in 0..ndof {
-            let (ia, ib, ic) = dof_abc(typearr, indexarr, j, &lem, &ltm);
-            _eval_f_3d(&coeff.view(), &coords.view(), ia, ib, ic, dofcodes[j], &mut buf.view_mut());
-            for c in 0..3 {
-                for q in 0..npts {
-                    a[(c * npts + q, j)] = buf[[c, q]].re;
+    crate::pool::install(|| {
+        let n_tets = tets.shape()[1];
+        let ndof = dofcodes.len();
+        let npts = bary.shape()[1];
+        let n_nodes = nodes.shape()[1];
+        let (pv, pr, pc, pres) = (
+            SyncPtr(out_vals.as_mut_ptr()),
+            SyncPtr(out_rows.as_mut_ptr()),
+            SyncPtr(out_cols.as_mut_ptr()),
+            SyncPtr(out_res.as_mut_ptr()),
+        );
+        (0..n_tets).into_par_iter().for_each(|itet| {
+            let verts = tet_vertices(nodes, tets, itet);
+            let (coeff, _v) = bary_coeff(&verts.view());
+            let coords = Array2::from_shape_fn((3, npts), |(c, q)| {
+                let mut acc = 0.0;
+                for m in 0..4 {
+                    acc += verts[[c, m]] * bary[[m, q]];
                 }
-            }
-        }
-        let mut r = DMatrix::<f64>::zeros(3 * npts, 10);
-        for v in 0..4 {
-            let g = _nv_grad(&coeff.view(), &coords.view(), v, v, 0);
-            for c in 0..3 {
-                for q in 0..npts {
-                    r[(c * npts + q, v)] = g[[c, q]].re;
-                }
-            }
-        }
-        for e in 0..6 {
-            let g = _ne_grad(&coeff.view(), &coords.view(), lem[[0, e]] as usize, lem[[1, e]] as usize, 0);
-            for c in 0..3 {
-                for q in 0..npts {
-                    r[(c * npts + q, 4 + e)] = g[[c, q]].re;
-                }
-            }
-        }
-        let sol = lstsq(a.clone(), &r);
-        let fit = &a * &sol;
-        let (mut num, mut den) = (0.0, 0.0);
-        for p in 0..3 * npts {
-            for m in 0..10 {
-                let d = fit[(p, m)] - r[(p, m)];
-                num += d * d;
-                den += r[(p, m)] * r[(p, m)];
-            }
-        }
-        let base = itet * ndof * 10;
-        unsafe {
-            pres.write(itet, if den > 0.0 { (num / den).sqrt() } else { 0.0 });
+                acc
+            });
+            let lem = local_tet_to_edgeid(tet_to_edge, tets, edges, itet);
+            let ltm = local_tet_to_triid(tet_to_tri, tets, tris, itet);
+            let mut a = DMatrix::<f64>::zeros(3 * npts, ndof);
+            let mut buf = Array2::<c64>::zeros((3, npts));
             for j in 0..ndof {
-                let grow = tet_to_field[[j, itet]];
-                for m in 0..10 {
-                    let gcol = if m < 4 {
-                        tets[[m, itet]]
-                    } else {
-                        tet_to_edge[[m - 4, itet]] + n_nodes as i64
-                    };
-                    let k = base + j * 10 + m;
-                    pr.write(k, grow);
-                    pc.write(k, gcol);
-                    pv.write(k, sol[(j, m)]);
+                let (ia, ib, ic) = dof_abc(typearr, indexarr, j, &lem, &ltm);
+                _eval_f_3d(&coeff.view(), &coords.view(), ia, ib, ic, dofcodes[j], &mut buf.view_mut());
+                for c in 0..3 {
+                    for q in 0..npts {
+                        a[(c * npts + q, j)] = buf[[c, q]].re;
+                    }
                 }
             }
-        }
-    });
+            let mut r = DMatrix::<f64>::zeros(3 * npts, 10);
+            for v in 0..4 {
+                let g = _nv_grad(&coeff.view(), &coords.view(), v, v, 0);
+                for c in 0..3 {
+                    for q in 0..npts {
+                        r[(c * npts + q, v)] = g[[c, q]].re;
+                    }
+                }
+            }
+            for e in 0..6 {
+                let g = _ne_grad(&coeff.view(), &coords.view(), lem[[0, e]] as usize, lem[[1, e]] as usize, 0);
+                for c in 0..3 {
+                    for q in 0..npts {
+                        r[(c * npts + q, 4 + e)] = g[[c, q]].re;
+                    }
+                }
+            }
+            let sol = lstsq(a.clone(), &r);
+            let fit = &a * &sol;
+            let (mut num, mut den) = (0.0, 0.0);
+            for p in 0..3 * npts {
+                for m in 0..10 {
+                    let d = fit[(p, m)] - r[(p, m)];
+                    num += d * d;
+                    den += r[(p, m)] * r[(p, m)];
+                }
+            }
+            let base = itet * ndof * 10;
+            unsafe {
+                pres.write(itet, if den > 0.0 { (num / den).sqrt() } else { 0.0 });
+                for j in 0..ndof {
+                    let grow = tet_to_field[[j, itet]];
+                    for m in 0..10 {
+                        let gcol = if m < 4 {
+                            tets[[m, itet]]
+                        } else {
+                            tet_to_edge[[m - 4, itet]] + n_nodes as i64
+                        };
+                        let k = base + j * 10 + m;
+                        pr.write(k, grow);
+                        pc.write(k, gcol);
+                        pv.write(k, sol[(j, m)]);
+                    }
+                }
+            }
+        });
+    })
 }
 
 /// Nedelec interpolation blocks Pi_loc = Q^-1 m(phi_a e_d) from entity-local moments with cond(Q) per tet.
@@ -153,108 +155,110 @@ pub fn interpolation_kernel(
     out_cols: &mut [i64],
     out_cond: &mut [f64],
 ) {
-    let n_tets = tets.shape()[1];
-    let ndof = dofcodes.len();
-    let (nq_e, nq_f) = (gs.len(), tb.shape()[0]);
-    let n_nodes = nodes.shape()[1] as i64;
-    let (pv, pr, pc, pcond) = (
-        SyncPtr(out_vals.as_mut_ptr()),
-        SyncPtr(out_rows.as_mut_ptr()),
-        SyncPtr(out_cols.as_mut_ptr()),
-        SyncPtr(out_cond.as_mut_ptr()),
-    );
-    (0..n_tets).into_par_iter().for_each(|itet| {
-        let verts = tet_vertices(nodes, tets, itet);
-        let (coeff, _v) = bary_coeff(&verts.view());
-        let lem = local_tet_to_edgeid(tet_to_edge, tets, edges, itet);
-        let ltm = local_tet_to_triid(tet_to_tri, tets, tris, itet);
-        let mut qm = DMatrix::<f64>::zeros(ndof, ndof);
-        let mut fm = DMatrix::<f64>::zeros(ndof, 30);
-        for i in 0..ndof {
-            let (pts, wts, dirv) = if i < 12 {
-                let (e, wid) = (i % 6, i / 6);
-                let (l0, l1) = (lem[[0, e]] as usize, lem[[1, e]] as usize);
-                let dirv = [0, 1, 2].map(|c| verts[[c, l1]] - verts[[c, l0]]);
-                let pts = Array2::from_shape_fn((3, nq_e), |(c, q)| verts[[c, l0]] + gs[q] * dirv[c]);
-                let wts: Vec<f64> = (0..nq_e).map(|q| gws[q] * if wid == 0 { 1.0 } else { 1.0 - 2.0 * gs[q] }).collect();
-                (pts, wts, dirv)
-            } else {
-                let (f, wid) = ((i - 12) % 4, (i - 12) / 4);
-                let t = [0, 1, 2].map(|k| ltm[[k, f]] as usize);
-                let dirv = [0, 1, 2].map(|c| {
-                    if wid == 0 {
-                        verts[[c, t[1]]] - verts[[c, t[0]]]
-                    } else {
-                        verts[[c, t[2]]] - verts[[c, t[0]]]
-                    }
-                });
-                let pts = Array2::from_shape_fn((3, nq_f), |(c, q)| {
-                    tb[[q, 0]] * verts[[c, t[0]]] + tb[[q, 1]] * verts[[c, t[1]]] + tb[[q, 2]] * verts[[c, t[2]]]
-                });
-                let wts: Vec<f64> = (0..nq_f).map(|q| tw[q]).collect();
-                (pts, wts, dirv)
-            };
-            let npts = wts.len();
-            let mut buf = Array2::<c64>::zeros((3, npts));
-            for j in 0..ndof {
-                let (ia, ib, ic) = dof_abc(typearr, indexarr, j, &lem, &ltm);
-                _eval_f_3d(&coeff.view(), &pts.view(), ia, ib, ic, dofcodes[j], &mut buf.view_mut());
-                let mut acc = 0.0;
-                for q in 0..npts {
-                    let mut s = 0.0;
-                    for c in 0..3 {
-                        s += buf[[c, q]].re * dirv[c];
-                    }
-                    acc += wts[q] * s;
-                }
-                qm[(i, j)] = acc;
-            }
-            for v in 0..4 {
-                let sc = _nv(&coeff.view(), &pts.view(), v, v, 0);
-                let mut acc = 0.0;
-                for q in 0..npts {
-                    acc += wts[q] * sc[q].re;
-                }
-                for d in 0..3 {
-                    fm[(i, d * 10 + v)] = acc * dirv[d];
-                }
-            }
-            for e2 in 0..6 {
-                let sc = _ne(&coeff.view(), &pts.view(), lem[[0, e2]] as usize, lem[[1, e2]] as usize, 0);
-                let mut acc = 0.0;
-                for q in 0..npts {
-                    acc += wts[q] * sc[q].re;
-                }
-                for d in 0..3 {
-                    fm[(i, d * 10 + 4 + e2)] = acc * dirv[d];
-                }
-            }
-        }
-        let sv = qm.clone().singular_values();
-        let smax = sv.iter().cloned().fold(0.0, f64::max);
-        let smin = sv.iter().cloned().fold(f64::INFINITY, f64::min);
-        let pi_loc = qm.lu().solve(&fm).unwrap_or_else(|| DMatrix::from_element(ndof, 30, f64::NAN));
-        let base = itet * ndof * 30;
-        unsafe {
-            pcond.write(itet, smax / smin);
-            for j in 0..ndof {
-                let grow = tet_to_field[[j, itet]];
-                for d in 0..3 {
-                    for m in 0..10 {
-                        let gcol = (if m < 4 {
-                            tets[[m, itet]]
+    crate::pool::install(|| {
+        let n_tets = tets.shape()[1];
+        let ndof = dofcodes.len();
+        let (nq_e, nq_f) = (gs.len(), tb.shape()[0]);
+        let n_nodes = nodes.shape()[1] as i64;
+        let (pv, pr, pc, pcond) = (
+            SyncPtr(out_vals.as_mut_ptr()),
+            SyncPtr(out_rows.as_mut_ptr()),
+            SyncPtr(out_cols.as_mut_ptr()),
+            SyncPtr(out_cond.as_mut_ptr()),
+        );
+        (0..n_tets).into_par_iter().for_each(|itet| {
+            let verts = tet_vertices(nodes, tets, itet);
+            let (coeff, _v) = bary_coeff(&verts.view());
+            let lem = local_tet_to_edgeid(tet_to_edge, tets, edges, itet);
+            let ltm = local_tet_to_triid(tet_to_tri, tets, tris, itet);
+            let mut qm = DMatrix::<f64>::zeros(ndof, ndof);
+            let mut fm = DMatrix::<f64>::zeros(ndof, 30);
+            for i in 0..ndof {
+                let (pts, wts, dirv) = if i < 12 {
+                    let (e, wid) = (i % 6, i / 6);
+                    let (l0, l1) = (lem[[0, e]] as usize, lem[[1, e]] as usize);
+                    let dirv = [0, 1, 2].map(|c| verts[[c, l1]] - verts[[c, l0]]);
+                    let pts = Array2::from_shape_fn((3, nq_e), |(c, q)| verts[[c, l0]] + gs[q] * dirv[c]);
+                    let wts: Vec<f64> = (0..nq_e).map(|q| gws[q] * if wid == 0 { 1.0 } else { 1.0 - 2.0 * gs[q] }).collect();
+                    (pts, wts, dirv)
+                } else {
+                    let (f, wid) = ((i - 12) % 4, (i - 12) / 4);
+                    let t = [0, 1, 2].map(|k| ltm[[k, f]] as usize);
+                    let dirv = [0, 1, 2].map(|c| {
+                        if wid == 0 {
+                            verts[[c, t[1]]] - verts[[c, t[0]]]
                         } else {
-                            tet_to_edge[[m - 4, itet]] + n_nodes
-                        }) + d as i64 * n_scalar;
-                        let k = base + j * 30 + d * 10 + m;
-                        pr.write(k, grow);
-                        pc.write(k, gcol);
-                        pv.write(k, pi_loc[(j, d * 10 + m)]);
+                            verts[[c, t[2]]] - verts[[c, t[0]]]
+                        }
+                    });
+                    let pts = Array2::from_shape_fn((3, nq_f), |(c, q)| {
+                        tb[[q, 0]] * verts[[c, t[0]]] + tb[[q, 1]] * verts[[c, t[1]]] + tb[[q, 2]] * verts[[c, t[2]]]
+                    });
+                    let wts: Vec<f64> = (0..nq_f).map(|q| tw[q]).collect();
+                    (pts, wts, dirv)
+                };
+                let npts = wts.len();
+                let mut buf = Array2::<c64>::zeros((3, npts));
+                for j in 0..ndof {
+                    let (ia, ib, ic) = dof_abc(typearr, indexarr, j, &lem, &ltm);
+                    _eval_f_3d(&coeff.view(), &pts.view(), ia, ib, ic, dofcodes[j], &mut buf.view_mut());
+                    let mut acc = 0.0;
+                    for q in 0..npts {
+                        let mut s = 0.0;
+                        for c in 0..3 {
+                            s += buf[[c, q]].re * dirv[c];
+                        }
+                        acc += wts[q] * s;
+                    }
+                    qm[(i, j)] = acc;
+                }
+                for v in 0..4 {
+                    let sc = _nv(&coeff.view(), &pts.view(), v, v, 0);
+                    let mut acc = 0.0;
+                    for q in 0..npts {
+                        acc += wts[q] * sc[q].re;
+                    }
+                    for d in 0..3 {
+                        fm[(i, d * 10 + v)] = acc * dirv[d];
+                    }
+                }
+                for e2 in 0..6 {
+                    let sc = _ne(&coeff.view(), &pts.view(), lem[[0, e2]] as usize, lem[[1, e2]] as usize, 0);
+                    let mut acc = 0.0;
+                    for q in 0..npts {
+                        acc += wts[q] * sc[q].re;
+                    }
+                    for d in 0..3 {
+                        fm[(i, d * 10 + 4 + e2)] = acc * dirv[d];
                     }
                 }
             }
-        }
-    });
+            let sv = qm.clone().singular_values();
+            let smax = sv.iter().cloned().fold(0.0, f64::max);
+            let smin = sv.iter().cloned().fold(f64::INFINITY, f64::min);
+            let pi_loc = qm.lu().solve(&fm).unwrap_or_else(|| DMatrix::from_element(ndof, 30, f64::NAN));
+            let base = itet * ndof * 30;
+            unsafe {
+                pcond.write(itet, smax / smin);
+                for j in 0..ndof {
+                    let grow = tet_to_field[[j, itet]];
+                    for d in 0..3 {
+                        for m in 0..10 {
+                            let gcol = (if m < 4 {
+                                tets[[m, itet]]
+                            } else {
+                                tet_to_edge[[m - 4, itet]] + n_nodes
+                            }) + d as i64 * n_scalar;
+                            let k = base + j * 30 + d * 10 + m;
+                            pr.write(k, grow);
+                            pc.write(k, gcol);
+                            pv.write(k, pi_loc[(j, d * 10 + m)]);
+                        }
+                    }
+                }
+            }
+        });
+    })
 }
 
 fn slice_mut<'a, T: numpy::Element>(a: &'a mut PyReadwriteArray1<T>, name: &str) -> PyResult<&'a mut [T]> {

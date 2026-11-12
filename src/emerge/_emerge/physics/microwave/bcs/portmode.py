@@ -37,7 +37,9 @@ class PortMode(Saveable):
     def flip_polarity(self) -> None:
         """Flips the polarity of the port mode (180 degree phase shift)"""
         self.E_function.flip_polarity()
-        self.H_function.flip_polarity()
+        # [Written by Claude] E and H usually interpolate the same coefficient array: flipping both flipped it back.
+        if self.H_function.field is not self.E_function.field:
+            self.H_function.flip_polarity()
 
     def normalize_power(self, power: complex) -> None:
         """Applies a correction factor to normalize the power to 1W

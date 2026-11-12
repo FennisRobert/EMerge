@@ -74,7 +74,7 @@ def test():
     pecvia = model.mw.bc.PEC(vias.boundary())
 
     # Finally we run the simulation!
-    data = model.mw.run_sweep(True, 4, frequency_groups=8)
+    data = model.mw.run_sweep_distributed(n_workers=4, frequency_groups=8)
 
     freq = data.scalar.grid.freq
     S11 = data.scalar.grid.S(1,1)

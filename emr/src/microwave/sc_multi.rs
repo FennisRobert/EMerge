@@ -26,92 +26,94 @@ pub fn stratton_chu_ff_multi(
     tpout: &ArrayView2<f64>,
     k0: f64,
 ) -> (Array2<c64>, Array2<c64>) {
-    let k = ein.shape()[0] / 3;
-    let ns = ein.shape()[1];
+    crate::pool::install(|| {
+        let k = ein.shape()[0] / 3;
+        let ns = ein.shape()[1];
 
-    // surface points that matter for at least one excitation
-    let mut keep = vec![false; ns];
-    for e in 0..k {
-        let mag: Vec<f64> = (0..ns)
-            .map(|i| (0..3).map(|c| ein[[3 * e + c, i]].norm_sqr()).sum::<f64>().sqrt())
-            .collect();
-        let level = mag.iter().cloned().fold(f64::NEG_INFINITY, f64::max) * LR;
-        for i in 0..ns {
-            keep[i] |= mag[i] > level;
-        }
-    }
-    let ids: Vec<usize> = (0..ns).filter(|&i| keep[i]).collect();
-    let m = ids.len();
-
-    // n x E and n x H of every kept point and excitation: src[j * k + e] = [nxE, nxH]
-    let mut pts = Vec::with_capacity(m);
-    let mut src = Vec::with_capacity(m * k);
-    for &j in &ids {
-        pts.push([k0 * vis[[0, j]], k0 * vis[[1, j]], k0 * vis[[2, j]]]);
-        let (nx, ny, nz) = (wns[[0, j]], wns[[1, j]], wns[[2, j]]);
+        // surface points that matter for at least one excitation
+        let mut keep = vec![false; ns];
         for e in 0..k {
-            let (ex, ey, ez) = (ein[[3 * e, j]], ein[[3 * e + 1, j]], ein[[3 * e + 2, j]]);
-            let (hx, hy, hz) = (hin[[3 * e, j]], hin[[3 * e + 1, j]], hin[[3 * e + 2, j]]);
-            src.push([
-                ez * ny - ey * nz,
-                ex * nz - ez * nx,
-                ey * nx - ex * ny,
-                hz * ny - hy * nz,
-                hx * nz - hz * nx,
-                hy * nx - hx * ny,
-            ]);
+            let mag: Vec<f64> = (0..ns)
+                .map(|i| (0..3).map(|c| ein[[3 * e + c, i]].norm_sqr()).sum::<f64>().sqrt())
+                .collect();
+            let level = mag.iter().cloned().fold(f64::NEG_INFINITY, f64::max) * LR;
+            for i in 0..ns {
+                keep[i] |= mag[i] > level;
+            }
         }
-    }
+        let ids: Vec<usize> = (0..ns).filter(|&i| keep[i]).collect();
+        let m = ids.len();
 
-    let n = tpout.shape()[1];
-    let q = c64::new(0.0, -k0 / (4.0 * PI));
-    let zero = c64::new(0.0, 0.0);
-    // per direction: E of every excitation, [e][xyz]
-    let out: Vec<Vec<[c64; 3]>> = (0..n)
-        .into_par_iter()
-        .map(|p| {
+        // n x E and n x H of every kept point and excitation: src[j * k + e] = [nxE, nxH]
+        let mut pts = Vec::with_capacity(m);
+        let mut src = Vec::with_capacity(m * k);
+        for &j in &ids {
+            pts.push([k0 * vis[[0, j]], k0 * vis[[1, j]], k0 * vis[[2, j]]]);
+            let (nx, ny, nz) = (wns[[0, j]], wns[[1, j]], wns[[2, j]]);
+            for e in 0..k {
+                let (ex, ey, ez) = (ein[[3 * e, j]], ein[[3 * e + 1, j]], ein[[3 * e + 2, j]]);
+                let (hx, hy, hz) = (hin[[3 * e, j]], hin[[3 * e + 1, j]], hin[[3 * e + 2, j]]);
+                src.push([
+                    ez * ny - ey * nz,
+                    ex * nz - ez * nx,
+                    ey * nx - ex * ny,
+                    hz * ny - hy * nz,
+                    hx * nz - hz * nx,
+                    hy * nx - hx * ny,
+                ]);
+            }
+        }
+
+        let n = tpout.shape()[1];
+        let q = c64::new(0.0, -k0 / (4.0 * PI));
+        let zero = c64::new(0.0, 0.0);
+        // per direction: E of every excitation, [e][xyz]
+        let out: Vec<Vec<[c64; 3]>> = (0..n)
+            .into_par_iter()
+            .map(|p| {
+                let (st, ct) = tpout[[0, p]].sin_cos();
+                let (sp, cp) = tpout[[1, p]].sin_cos();
+                let (rx, ry, rz) = (st * cp, st * sp, ct);
+                let mut acc = vec![[zero; 6]; k];
+                for (j, x) in pts.iter().enumerate() {
+                    let g = c64::from_polar(1.0, rx * x[0] + ry * x[1] + rz * x[2]);
+                    let s = &src[j * k..(j + 1) * k];
+                    for e in 0..k {
+                        let a = &mut acc[e];
+                        for c in 0..6 {
+                            a[c] += s[e][c] * g;
+                        }
+                    }
+                }
+                acc.iter()
+                    .map(|a| {
+                        // r x (A - Z0 r x B) with A = sum g n x E, B = sum g n x H
+                        let (bx, by, bz) = (a[3], a[4], a[5]);
+                        let (rbx, rby, rbz) = (bz * ry - by * rz, bx * rz - bz * rx, by * rx - bx * ry);
+                        let (ix, iy, iz) = (a[0] - rbx * Z0, a[1] - rby * Z0, a[2] - rbz * Z0);
+                        [q * (iz * ry - iy * rz), q * (ix * rz - iz * rx), q * (iy * rx - ix * ry)]
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let mut eout = Array2::<c64>::zeros((3 * k, n));
+        let mut hout = Array2::<c64>::zeros((3 * k, n));
+        for (p, per) in out.iter().enumerate() {
             let (st, ct) = tpout[[0, p]].sin_cos();
             let (sp, cp) = tpout[[1, p]].sin_cos();
             let (rx, ry, rz) = (st * cp, st * sp, ct);
-            let mut acc = vec![[zero; 6]; k];
-            for (j, x) in pts.iter().enumerate() {
-                let g = c64::from_polar(1.0, rx * x[0] + ry * x[1] + rz * x[2]);
-                let s = &src[j * k..(j + 1) * k];
-                for e in 0..k {
-                    let a = &mut acc[e];
-                    for c in 0..6 {
-                        a[c] += s[e][c] * g;
-                    }
-                }
+            for (e, v) in per.iter().enumerate() {
+                eout[[3 * e, p]] = v[0];
+                eout[[3 * e + 1, p]] = v[1];
+                eout[[3 * e + 2, p]] = v[2];
+                hout[[3 * e, p]] = (v[2] * ry - v[1] * rz) / Z0;
+                hout[[3 * e + 1, p]] = (v[0] * rz - v[2] * rx) / Z0;
+                hout[[3 * e + 2, p]] = (v[1] * rx - v[0] * ry) / Z0;
             }
-            acc.iter()
-                .map(|a| {
-                    // r x (A - Z0 r x B) with A = sum g n x E, B = sum g n x H
-                    let (bx, by, bz) = (a[3], a[4], a[5]);
-                    let (rbx, rby, rbz) = (bz * ry - by * rz, bx * rz - bz * rx, by * rx - bx * ry);
-                    let (ix, iy, iz) = (a[0] - rbx * Z0, a[1] - rby * Z0, a[2] - rbz * Z0);
-                    [q * (iz * ry - iy * rz), q * (ix * rz - iz * rx), q * (iy * rx - ix * ry)]
-                })
-                .collect()
-        })
-        .collect();
-
-    let mut eout = Array2::<c64>::zeros((3 * k, n));
-    let mut hout = Array2::<c64>::zeros((3 * k, n));
-    for (p, per) in out.iter().enumerate() {
-        let (st, ct) = tpout[[0, p]].sin_cos();
-        let (sp, cp) = tpout[[1, p]].sin_cos();
-        let (rx, ry, rz) = (st * cp, st * sp, ct);
-        for (e, v) in per.iter().enumerate() {
-            eout[[3 * e, p]] = v[0];
-            eout[[3 * e + 1, p]] = v[1];
-            eout[[3 * e + 2, p]] = v[2];
-            hout[[3 * e, p]] = (v[2] * ry - v[1] * rz) / Z0;
-            hout[[3 * e + 1, p]] = (v[0] * rz - v[2] * rx) / Z0;
-            hout[[3 * e + 2, p]] = (v[1] * rx - v[0] * ry) / Z0;
         }
-    }
-    (eout, hout)
+        (eout, hout)
+    })
 }
 
 // [Written by Claude]

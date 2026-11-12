@@ -1931,8 +1931,11 @@ class Microwave3D(GenericPhysics3D):
         urmean = np.mean(urp[urp > 0].flatten())
         ermax = np.max(erp.flatten())
         urmax = np.max(urp.flatten())
-        ermin = np.min(erp.flatten())
-        urmin = np.min(urp.flatten())
+        # [Written by Claude] From the diagonal: the zero off-diagonal entries of an isotropic tensor are no minimum.
+        # With them ermin = 0 and the mode search started at k0/sqrt(2), where an overmoded guide (WR-90 at
+        # 40 GHz) returned two high order modes instead of TE10 and TE20.
+        ermin = np.min(erp[[0, 1, 2], [0, 1, 2], :].flatten())
+        urmin = np.min(urp[[0, 1, 2], [0, 1, 2], :].flatten())
 
         # [Written by Claude] A port face of one isotropic material (and one conductivity) has pure TE/TM/TEM modes
         # with β² = εr·μr·k0² - kc².

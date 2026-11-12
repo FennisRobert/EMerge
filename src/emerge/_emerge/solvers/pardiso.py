@@ -330,6 +330,8 @@ class PardisoInterface:
 
         # Set by `symbolic`: whether A == A.T, which selects the LDL^T path.
         self.symmetric: bool = False
+        # [Written by Claude] Scaling and weighted matching on the LDL^T path (see _configure)
+        self.matching: bool = False
         # The upper triangle handed to PARDISO on the symmetric path, and the
         # matrix it was cut from, so every solve reuses it.
         self._upper: sparse.csr_matrix | None = None
@@ -372,8 +374,12 @@ class PardisoInterface:
             self.IPARM[1] = 3    # parallel nested dissection ordering
             self.IPARM[7] = 2    # up to two iterative refinement steps
             self.IPARM[9] = 8    # pivot perturbation 1e-8
-            self.IPARM[10] = 1   # scaling        } recommended for
-            self.IPARM[12] = 1   # weighted matching } symmetric indefinite
+            # [Written by Claude] No scaling and weighted matching (IPARM[10], IPARM[12]), MKL's default for
+            # mtype 6: on the complex symmetric FEM matrices of EMerge they cost about 15 % of the factorization
+            # (413k unknowns: 25.0 s -> 21.3 s) and do not change the residual (1.9e-14 both); the pivot
+            # perturbation and the two refinement steps stay. PardisoInterface.matching = True turns them on.
+            self.IPARM[10] = 1 if self.matching else 0   # scaling
+            self.IPARM[12] = 1 if self.matching else 0   # weighted matching
             self.IPARM[20] = 1   # Bunch-Kaufman 1x1 and 2x2 pivoting
             self.IPARM[34] = 1   # zero-based indices
         else:

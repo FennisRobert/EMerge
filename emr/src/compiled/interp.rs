@@ -94,68 +94,70 @@ fn ned2_tet_interp_generic(
     tet_mapping: &ArrayView1<i64>,
     dofcodes: &ArrayView1<i64>,
 ) -> C3Arr {
-    let n_nodes = coords.shape()[1];
-    let (sort_idx, offsets, offsets_end) = group_points(tet_mapping, tetids);
-    let codes = dofcodes.to_vec();
-    let (typearry, indexarry) = parse_dofcode(&codes);
-    let nidof = codes.len();
+    crate::pool::install(|| {
+        let n_nodes = coords.shape()[1];
+        let (sort_idx, offsets, offsets_end) = group_points(tet_mapping, tetids);
+        let codes = dofcodes.to_vec();
+        let (typearry, indexarry) = parse_dofcode(&codes);
+        let nidof = codes.len();
 
-    let results: Vec<Vec<(usize, [c64; 3])>> = (0..tetids.len())
-        .into_par_iter()
-        .map(|i_iter| {
-            let itet = tetids[i_iter] as usize;
-            let (start, end) = (offsets[i_iter], offsets_end[i_iter]);
-            if start == end {
-                return vec![];
-            }
-            let (coeff, _v) = tet_coeff(nodes, tets, itet, true);
-            let g_node_ids = col(tets, itet);
-            let l_edge_ids = local_mapping(&g_node_ids, &gather_cols(edges, &col(tet_to_edge, itet)));
-            let l_tri_ids = local_mapping(&g_node_ids, &gather_cols(tris, &col(tet_to_tri, itet)));
-            let etet: Vec<c64> = (0..nidof).map(|f| solutions[tet_to_field[[f, itet]] as usize]).collect();
-            let npts = end - start;
-            let pt_coords = Array2::from_shape_fn((3, npts), |(r, p)| coords[[r, sort_idx[start + p]]]);
-            let mut f = Array2::<c64>::zeros((3, npts));
-            let mut acc = vec![[c64::new(0.0, 0.0); 3]; npts];
-            for idof in 0..nidof {
-                let (i1, j1, k1) = dof_ijk(typearry[idof], indexarry[idof], &l_edge_ids, &l_tri_ids);
-                match c {
-                    None => _eval_f_3d(&coeff.view(), &pt_coords.view(), i1, j1, k1, codes[idof], &mut f.view_mut()),
-                    Some(_) => _eval_curl_f_3d(&coeff.view(), &pt_coords.view(), i1, j1, k1, codes[idof], &mut f.view_mut()),
+        let results: Vec<Vec<(usize, [c64; 3])>> = (0..tetids.len())
+            .into_par_iter()
+            .map(|i_iter| {
+                let itet = tetids[i_iter] as usize;
+                let (start, end) = (offsets[i_iter], offsets_end[i_iter]);
+                if start == end {
+                    return vec![];
                 }
-                for (i, a) in acc.iter_mut().enumerate() {
-                    for r in 0..3 {
-                        a[r] += match c {
-                            None => f[[r, i]] * etet[idof],
-                            Some(cc) => f[[r, i]] * cc[itet] * etet[idof],
-                        };
+                let (coeff, _v) = tet_coeff(nodes, tets, itet, true);
+                let g_node_ids = col(tets, itet);
+                let l_edge_ids = local_mapping(&g_node_ids, &gather_cols(edges, &col(tet_to_edge, itet)));
+                let l_tri_ids = local_mapping(&g_node_ids, &gather_cols(tris, &col(tet_to_tri, itet)));
+                let etet: Vec<c64> = (0..nidof).map(|f| solutions[tet_to_field[[f, itet]] as usize]).collect();
+                let npts = end - start;
+                let pt_coords = Array2::from_shape_fn((3, npts), |(r, p)| coords[[r, sort_idx[start + p]]]);
+                let mut f = Array2::<c64>::zeros((3, npts));
+                let mut acc = vec![[c64::new(0.0, 0.0); 3]; npts];
+                for idof in 0..nidof {
+                    let (i1, j1, k1) = dof_ijk(typearry[idof], indexarry[idof], &l_edge_ids, &l_tri_ids);
+                    match c {
+                        None => _eval_f_3d(&coeff.view(), &pt_coords.view(), i1, j1, k1, codes[idof], &mut f.view_mut()),
+                        Some(_) => _eval_curl_f_3d(&coeff.view(), &pt_coords.view(), i1, j1, k1, codes[idof], &mut f.view_mut()),
+                    }
+                    for (i, a) in acc.iter_mut().enumerate() {
+                        for r in 0..3 {
+                            a[r] += match c {
+                                None => f[[r, i]] * etet[idof],
+                                Some(cc) => f[[r, i]] * cc[itet] * etet[idof],
+                            };
+                        }
                     }
                 }
-            }
-            acc.into_iter().enumerate().map(|(i, a)| (sort_idx[start + i], a)).collect()
-        })
-        .collect();
+                acc.into_iter().enumerate().map(|(i, a)| (sort_idx[start + i], a)).collect()
+            })
+            .collect();
 
-    let mut ex = Array1::<c64>::zeros(n_nodes);
-    let mut ey = Array1::<c64>::zeros(n_nodes);
-    let mut ez = Array1::<c64>::zeros(n_nodes);
-    let mut setnan = vec![false; n_nodes];
-    for tet_res in results {
-        for (idx, a) in tet_res {
-            ex[idx] += a[0];
-            ey[idx] += a[1];
-            ez[idx] += a[2];
-            setnan[idx] = true;
+        let mut ex = Array1::<c64>::zeros(n_nodes);
+        let mut ey = Array1::<c64>::zeros(n_nodes);
+        let mut ez = Array1::<c64>::zeros(n_nodes);
+        let mut setnan = vec![false; n_nodes];
+        for tet_res in results {
+            for (idx, a) in tet_res {
+                ex[idx] += a[0];
+                ey[idx] += a[1];
+                ez[idx] += a[2];
+                setnan[idx] = true;
+            }
         }
-    }
-    for i in 0..n_nodes {
-        if !setnan[i] {
-            ex[i] = NAN_C;
-            ey[i] = NAN_C;
-            ez[i] = NAN_C;
+        for i in 0..n_nodes {
+            if !setnan[i] {
+                ex[i] = NAN_C;
+                ey[i] = NAN_C;
+                ez[i] = NAN_C;
+            }
         }
-    }
-    (ex, ey, ez)
+        (ex, ey, ez)
+    })
 }
 
 /// Nedelec-2 tetrahedral interpolation of the field at coords.
@@ -249,40 +251,42 @@ pub fn leg2_tet_interp(
     tetids: &ArrayView1<i64>,
     tet_mapping: &ArrayView1<i64>,
 ) -> Array1<f64> {
-    let n_nodes = coords.shape()[1];
-    let (sort_idx, offsets, offsets_end) = group_points(tet_mapping, tetids);
-    let results: Vec<Vec<(usize, f64)>> = (0..tetids.len())
-        .into_par_iter()
-        .map(|i_iter| {
-            let itet = tetids[i_iter] as usize;
-            let (start, end) = (offsets[i_iter], offsets_end[i_iter]);
-            if start == end {
-                return vec![];
-            }
-            let ([a_s, b_s, c_s, d_s], inv6v) = leg_tet_data(nodes, tets, itet);
-            let tloc: Vec<f64> = (0..10).map(|f| solutions[tet_to_field[[f, itet]] as usize]).collect();
-            (start..end)
-                .map(|i| {
-                    let idx = sort_idx[i];
-                    let (x, y, z) = (coords[[0, idx]], coords[[1, idx]], coords[[2, idx]]);
-                    let ls = [0, 1, 2, 3].map(|m| (a_s[m] + b_s[m] * x + c_s[m] * y + d_s[m] * z) * inv6v);
-                    let mut val = tloc[0] * ls[0] * (2.0 * ls[0] - 1.0)
-                        + tloc[1] * ls[1] * (2.0 * ls[1] - 1.0)
-                        + tloc[2] * ls[2] * (2.0 * ls[2] - 1.0)
-                        + tloc[3] * ls[3] * (2.0 * ls[3] - 1.0);
-                    for ie in 0..6 {
-                        val += tloc[4 + ie] * 4.0 * ls[LEG_EDGES[0][ie]] * ls[LEG_EDGES[1][ie]];
-                    }
-                    (idx, val)
-                })
-                .collect()
-        })
-        .collect();
-    let mut result = Array1::<f64>::from_elem(n_nodes, f64::NAN);
-    for (idx, val) in results.into_iter().flatten() {
-        result[idx] = val;
-    }
-    result
+    crate::pool::install(|| {
+        let n_nodes = coords.shape()[1];
+        let (sort_idx, offsets, offsets_end) = group_points(tet_mapping, tetids);
+        let results: Vec<Vec<(usize, f64)>> = (0..tetids.len())
+            .into_par_iter()
+            .map(|i_iter| {
+                let itet = tetids[i_iter] as usize;
+                let (start, end) = (offsets[i_iter], offsets_end[i_iter]);
+                if start == end {
+                    return vec![];
+                }
+                let ([a_s, b_s, c_s, d_s], inv6v) = leg_tet_data(nodes, tets, itet);
+                let tloc: Vec<f64> = (0..10).map(|f| solutions[tet_to_field[[f, itet]] as usize]).collect();
+                (start..end)
+                    .map(|i| {
+                        let idx = sort_idx[i];
+                        let (x, y, z) = (coords[[0, idx]], coords[[1, idx]], coords[[2, idx]]);
+                        let ls = [0, 1, 2, 3].map(|m| (a_s[m] + b_s[m] * x + c_s[m] * y + d_s[m] * z) * inv6v);
+                        let mut val = tloc[0] * ls[0] * (2.0 * ls[0] - 1.0)
+                            + tloc[1] * ls[1] * (2.0 * ls[1] - 1.0)
+                            + tloc[2] * ls[2] * (2.0 * ls[2] - 1.0)
+                            + tloc[3] * ls[3] * (2.0 * ls[3] - 1.0);
+                        for ie in 0..6 {
+                            val += tloc[4 + ie] * 4.0 * ls[LEG_EDGES[0][ie]] * ls[LEG_EDGES[1][ie]];
+                        }
+                        (idx, val)
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut result = Array1::<f64>::from_elem(n_nodes, f64::NAN);
+        for (idx, val) in results.into_iter().flatten() {
+            result[idx] = val;
+        }
+        result
+    })
 }
 
 /// Lagrange-2 tetrahedral gradient interpolation (dT/dx, dT/dy, dT/dz) at coords.
@@ -297,55 +301,57 @@ pub fn leg2_tet_interp_grad(
     tetids: &ArrayView1<i64>,
     tet_mapping: &ArrayView1<i64>,
 ) -> F3Arr {
-    let n_nodes = coords.shape()[1];
-    let (sort_idx, offsets, offsets_end) = group_points(tet_mapping, tetids);
-    let results: Vec<Vec<(usize, [f64; 3])>> = (0..tetids.len())
-        .into_par_iter()
-        .map(|i_iter| {
-            let itet = tetids[i_iter] as usize;
-            let (start, end) = (offsets[i_iter], offsets_end[i_iter]);
-            if start == end {
-                return vec![];
-            }
-            let ([a_s, b_s, c_s, d_s], inv6v) = leg_tet_data(nodes, tets, itet);
-            let gb = b_s.map(|v| v * inv6v);
-            let gc = c_s.map(|v| v * inv6v);
-            let gd = d_s.map(|v| v * inv6v);
-            let tloc: Vec<f64> = (0..10).map(|f| solutions[tet_to_field[[f, itet]] as usize]).collect();
-            (start..end)
-                .map(|i| {
-                    let idx = sort_idx[i];
-                    let (x, y, z) = (coords[[0, idx]], coords[[1, idx]], coords[[2, idx]]);
-                    let ls = [0, 1, 2, 3].map(|m| (a_s[m] + b_s[m] * x + c_s[m] * y + d_s[m] * z) * inv6v);
-                    let (mut vx, mut vy, mut vz) = (0.0, 0.0, 0.0);
-                    for iv in 0..4 {
-                        let q = (4.0 * ls[iv] - 1.0) * tloc[iv];
-                        vx += q * gb[iv];
-                        vy += q * gc[iv];
-                        vz += q * gd[iv];
-                    }
-                    for ie in 0..6 {
-                        let (ei, ej) = (LEG_EDGES[0][ie], LEG_EDGES[1][ie]);
-                        let t_e = tloc[4 + ie];
-                        let (li, lj) = (ls[ei], ls[ej]);
-                        vx += t_e * 4.0 * (lj * gb[ei] + li * gb[ej]);
-                        vy += t_e * 4.0 * (lj * gc[ei] + li * gc[ej]);
-                        vz += t_e * 4.0 * (lj * gd[ei] + li * gd[ej]);
-                    }
-                    (idx, [vx, vy, vz])
-                })
-                .collect()
-        })
-        .collect();
-    let mut gx = Array1::<f64>::from_elem(n_nodes, f64::NAN);
-    let mut gy = Array1::<f64>::from_elem(n_nodes, f64::NAN);
-    let mut gz = Array1::<f64>::from_elem(n_nodes, f64::NAN);
-    for (idx, g) in results.into_iter().flatten() {
-        gx[idx] = g[0];
-        gy[idx] = g[1];
-        gz[idx] = g[2];
-    }
-    (gx, gy, gz)
+    crate::pool::install(|| {
+        let n_nodes = coords.shape()[1];
+        let (sort_idx, offsets, offsets_end) = group_points(tet_mapping, tetids);
+        let results: Vec<Vec<(usize, [f64; 3])>> = (0..tetids.len())
+            .into_par_iter()
+            .map(|i_iter| {
+                let itet = tetids[i_iter] as usize;
+                let (start, end) = (offsets[i_iter], offsets_end[i_iter]);
+                if start == end {
+                    return vec![];
+                }
+                let ([a_s, b_s, c_s, d_s], inv6v) = leg_tet_data(nodes, tets, itet);
+                let gb = b_s.map(|v| v * inv6v);
+                let gc = c_s.map(|v| v * inv6v);
+                let gd = d_s.map(|v| v * inv6v);
+                let tloc: Vec<f64> = (0..10).map(|f| solutions[tet_to_field[[f, itet]] as usize]).collect();
+                (start..end)
+                    .map(|i| {
+                        let idx = sort_idx[i];
+                        let (x, y, z) = (coords[[0, idx]], coords[[1, idx]], coords[[2, idx]]);
+                        let ls = [0, 1, 2, 3].map(|m| (a_s[m] + b_s[m] * x + c_s[m] * y + d_s[m] * z) * inv6v);
+                        let (mut vx, mut vy, mut vz) = (0.0, 0.0, 0.0);
+                        for iv in 0..4 {
+                            let q = (4.0 * ls[iv] - 1.0) * tloc[iv];
+                            vx += q * gb[iv];
+                            vy += q * gc[iv];
+                            vz += q * gd[iv];
+                        }
+                        for ie in 0..6 {
+                            let (ei, ej) = (LEG_EDGES[0][ie], LEG_EDGES[1][ie]);
+                            let t_e = tloc[4 + ie];
+                            let (li, lj) = (ls[ei], ls[ej]);
+                            vx += t_e * 4.0 * (lj * gb[ei] + li * gb[ej]);
+                            vy += t_e * 4.0 * (lj * gc[ei] + li * gc[ej]);
+                            vz += t_e * 4.0 * (lj * gd[ei] + li * gd[ej]);
+                        }
+                        (idx, [vx, vy, vz])
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut gx = Array1::<f64>::from_elem(n_nodes, f64::NAN);
+        let mut gy = Array1::<f64>::from_elem(n_nodes, f64::NAN);
+        let mut gz = Array1::<f64>::from_elem(n_nodes, f64::NAN);
+        for (idx, g) in results.into_iter().flatten() {
+            gx[idx] = g[0];
+            gy[idx] = g[1];
+            gz[idx] = g[2];
+        }
+        (gx, gy, gz)
+    })
 }
 
 /// Triangle data shared by the 2D interpolators: points inside triangle itri and its coefficient matrix.
@@ -417,49 +423,51 @@ pub fn ned2_tri_interp_full(
     tri_to_field: &ArrayView2<i64>,
     dofcodes: &ArrayView1<i64>,
 ) -> C3Arr {
-    let nodes = nodes.slice(s![..2, ..]);
-    let codes = dofcodes.to_vec();
-    let (typearry, indexarry) = parse_dofcode(&codes);
-    let nidof = codes.len();
-    let results: Vec<_> = (0..tris.shape()[1])
-        .into_par_iter()
-        .map(|itri| {
-            let (inside, ci, coeff) = tri_inside(coords, &nodes, tris, itri)?;
-            let etri: Vec<c64> = (0..tri_to_field.shape()[0])
-                .map(|f| solutions[tri_to_field[[f, itri]] as usize])
-                .collect();
-            let n = inside.len();
-            let (mut ex, mut ey, mut ez) = (
-                vec![c64::new(0.0, 0.0); n],
-                vec![c64::new(0.0, 0.0); n],
-                vec![c64::new(0.0, 0.0); n],
-            );
-            let mut evec = Array2::<c64>::zeros((2, n));
-            for idof in 0..(nidof + 6) {
-                if idof < nidof {
-                    let (i, j, k) = tri_dof_ijk(typearry[idof], indexarry[idof]);
-                    _eval_f_2d(&coeff.view(), &ci.view(), i, j, k, codes[idof], &mut evec.view_mut());
-                    for p in 0..n {
-                        ex[p] += etri[idof] * evec[[0, p]];
-                        ey[p] += etri[idof] * evec[[1, p]];
-                    }
-                } else {
-                    let ileg = idof - nidof;
-                    let (i, j) = (IVEC_LEG[ileg], JVEC_LEG[ileg]);
-                    let ezc = if ileg < 3 {
-                        _nv_tri(&coeff.view(), &ci.view(), i, j, 0)
+    crate::pool::install(|| {
+        let nodes = nodes.slice(s![..2, ..]);
+        let codes = dofcodes.to_vec();
+        let (typearry, indexarry) = parse_dofcode(&codes);
+        let nidof = codes.len();
+        let results: Vec<_> = (0..tris.shape()[1])
+            .into_par_iter()
+            .map(|itri| {
+                let (inside, ci, coeff) = tri_inside(coords, &nodes, tris, itri)?;
+                let etri: Vec<c64> = (0..tri_to_field.shape()[0])
+                    .map(|f| solutions[tri_to_field[[f, itri]] as usize])
+                    .collect();
+                let n = inside.len();
+                let (mut ex, mut ey, mut ez) = (
+                    vec![c64::new(0.0, 0.0); n],
+                    vec![c64::new(0.0, 0.0); n],
+                    vec![c64::new(0.0, 0.0); n],
+                );
+                let mut evec = Array2::<c64>::zeros((2, n));
+                for idof in 0..(nidof + 6) {
+                    if idof < nidof {
+                        let (i, j, k) = tri_dof_ijk(typearry[idof], indexarry[idof]);
+                        _eval_f_2d(&coeff.view(), &ci.view(), i, j, k, codes[idof], &mut evec.view_mut());
+                        for p in 0..n {
+                            ex[p] += etri[idof] * evec[[0, p]];
+                            ey[p] += etri[idof] * evec[[1, p]];
+                        }
                     } else {
-                        _ne_tri(&coeff.view(), &ci.view(), i, j, 0)
-                    };
-                    for p in 0..n {
-                        ez[p] += etri[idof] * ezc[p];
+                        let ileg = idof - nidof;
+                        let (i, j) = (IVEC_LEG[ileg], JVEC_LEG[ileg]);
+                        let ezc = if ileg < 3 {
+                            _nv_tri(&coeff.view(), &ci.view(), i, j, 0)
+                        } else {
+                            _ne_tri(&coeff.view(), &ci.view(), i, j, 0)
+                        };
+                        for p in 0..n {
+                            ez[p] += etri[idof] * ezc[p];
+                        }
                     }
                 }
-            }
-            Some((inside, (0..n).map(|p| [ex[p], ey[p], ez[p]]).collect()))
-        })
-        .collect();
-    apply_tri_results(results, coords.shape()[1])
+                Some((inside, (0..n).map(|p| [ex[p], ey[p], ez[p]]).collect()))
+            })
+            .collect();
+        apply_tri_results(results, coords.shape()[1])
+    })
 }
 
 /// Gradient of the Lagrange longitudinal component of a Nedelec-Lagrange triangle solution.
@@ -471,34 +479,36 @@ pub fn ned2_tri_interp_grad(
     tri_to_field: &ArrayView2<i64>,
     dofcodes: &ArrayView1<i64>,
 ) -> (Array1<c64>, Array1<c64>) {
-    let nodes = nodes.slice(s![..2, ..]);
-    let nidof = dofcodes.len();
-    let results: Vec<_> = (0..tris.shape()[1])
-        .into_par_iter()
-        .map(|itri| {
-            let (inside, ci, coeff) = tri_inside(coords, &nodes, tris, itri)?;
-            let etri: Vec<c64> = (0..tri_to_field.shape()[0])
-                .map(|f| solutions[tri_to_field[[f, itri]] as usize])
-                .collect();
-            let n = inside.len();
-            let (mut ex, mut ey) = (vec![c64::new(0.0, 0.0); n], vec![c64::new(0.0, 0.0); n]);
-            for idof in 0..6 {
-                let (i, j) = (IVEC_LEG[idof], JVEC_LEG[idof]);
-                let evec = if idof < 3 {
-                    _nv_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
-                } else {
-                    _ne_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
-                };
-                for p in 0..n {
-                    ex[p] += etri[idof + nidof] * evec[[0, p]];
-                    ey[p] += etri[idof + nidof] * evec[[1, p]];
+    crate::pool::install(|| {
+        let nodes = nodes.slice(s![..2, ..]);
+        let nidof = dofcodes.len();
+        let results: Vec<_> = (0..tris.shape()[1])
+            .into_par_iter()
+            .map(|itri| {
+                let (inside, ci, coeff) = tri_inside(coords, &nodes, tris, itri)?;
+                let etri: Vec<c64> = (0..tri_to_field.shape()[0])
+                    .map(|f| solutions[tri_to_field[[f, itri]] as usize])
+                    .collect();
+                let n = inside.len();
+                let (mut ex, mut ey) = (vec![c64::new(0.0, 0.0); n], vec![c64::new(0.0, 0.0); n]);
+                for idof in 0..6 {
+                    let (i, j) = (IVEC_LEG[idof], JVEC_LEG[idof]);
+                    let evec = if idof < 3 {
+                        _nv_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
+                    } else {
+                        _ne_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
+                    };
+                    for p in 0..n {
+                        ex[p] += etri[idof + nidof] * evec[[0, p]];
+                        ey[p] += etri[idof + nidof] * evec[[1, p]];
+                    }
                 }
-            }
-            Some((inside, (0..n).map(|p| [ex[p], ey[p], NAN_C]).collect()))
-        })
-        .collect();
-    let (ex, ey, _) = apply_tri_results(results, coords.shape()[1]);
-    (ex, ey)
+                Some((inside, (0..n).map(|p| [ex[p], ey[p], NAN_C]).collect()))
+            })
+            .collect();
+        let (ex, ey, _) = apply_tri_results(results, coords.shape()[1]);
+        (ex, ey)
+    })
 }
 
 /// Curl of a Nedelec-Lagrange triangle mode with propagation constant beta, multiplied by the local-frame tensor diadic per triangle.
@@ -513,60 +523,62 @@ pub fn ned2_tri_interp_curl(
     beta: c64,
     dofcodes: &ArrayView1<i64>,
 ) -> C3Arr {
-    let nodes = nodes.slice(s![..2, ..]);
-    let jb = -c64::new(0.0, 1.0) * beta;
-    let codes = dofcodes.to_vec();
-    let (typearry, indexarry) = parse_dofcode(&codes);
-    let nidof = codes.len();
-    let results: Vec<_> = (0..tris.shape()[1])
-        .into_par_iter()
-        .map(|itri| {
-            let (inside, ci, coeff) = tri_inside(coords, &nodes, tris, itri)?;
-            let etri: Vec<c64> = (0..tri_to_field.shape()[0])
-                .map(|f| solutions[tri_to_field[[f, itri]] as usize])
-                .collect();
-            let n = inside.len();
-            let zero = c64::new(0.0, 0.0);
-            let (mut ex, mut ey, mut ez) = (vec![zero; n], vec![zero; n], vec![zero; n]);
-            let mut evec = Array2::<c64>::zeros((2, n));
-            let mut evecz = Array1::<c64>::zeros(n);
-            for idof in 0..(nidof + 6) {
-                if idof < nidof {
-                    let (i, j, k) = tri_dof_ijk(typearry[idof], indexarry[idof]);
-                    _eval_f_2d(&coeff.view(), &ci.view(), i, j, k, codes[idof], &mut evec.view_mut());
-                    _eval_curl_f_2d(&coeff.view(), &ci.view(), i, j, k, codes[idof], &mut evecz.view_mut());
-                    for p in 0..n {
-                        ex[p] += -jb * etri[idof] * evec[[1, p]];
-                        ey[p] += jb * etri[idof] * evec[[0, p]];
-                        ez[p] += etri[idof] * evecz[p];
-                    }
-                } else {
-                    let ileg = idof - nidof;
-                    let (i, j) = (IVEC_LEG[ileg], JVEC_LEG[ileg]);
-                    let g = if ileg < 3 {
-                        _nv_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
+    crate::pool::install(|| {
+        let nodes = nodes.slice(s![..2, ..]);
+        let jb = -c64::new(0.0, 1.0) * beta;
+        let codes = dofcodes.to_vec();
+        let (typearry, indexarry) = parse_dofcode(&codes);
+        let nidof = codes.len();
+        let results: Vec<_> = (0..tris.shape()[1])
+            .into_par_iter()
+            .map(|itri| {
+                let (inside, ci, coeff) = tri_inside(coords, &nodes, tris, itri)?;
+                let etri: Vec<c64> = (0..tri_to_field.shape()[0])
+                    .map(|f| solutions[tri_to_field[[f, itri]] as usize])
+                    .collect();
+                let n = inside.len();
+                let zero = c64::new(0.0, 0.0);
+                let (mut ex, mut ey, mut ez) = (vec![zero; n], vec![zero; n], vec![zero; n]);
+                let mut evec = Array2::<c64>::zeros((2, n));
+                let mut evecz = Array1::<c64>::zeros(n);
+                for idof in 0..(nidof + 6) {
+                    if idof < nidof {
+                        let (i, j, k) = tri_dof_ijk(typearry[idof], indexarry[idof]);
+                        _eval_f_2d(&coeff.view(), &ci.view(), i, j, k, codes[idof], &mut evec.view_mut());
+                        _eval_curl_f_2d(&coeff.view(), &ci.view(), i, j, k, codes[idof], &mut evecz.view_mut());
+                        for p in 0..n {
+                            ex[p] += -jb * etri[idof] * evec[[1, p]];
+                            ey[p] += jb * etri[idof] * evec[[0, p]];
+                            ez[p] += etri[idof] * evecz[p];
+                        }
                     } else {
-                        _ne_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
-                    };
-                    for p in 0..n {
-                        ex[p] += etri[idof] * g[[1, p]];
-                        ey[p] += -etri[idof] * g[[0, p]];
+                        let ileg = idof - nidof;
+                        let (i, j) = (IVEC_LEG[ileg], JVEC_LEG[ileg]);
+                        let g = if ileg < 3 {
+                            _nv_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
+                        } else {
+                            _ne_grad_tri(&coeff.view(), &ci.view(), i, j, 0)
+                        };
+                        for p in 0..n {
+                            ex[p] += etri[idof] * g[[1, p]];
+                            ey[p] += -etri[idof] * g[[0, p]];
+                        }
                     }
                 }
-            }
-            let d = |r: usize, c: usize| diadic[[r, c, itri]];
-            Some((
-                inside,
-                (0..n)
-                    .map(|p| {
-                        let v = [ex[p], ey[p], ez[p]];
-                        [0, 1, 2].map(|r| d(r, 0) * v[0] + d(r, 1) * v[1] + d(r, 2) * v[2])
-                    })
-                    .collect(),
-            ))
-        })
-        .collect();
-    apply_tri_results(results, coords.shape()[1])
+                let d = |r: usize, c: usize| diadic[[r, c, itri]];
+                Some((
+                    inside,
+                    (0..n)
+                        .map(|p| {
+                            let v = [ex[p], ey[p], ez[p]];
+                            [0, 1, 2].map(|r| d(r, 0) * v[0] + d(r, 1) * v[1] + d(r, 2) * v[2])
+                        })
+                        .collect(),
+                ))
+            })
+            .collect();
+        apply_tri_results(results, coords.shape()[1])
+    })
 }
 
 /// Assigns value[itet] to every coordinate inside each tet of tetids (zero elsewhere).

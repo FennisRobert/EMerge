@@ -141,32 +141,34 @@ pub fn _matrix_builder(
     k0: f64,
     dofcodes: &ArrayView1<i64>,
 ) -> CooC {
-    let codes = dofcodes.to_vec();
-    let n = codes.len() + 6;
-    let nsq = n * n;
-    let nnz = tris.shape()[1] * nsq;
-    let mut rows = vec![0i64; nnz];
-    let mut cols = vec![0i64; nnz];
-    let mut data_e = vec![c64::new(0.0, 0.0); nnz];
-    let mut data_b = vec![c64::new(0.0, 0.0); nnz];
-    rows.par_chunks_mut(nsq)
-        .zip(cols.par_chunks_mut(nsq))
-        .zip(data_e.par_chunks_mut(nsq))
-        .zip(data_b.par_chunks_mut(nsq))
-        .enumerate()
-        .for_each(|(itri, (((r, c), de), db))| {
-            let urt = mat3_at(ur, itri);
-            let ert = mat3_at(er, itri);
-            let tri_nodes = Array2::from_shape_fn((nodes.shape()[0], 3), |(rr, v)| nodes[[rr, tris[[v, itri]] as usize]]);
-            let (esub, bsub) = generalized_matrix_gq(&tri_nodes.view(), &matinv(&urt), &ert, k0, &codes);
-            let indices: Vec<i64> = (0..n).map(|f| tri_to_field[[f, itri]]).collect();
-            write_block_rowcol(&indices, r, c);
-            for (k, (e, b)) in esub.iter().zip(bsub.iter()).enumerate() {
-                de[k] = *e;
-                db[k] = *b;
-            }
-        });
-    (Array1::from(data_e), Array1::from(data_b), Array1::from(rows), Array1::from(cols))
+    crate::pool::install(|| {
+        let codes = dofcodes.to_vec();
+        let n = codes.len() + 6;
+        let nsq = n * n;
+        let nnz = tris.shape()[1] * nsq;
+        let mut rows = vec![0i64; nnz];
+        let mut cols = vec![0i64; nnz];
+        let mut data_e = vec![c64::new(0.0, 0.0); nnz];
+        let mut data_b = vec![c64::new(0.0, 0.0); nnz];
+        rows.par_chunks_mut(nsq)
+            .zip(cols.par_chunks_mut(nsq))
+            .zip(data_e.par_chunks_mut(nsq))
+            .zip(data_b.par_chunks_mut(nsq))
+            .enumerate()
+            .for_each(|(itri, (((r, c), de), db))| {
+                let urt = mat3_at(ur, itri);
+                let ert = mat3_at(er, itri);
+                let tri_nodes = Array2::from_shape_fn((nodes.shape()[0], 3), |(rr, v)| nodes[[rr, tris[[v, itri]] as usize]]);
+                let (esub, bsub) = generalized_matrix_gq(&tri_nodes.view(), &matinv(&urt), &ert, k0, &codes);
+                let indices: Vec<i64> = (0..n).map(|f| tri_to_field[[f, itri]]).collect();
+                write_block_rowcol(&indices, r, c);
+                for (k, (e, b)) in esub.iter().zip(bsub.iter()).enumerate() {
+                    de[k] = *e;
+                    db[k] = *b;
+                }
+            });
+        (Array1::from(data_e), Array1::from(data_b), Array1::from(rows), Array1::from(cols))
+    })
 }
 
 #[pyfunction]

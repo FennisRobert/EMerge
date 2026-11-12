@@ -30,8 +30,8 @@ airbox_length = 6 * cm  # airbox length
 airbox_width = 15 * cm  # airbox width
 
 # --- Create simulation object -------------------------------------------
-model = em.Simulation("ConicalHornAntenna", loglevel='DEBUG')
-model.check_version("3.0.0")  # Checks version compatibility
+model = em.Simulation("ConicalHornAntenna")
+model.check_version("3.0.5")  # Checks version compatibility
 
 # --- Feed geometry -------------------------------------------------------
 feed = em.geo.Cylinder(waveguide_radius, waveguide_length, cs=em.YZPLANE.cs())
@@ -87,8 +87,8 @@ model.view(
 model.view(selections=[air.face(no="left")], plot_mesh=True)
 
 # --- Boundary conditions ------------------------------------------------
-port1 = model.mw.bc.ModalPort(feed.front, 1)  # excite port at waveguide
-port1.align_modes(em.ZAX, em.ZAX, em.ZAX)
+port1 = model.mw.bc.ModalPort(feed.front, 1, number_of_modes=2)  # excite port at waveguide
+port1.align_modes(em.ZAX, em.YAX)
 radiation_boundary = air.boundary(exclude="left")  # open faces
 abc = model.mw.bc.AbsorbingBoundary(radiation_boundary)
 

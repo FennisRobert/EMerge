@@ -113,7 +113,7 @@ def test():
     d._reset()
 
     # --- Run frequency-domain solver ----------------------------------------
-    data = model.mw.run_sweep(parallel=True, n_workers=4, frequency_groups=8)
+    data = model.mw.run_sweep_distributed(n_workers=4, frequency_groups=8)
 
     # --- Extract and plot S-parameters ---------------------------------------
     f = data.scalar.grid.freq                  # frequency axis

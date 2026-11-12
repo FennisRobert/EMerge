@@ -20,7 +20,7 @@ import numpy as np
 import os
 from typing import Hashable
 from scipy.sparse import csc_matrix, save_npz, load_npz, issparse  # type: ignore
-from ...solver import SolveReport, MatrixType
+from ...solvers import SolveReport, MatrixType
 from loguru import logger
 from ...precon_data import PreconData
 class SimJob:

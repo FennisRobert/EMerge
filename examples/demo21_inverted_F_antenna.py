@@ -38,7 +38,7 @@ f2 = 3e9  # stop frequency
 
 # --- Create simulation object -------------------------------------------
 model = em.Simulation("IFA")
-model.check_version("3.0.0")  # Checks version compatibility.
+model.check_version("3.0.5")  # Checks version compatibility.
 
 # --- Define geometry primitives -----------------------------------------
 # Substrate block, thickness in Z (negative down)
@@ -140,7 +140,7 @@ abc = model.mw.bc.AbsorbingBoundary(boundary_selection)
 # --- Run frequency-domain solver ----------------------------------------
 model.view(bc=True)
 model.view(plot_mesh=True, volume_mesh=True)
-model.adaptive_mesh_refinement(min_refined_passes=2, max_steps=10, show_mesh=True)
+model.adaptive_mesh_refinement(min_refined_passes=2, max_steps=10)
 model.view(plot_mesh=True, volume_mesh=True)
 
 data = model.mw.run_sweep()

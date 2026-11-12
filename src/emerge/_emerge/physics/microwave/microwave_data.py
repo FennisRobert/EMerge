@@ -28,7 +28,7 @@ from .adaptive_sweep import RationalModel
 from ...cs import Axis, _parse_axis
 from ...selection import FaceSelection, DomainSelection
 from ...geometry import GeoSurface
-from ...mesh3d import Mesh3D, SurfaceMesh
+from ...mesh3d import Mesh3D, SurfaceMesh, _MISSING_ID
 from ...const import MU0
 from ...coord import Line
 from emsutil.emdata import EHField, EHFieldFF, DataStructure
@@ -238,6 +238,47 @@ def renormalise_s(
         )
 
     return S0
+
+
+# [Written by Claude]
+def _embed_network(
+    Sp: np.ndarray,
+    Z0: np.ndarray,
+    freq: np.ndarray | float,
+    td,
+    n_pos: list[int],
+    m_pos: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Connect the network of a Touchstone file to the ports m_pos of the S-matrices Sp.
+
+    Sp has the shape (..., N, N) with any leading axes (frequency, sweep parameters), Z0 the shape (..., N) and
+    freq the shape (...). The file is renormalised from its reference impedance to the impedance of each
+    port it connects to, because the S-parameters of the model are normalised to the port impedances.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: The S-matrices of the ports n_pos with the shape (..., n, n) and the
+            coupling from the incident waves at n_pos to the waves into the ports m_pos with the shape (..., m, n).
+    """
+    lead = Sp.shape[:-2]
+    M = len(m_pos)
+    f = np.broadcast_to(np.asarray(freq, dtype=float), lead).ravel()
+    Zm = np.broadcast_to(np.asarray(Z0, dtype=np.complex128), lead + (Sp.shape[-1],))[..., m_pos].reshape(-1, M)
+    if not np.all(np.isfinite(Zm)) or np.any(np.real(Zm) == 0):
+        raise ValueError(
+            "The ports to embed on need a reference impedance with a non-zero real part, got "
+            f"{np.unique(Zm)}."
+        )
+    S_ext = td.interp_S(f)
+    S_ext = renormalise_s(S_ext, td.refimp, Zm).reshape(lead + (M, M))
+
+    S_nn = Sp[..., n_pos, :][..., n_pos]
+    S_nm = Sp[..., n_pos, :][..., m_pos]
+    S_mn = Sp[..., m_pos, :][..., n_pos]
+    S_mm = Sp[..., m_pos, :][..., m_pos]
+
+    term = np.linalg.inv(np.eye(M, dtype=np.complex128) - S_mm @ S_ext)
+    coupling = S_ext @ term @ S_mn
+    return S_nn + S_nm @ coupling, coupling
 
 
 def generate_ndim(
@@ -696,10 +737,12 @@ class MWField(Saveable):
         return out
 
     def set_field_vector(self) -> None:
-        """Defines the default excitation coefficients for the current dataset as an excitation of only port 1."""
-        # Freq sweep with ports
+        """Defines the default excitation coefficients for the current dataset as an excitation of only the first
+        port mode."""
+        # Freq sweep with ports. [Written by Claude] The S-matrix index, not the port number: for a port with several
+        # modes the port number (1) is no field, its modes are (1.1, 1.2, ...).
         if len(self.port_modes) > 0:
-            self.excite_port(self.port_modes[0].port_number)
+            self.excite_port(self.port_modes[0].smat_index)
         elif len(self.background_fields) > 0:
             self.set_backgroundfield(self.background_fields[0])
 
@@ -708,10 +751,22 @@ class MWField(Saveable):
     ) -> None:
         """Excite a single port provided by a given port number
 
+        For a port with several modes, give the S-matrix index of the mode, e.g. excite_port(1.2) for the second
+        mode of port 1.
+
         Args:
-            number (int | float): The port number to excite
+            number (int | float): The port number (S-matrix index) to excite
             excitation (complex, optional): The port excitation. Defaults to 1.0 + 0.0j
+
+        Raises:
+            KeyError: If this field has no port (mode) with this number
         """
+        # [Written by Claude] An unknown number used to give a zero field
+        if number not in self._fields:
+            indices = [pm.smat_index for pm in self.port_modes]
+            modes = [pm.smat_index for pm in self.port_modes if pm.port_number == number]
+            hint = f" Port {number} has the modes {modes}, e.g. excite_port({modes[0]})." if modes else ""
+            raise KeyError(f"There is no port mode {number} in this field.{hint} Port modes: {indices}.")
         if self._active_ports is not None and number not in self._active_ports:
             raise KeyError(
                 f"Port {number} has been embedded via embed_external_component "
@@ -1560,24 +1615,19 @@ class MWField(Saveable):
             raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
 
         td = TouchstoneData(touchstone_file)
-        S_ext = td.interp_S(self.freq)  # (M, M) at this field's single frequency
 
         m_pos = [portmap[p] for p in port_indices]
         n_labels = sorted(self._active_ports - set(port_indices), key=lambda l: portmap[l])
         n_pos = [portmap[l] for l in n_labels]
 
-        S_nn = self._Sp[np.ix_(n_pos, n_pos)]
-        S_nm = self._Sp[np.ix_(n_pos, m_pos)]
-        S_mn = self._Sp[np.ix_(m_pos, n_pos)]
-        S_mm = self._Sp[np.ix_(m_pos, m_pos)]
-
-        I_m = np.eye(len(m_pos), dtype=np.complex128)
-        term = np.linalg.inv(I_m - S_mm @ S_ext)
-        coupling = S_ext @ term @ S_mn  # (M, N)
+        Z0 = np.array([np.nan if p.Z0 is None else p.Z0 for p in self.port_modes], dtype=np.complex128)
+        S_red, coupling = _embed_network(self._Sp, Z0, self.freq, td, n_pos, m_pos)
 
         # Fold the embedding into the effective S among still-active ports,
         # so a SUBSEQUENT embedding call sees the correct effective network.
-        self._Sp[np.ix_(n_pos, n_pos)] = S_nn + S_nm @ coupling
+        # A copy, so the S-parameters of the scalar data are never changed.
+        self._Sp = self._Sp.copy()
+        self._Sp[np.ix_(n_pos, n_pos)] = S_red
         # Mark embedded ports as no longer meaningful.
         self._Sp[m_pos, :] = np.nan
         self._Sp[:, m_pos] = np.nan
@@ -1650,7 +1700,8 @@ class MWField(Saveable):
         from .sc import stratton_chu
 
         surface = self._integration_surface(faces, origin)
-        ehfield = self.interpolate(*surface.exyz)
+        x, y, z, tets = self._surface_samples(surface)
+        ehfield = self.interpolate(x, y, z, mapping=tets)
 
         Eff, Hff, wns = stratton_chu(ehfield.E, ehfield.H, surface, theta, phi, self.k0)
 
@@ -1669,6 +1720,63 @@ class MWField(Saveable):
 
         return Eff * factor, Hff * factor, Ptot  # [Written by Claude] Ptot of the simulated part already is the power of the full structure at 1 W
 
+    # [Written by Claude]
+    def _surface_samples(self, surface: SurfaceMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """The points where the fields of an integration surface are sampled, its edge centres, and the tetrahedron
+        each one is evaluated in.
+
+        The tetrahedron is one of the two next to a triangle of the edge, so no point location search is needed and
+        the side of the surface is a choice, not chance: the tetrahedron against the outward normal (inside the
+        surface), which on an air/PML interface is the air. Where that one is missing (an outer boundary of the mesh)
+        or has no field (a conductor, e.g. the surface of a PEC scatterer), the one on the outside.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: The x, y and z coordinates and the tetrahedra
+        """
+        mesh = surface.original
+        # [Written by Claude] One surface triangle per edge (any of them: the edge centre lies on both)
+        edge_tri = np.zeros(surface.n_edges, dtype=np.int64)
+        for k in range(3):
+            edge_tri[surface.tri_to_edge[k, :]] = np.arange(surface.n_tris)
+        tris = np.asarray(surface._tri_ids)[edge_tri]
+        normals = np.asarray(surface.normals)[:, edge_tri]
+
+        tets = mesh.tri_to_tet[:, tris]
+        valid = tets != _MISSING_ID
+        safe = np.where(valid, tets, 0)
+        centers = mesh.nodes[:, mesh.tets[:, safe]].mean(axis=1)  # (3, 2, n)
+        side = np.einsum("ikn,in->kn", centers - mesh.tri_centers[:, tris][:, None, :], normals)
+        inside = np.where(valid & (side < 0), tets, _MISSING_ID).max(axis=0)
+        outside = np.where(valid & (side >= 0), tets, _MISSING_ID).max(axis=0)
+
+        fieldless = self._fieldless_tets()
+
+        def has_field(t: np.ndarray) -> np.ndarray:
+            return (t != _MISSING_ID) & ~fieldless[np.where(t != _MISSING_ID, t, 0)]
+
+        use_inside = has_field(inside) | (~has_field(outside) & (inside != _MISSING_ID))
+        chosen = np.where(use_inside, inside, outside)
+
+        x, y, z = surface.edge_centers
+        return x, y, z, chosen
+
+    # [Written by Claude]
+    def _fieldless_tets(self) -> np.ndarray:
+        """The tetrahedra whose degrees of freedom are zero in every solution, e.g. those inside a PEC object.
+
+        Returns:
+            np.ndarray: A boolean per tetrahedron
+        """
+        solutions = list(self._fields.values())
+        if self._mode_field is not None:
+            solutions.append(self._mode_field)
+        if not solutions:
+            return np.zeros(self.basis.tet_to_field.shape[1], dtype=bool)
+        nonzero = np.zeros(self.basis.n_field, dtype=bool)
+        for solution in solutions:
+            nonzero |= np.asarray(solution).ravel()[: self.basis.n_field] != 0
+        return ~nonzero[self.basis.tet_to_field].any(axis=0)
+
     def _integration_surface(
         self, faces: FaceSelection | GeoSurface, origin: tuple[float, float, float] | None
     ) -> SurfaceMesh:
@@ -1676,11 +1784,11 @@ class MWField(Saveable):
         if self._cache_mapping:
             if self._cache_surface is None:
                 self._cache_surface = self.basis.mesh.boundary_surface(
-                    faces.tags, inward_normal=False, origin=origin
+                    faces.tags, inward_normal=False, origin=origin, consistent=True
                 )
             return self._cache_surface
         return self.basis.mesh.boundary_surface(
-            faces.tags, inward_normal=False, origin=origin
+            faces.tags, inward_normal=False, origin=origin, consistent=True
         )
 
     # [Written by Claude]
@@ -1767,7 +1875,8 @@ class MWField(Saveable):
         from .sc import stratton_chu_near
 
         surface = self._integration_surface(faces, origin)
-        ehfield = self.interpolate(*surface.exyz)
+        x, y, z, tets = self._surface_samples(surface)
+        ehfield = self.interpolate(x, y, z, mapping=tets)
 
         Enf, Hnf = stratton_chu_near(ehfield.E, ehfield.H, surface, xyz, self.k0)
 
@@ -2494,7 +2603,6 @@ class MWScalarNdim(Saveable):
             raise ValueError(f"Duplicate port numbers in port_indices: {port_indices}")
 
         td = TouchstoneData(touchstone_file)
-        S_ext = td.interp_S(self.freq)  # (n_freq, M, M)
 
         m_pos = [self._portmap[p] for p in port_indices]
         n_labels = sorted(
@@ -2502,24 +2610,15 @@ class MWScalarNdim(Saveable):
         )
         n_pos = [self._portmap[l] for l in n_labels]
 
-        S_nn = self.Sp[:, n_pos][:, :, n_pos]
-        S_nm = self.Sp[:, n_pos][:, :, m_pos]
-        S_mn = self.Sp[:, m_pos][:, :, n_pos]
-        S_mm = self.Sp[:, m_pos][:, :, m_pos]
-
-        n_freq = self.Sp.shape[0]
-        I = np.eye(len(m_pos))
-        S_red = np.zeros_like(S_nn)
-        for i in range(n_freq):
-            term = np.linalg.inv(I - S_mm[i] @ S_ext[i])
-            S_red[i] = S_nn[i] + S_nm[i] @ S_ext[i] @ term @ S_mn[i]
+        # Works for any leading axes: (F, N, N) or (*sweep, F, N, N)
+        S_red, _ = _embed_network(self.Sp, self.Z0, self.freq, td, n_pos, m_pos)
 
         # Fold the embedding into the effective S among still-active ports,
         # so a SUBSEQUENT embedding call sees the correct effective network.
-        self.Sp[np.ix_(range(n_freq), n_pos, n_pos)] = S_red
+        self.Sp[..., np.array(n_pos)[:, None], np.array(n_pos)[None, :]] = S_red
         # Mark eliminated ports as no longer meaningful.
-        self.Sp[:, m_pos, :] = np.nan
-        self.Sp[:, :, m_pos] = np.nan
+        self.Sp[..., m_pos, :] = np.nan
+        self.Sp[..., :, m_pos] = np.nan
 
         self._active_ports -= set(port_indices)
 

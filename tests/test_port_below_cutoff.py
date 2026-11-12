@@ -3,7 +3,6 @@ import numpy as np
 import pytest
 
 import emerge as em
-from emerge._emerge.physics.microwave.bcs.port_bcs import _decaying_beta
 
 """ Wave ports below the cutoff of their mode: the mode decays, gamma = alpha > 0 at every port."""
 
@@ -11,25 +10,17 @@ mm = 0.001
 A, B, L = 22.86 * mm, 10.16 * mm, 40 * mm      # WR-90, TE10 cutoff 6.557 GHz (vacuum)
 
 
-def test_decaying_beta_takes_the_branch_of_a_wave_leaving_the_port():
-    # np.sqrt alone gives +2j or -2j for -4 depending on the sign of the zero imaginary part
-    assert _decaying_beta(complex(-4.0, 0.0)) == -2j
-    assert _decaying_beta(complex(-4.0, -0.0)) == -2j
-    assert _decaying_beta(complex(9.0, 0.0)) == 3.0
-    assert _decaying_beta((3.0 - 0.5j) ** 2) == pytest.approx(3.0 - 0.5j)
-
-
 def _guide(er: float, f_mesh: float, freqs):
     em.cleanup()
-    sim = em.Simulation("guide_below_cutoff")
+    sim = em.Simulation("guide_below_cutoff", reset_settings=True)
     box = em.geo.Box(A, B, L)
     if er != 1.0:
         box.set_material(em.Material(er=er, name="fill"))
     sim.commit_geometry()
     sim.mw.set_frequency(f_mesh)
     sim.generate_mesh()
-    sim.mw.bc.ModalPort(box.face("-z"), 1, modetype="TE", mixed_materials=True)
-    sim.mw.bc.ModalPort(box.face("+z"), 2, modetype="TE", mixed_materials=True)
+    sim.mw.bc.ModalPort(box.face("-z"), 1, modetype="TE")
+    sim.mw.bc.ModalPort(box.face("+z"), 2, modetype="TE")
     sim.mw.set_frequency(list(freqs))
     Sp = sim.mw.run_sweep().scalar.grid.Sp
     em.cleanup()
@@ -60,3 +51,44 @@ def test_solution_frequency_below_cutoff_uses_the_mode_of_a_higher_frequency():
     Sp = _guide(1.0, 0.75 * fc, [0.75 * fc])
     alpha = np.sqrt((np.pi / A) ** 2 - (2 * np.pi * 0.75 * fc / 299792458) ** 2)
     assert 20 * np.log10(abs(Sp[0][1, 0])) == pytest.approx(-8.686 * alpha * L, abs=0.3)
+
+
+def test_lossy_guide_solved_per_frequency_below_cutoff():
+    # A conducting filling is not scaled: the modes are solved at every frequency, and the frequencies below cutoff
+    # keep the modes of the nearest one. S21 = exp(-Re(γ) L) with γ = sqrt(kc² - εr,c k0²).
+    er, sigma = 2.1, 0.02
+    fc = 299792458 / (2 * A * np.sqrt(er))
+    freqs = np.array([0.75, 0.9, 1.2, 1.5]) * fc
+    em.cleanup()
+    sim = em.Simulation("lossy_below_cutoff", reset_settings=True)
+    box = em.geo.Box(A, B, L).set_material(em.Material(er=er, cond=sigma, name="lossy"))
+    sim.commit_geometry()
+    sim.mw.set_frequency(1.5 * fc)
+    sim.generate_mesh()
+    p1 = sim.mw.bc.ModalPort(box.face("-z"), 1, modetype="TE")
+    sim.mw.bc.ModalPort(box.face("+z"), 2, modetype="TE")
+    sim.mw.set_frequency(list(freqs))
+    Sp = sim.mw.run_sweep().scalar.grid.Sp
+    assert p1._scalable is False
+    for f, S in zip(freqs, Sp):
+        k0 = 2 * np.pi * f / 299792458
+        erc = er - 1j * sigma / (2 * np.pi * f * 8.8541878128e-12)
+        gamma = np.sqrt((np.pi / A) ** 2 - erc * k0**2 + 0j)
+        expected = -8.686 * abs(gamma.real) * L
+        assert 20 * np.log10(abs(S[1, 0])) == pytest.approx(expected, abs=0.3), (f, S)
+    em.cleanup()
+
+
+def test_rectangular_waveguide_port_below_cutoff_decays():
+    em.cleanup()
+    sim = em.Simulation("rect_below_cutoff", reset_settings=True)
+    box = em.geo.Box(A, B, L)
+    sim.commit_geometry()
+    sim.mw.set_frequency(10e9)
+    sim.generate_mesh()
+    port = sim.mw.bc.RectangularWaveguide(box.face("-z"), 1, dims=(A, B))
+    k0 = 2 * np.pi * 4e9 / 299792458
+    alpha = np.sqrt((np.pi / A) ** 2 - k0**2)
+    assert port.get_beta(k0) == pytest.approx(-1j * alpha)
+    assert np.real(port.get_gamma(k0)) > 0
+    em.cleanup()

@@ -36,7 +36,7 @@ f2 = 1.605e9  # stop frequency
 # --- Create simulation object -------------------------------------------
 
 model = em.Simulation("PatchAntenna")
-model.check_version("3.0.0")  # Checks version compatibility.
+model.check_version("3.0.5")  # Checks version compatibility.
 
 # --- Define geometry primitives -----------------------------------------
 # Substrate block centered at origin in XY, thickness in Z (negative down)
@@ -115,7 +115,7 @@ abc = model.mw.bc.AbsorbingBoundary(boundary_selection)
 model.view(plot_mesh=True, volume_mesh=False)
 model.view(bc=True)
 
-data = model.mw.run_sweep()
+data = model.mw.run_sweep(nthreads=8)
 
 # --- Post-process S-parameters ------------------------------------------
 freqs = data.scalar.grid.freq

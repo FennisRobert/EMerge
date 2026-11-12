@@ -79,5 +79,9 @@ class Settings:
         # Curved (isoparametric) tetrahedra at curved PEC and material surfaces: edge midpoints on curved
         # CAD faces are moved onto the true geometry (see physics/microwave/assembly/curvilinear.py).
 
+    def reset_defaults(self) -> None:
+        """Resets every setting to its default value."""
+        self.__init__()
+
 
 DEFAULT_SETTINGS = Settings()

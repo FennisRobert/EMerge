@@ -1153,6 +1153,7 @@ class Mesh3D(Mesh, Saveable):
         self,
         tri_ids: list[int],
         alignment_origin: tuple[float, float, float] | None = None,
+        consistent: bool = False,
     ) -> np.ndarray:
         """Computes strictly outward facing normals for given triangle indices.
 
@@ -1164,6 +1165,9 @@ class Mesh3D(Mesh, Saveable):
         Args:
             tri_ids (list[int]): _description_
             alignment_origin (tuple[float, float, float], optional): A normal alignment origin in case inside vs. outside is not apparant.
+            consistent (bool, optional): Orient the normals consistently over the connected surface instead of per
+                triangle, see `_orient_surface`. Needed for surfaces inside the mesh such as a PML interface,
+                where a triangle has a tetrahedron on both sides. Defaults to False.
 
         Returns:
             np.ndarray: _description_
@@ -1188,6 +1192,9 @@ class Mesh3D(Mesh, Saveable):
         signflip = np.sign(np.sum(align * normals, axis=0))
         normals = signflip * normals
 
+        if consistent:
+            normals = self._orient_surface(np.asarray(tri_ids), normals)
+
         if alignment_origin is not None:
             rad_vec = tri_centers.copy()
             rad_vec[0, :] -= alignment_origin[0]
@@ -1197,11 +1204,89 @@ class Mesh3D(Mesh, Saveable):
             normals = normals * signflip
         return normals
 
+    # [Written by Claude]
+    def _orient_surface(self, tri_ids: np.ndarray, normals: np.ndarray) -> np.ndarray:
+        """Flips normals so they are consistent over each connected part of the surface and point outward.
+
+        The per triangle rule of `outward_normals` points away from the adjacent tetrahedron, which is only defined
+        on the domain boundary. A triangle inside the mesh (e.g. an air/PML interface) has a tetrahedron on both
+        sides and gets an arbitrary side. Here neighbouring triangles (sharing an edge with no third triangle) are
+        made to agree, then each connected part gets one sign: that of the majority of its domain boundary
+        triangles if it has any, otherwise the sign that gives a positive enclosed volume (outward on a closed surface).
+
+        Args:
+            tri_ids (np.ndarray): The triangle indices (N,)
+            normals (np.ndarray): The unit normals (3, N) of those triangles
+
+        Returns:
+            np.ndarray: The oriented normals (3, N)
+        """
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components, breadth_first_order
+
+        N = tri_ids.size
+        if N < 2:
+            return normals
+        tris = self.tris[:, tri_ids]
+        p0, p1, p2 = (self.nodes[:, tris[i]] for i in range(3))
+        cross = np.cross((p1 - p0).T, (p2 - p0).T).T
+        # +1 where the normal follows the node order of the triangle
+        follows = np.sign(np.sum(cross * normals, axis=0))
+        follows[follows == 0] = 1
+
+        # Directed edges a->b of every triangle, keyed by the sorted node pair
+        a = tris.ravel()
+        b = tris[[1, 2, 0], :].ravel()
+        owner = np.tile(np.arange(N), 3)
+        direction = np.where(a < b, 1, -1)
+        key = np.minimum(a, b).astype(np.int64) * (self.nodes.shape[1] + 1) + np.maximum(a, b)
+        order = np.argsort(key, kind="stable")
+        key, owner, direction = key[order], owner[order], direction[order]
+        _, start, count = np.unique(key, return_index=True, return_counts=True)
+        pair = start[count == 2]  # manifold edges only
+        t1, t2 = owner[pair], owner[pair + 1]
+        # Consistent when the two triangles walk the shared edge in opposite directions: then the relative
+        # orientation of the vertex-order normals is -d1*d2
+        rel = -direction[pair] * direction[pair + 1]
+
+        graph = coo_matrix((rel + 2, (t1, t2)), shape=(N, N)).tocsr()
+        graph = (graph + coo_matrix((rel + 2, (t2, t1)), shape=(N, N)).tocsr()).tocsr()
+        ncomp, labels = connected_components(graph, directed=False)
+
+        # orient[i] = +1 keeps the vertex-order normal of triangle i, -1 flips it
+        orient = np.zeros(N, dtype=int)
+        for comp in range(ncomp):
+            root = np.flatnonzero(labels == comp)[0]
+            visit, pred = breadth_first_order(graph, root, directed=False, return_predecessors=True)
+            orient[root] = follows[root]
+            for i in visit[1:]:
+                orient[i] = orient[pred[i]] * (int(graph[pred[i], i]) - 2)
+
+        unit = cross / np.linalg.norm(cross, axis=0)
+        oriented = unit * orient
+
+        on_boundary = (self.tri_to_tet[1, tri_ids] == _MISSING_ID) | (self.tri_to_tet[0, tri_ids] == _MISSING_ID)
+        areas = 0.5 * np.linalg.norm(cross, axis=0)
+        centers = self.tri_centers[:, tri_ids]
+        for comp in range(ncomp):
+            sel = labels == comp
+            ref = sel & on_boundary
+            if ref.any():
+                agree = np.sum(np.sum(oriented[:, ref] * normals[:, ref], axis=0) * areas[ref])
+                sign = 1 if agree >= 0 else -1
+            else:
+                c0 = centers[:, sel].mean(axis=1, keepdims=True)
+                volume = np.sum(np.sum((centers[:, sel] - c0) * oriented[:, sel], axis=0) * areas[sel])
+                sign = 1 if volume >= 0 else -1
+            oriented[:, sel] *= sign
+        return oriented
+
     def boundary_surface(
         self,
         face_tags: Union[int, list[int]],
         inward_normal: bool = True,
         origin: tuple[float, float, float] | None = None,
+        consistent: bool = False,
     ) -> SurfaceMesh:
         """Returns a SurfaceMesh class that is a 2D mesh isolated from the 3D mesh
 
@@ -1213,13 +1298,15 @@ class Mesh3D(Mesh, Saveable):
         Args:
             face_tags (Union[int, list[int]]): The list of face tags to use
             origin (tuple[float, float, float], optional): The normal vecor alignment origin. Defaults to None.
+            consistent (bool, optional): Orient the normals consistently over the surface, see `outward_normals`.
+                Defaults to False.
 
         Returns:
             SurfaceMesh: The resultant surface mesh
         """
         tri_ids = self.get_triangles(face_tags)
 
-        normals = self.outward_normals(tri_ids, alignment_origin=origin)
+        normals = self.outward_normals(tri_ids, alignment_origin=origin, consistent=consistent)
         if inward_normal:
             normals = -normals
 
@@ -1278,7 +1365,7 @@ class Mesh3D(Mesh, Saveable):
         return port_normal
 
 
-class SurfaceMesh(Mesh):
+class SurfaceMesh(Mesh, Saveable):
     """The surface mesh class is used to assemble the Modal port matrix.
 
 

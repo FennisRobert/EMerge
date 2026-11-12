@@ -116,17 +116,46 @@ class Axis(Saveable):
         return self.pair(other)
 
     def construct_cs(
-        self, origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self,
+        x: float | tuple[float, float, float] | np.ndarray | None = None,
+        y: float | None = None,
+        z: float | None = None,
+        *,
+        origin: tuple[float, float, float] | np.ndarray | None = None,
     ) -> CoordinateSystem:
         """Constructs a coordinate system where this vector is the Z-axis
         and the X and Y axis are normal to this axis but with an arbitrary rotation.
 
+        The origin is given as three coordinates or as one point:
+            construct_cs(x, y, z), construct_cs((x, y, z)) or construct_cs(origin=(x, y, z)).
+
         Args:
-            origin (tuple[float, float, float], optional): The origin of the coordinate system. Defaults to (0.0, 0.0, 0.0).
+            x (float | tuple[float, float, float] | np.ndarray | None, optional): The x coordinate of the origin,
+                or the whole origin point. Defaults to None (the origin (0, 0, 0)).
+            y (float | None, optional): The y coordinate of the origin. Defaults to None.
+            z (float | None, optional): The z coordinate of the origin. Defaults to None.
+            origin (tuple[float, float, float] | np.ndarray | None, optional): The origin of the coordinate system.
+                Defaults to None.
 
         Returns:
             CoordinateSystem: The resultant coordinate system
         """
+        # [Written by Claude]
+        if origin is not None:
+            if x is not None or y is not None or z is not None:
+                raise TypeError("construct_cs: give the origin as x, y, z or as origin, not both.")
+        elif x is None:
+            origin = (0.0, 0.0, 0.0)
+        elif y is None and z is None:
+            origin = x
+        elif y is None or z is None:
+            raise TypeError("construct_cs: give all three coordinates x, y and z.")
+        else:
+            origin = (x, y, z)
+        origin = np.asarray(origin, dtype=float)
+        if origin.shape != (3,):
+            raise TypeError(f"construct_cs: the origin must have three coordinates, got {origin.tolist()}.")
+
         ax = Axis(np.array([1, 0, 0]))
         if np.abs(self.dot(ax)) > 0.999:
             ax = Axis(np.array([0, 1, 0]))

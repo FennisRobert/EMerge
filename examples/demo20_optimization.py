@@ -22,7 +22,7 @@ rout = em.coax_rout(rin, Z0=50)
 Lcoax_outside = 10 * mm
 
 model = em.Simulation("Optimization")
-model.check_version("3.0.0")
+model.check_version("3.0.5")
 
 # Here will will set out optimization. We will tune two parameters
 # Offset is the distance from the back wall
@@ -118,6 +118,6 @@ plot_sp(fd, [grid.model_S(1, 1), grid.model_S(2, 1)], labels=["S11", "S21"])
 field = data.field.find(freq=9e9)
 model.display.add_objects(*model.all_geos())
 model.display.animate().add_field(
-    field.cutplane(1 * mm, x=0).scalar("Ez", "real"), symmetrize=True
+    field.cutplane(1 * mm, x=0).scalar("Ez", "complex"), symmetrize=True
 )
 model.display.show()

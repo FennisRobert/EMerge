@@ -1,8 +1,5 @@
-from emerge._emerge.solver import (
-    AutomaticRoutine,
-    EMSolver,
-    SolveRoutine,
-)
+from emerge._emerge.solveroutine import AutomaticRoutine, SolveRoutine
+from emerge._emerge.solvers import SolverSuperLU, SolverUMFPACK, SolverSparta
 from emerge import cleanup
 import numpy as np
 from scipy.sparse import csc_matrix, eye
@@ -30,13 +27,13 @@ def test_basic_function():
 def test_solver_choice():
     DEFAULT_ROUTINE = AutomaticRoutine()
     # Test if hard coding SUPERLU works
-    DEFAULT_ROUTINE.set_solver(EMSolver.SUPERLU)
+    DEFAULT_ROUTINE.set_solver(SolverSuperLU)
     x, report = DEFAULT_ROUTINE.solve(M, b, ids)
     assert report.solver == "SolverSuperLU"
     DEFAULT_ROUTINE.reset()
 
     # Test if hard coding UMFPACK works
-    DEFAULT_ROUTINE.set_solver(EMSolver.UMFPACK)
+    DEFAULT_ROUTINE.set_solver(SolverUMFPACK)
     x, report = DEFAULT_ROUTINE.solve(M, b, ids)
     assert report.solver == "SolverUMFPACK"
     DEFAULT_ROUTINE.reset()
@@ -66,14 +63,14 @@ def test_solver_choice():
     DEFAULT_ROUTINE.reset()
 
     # Should Pick SuperLU if UMFPACK is Disabled.
-    DEFAULT_ROUTINE.set_solver(EMSolver.UMFPACK)
-    DEFAULT_ROUTINE.disable(EMSolver.UMFPACK)
+    DEFAULT_ROUTINE.set_solver(SolverUMFPACK)
+    DEFAULT_ROUTINE.disable(SolverUMFPACK)
     x, report = DEFAULT_ROUTINE.solve(M, b, ids)
     assert report.solver == "SolverSuperLU"
     DEFAULT_ROUTINE.reset()
 
     # Should Pick SuperLU if UMFPACK is Disabled.
-    DEFAULT_ROUTINE.disable(EMSolver.UMFPACK)
+    DEFAULT_ROUTINE.disable(SolverUMFPACK)
     x, report = DEFAULT_ROUTINE.solve(M, b, ids)
     assert report.solver == "SolverSuperLU"
     DEFAULT_ROUTINE.reset()
@@ -111,9 +108,71 @@ def test_physics_share_one_routine():
 
 
 # [Written by Claude]
+def test_nthreads_reaches_solver(monkeypatch):
+    """SolveRoutine.solve(nthreads=...) installs the thread count on the solver that does the solve."""
+    from emerge._emerge.solvers import SolverPardiso
+
+    seen = []
+    monkeypatch.setattr(SolverSuperLU, "set_nthreads", lambda self, n: seen.append(n))
+    routine = AutomaticRoutine()
+    routine.set_solver(SolverSuperLU)
+    x, report = routine.solve(M, b, ids, nthreads=3)
+    x, report = routine.solve(M, b, ids)
+    routine.reset()
+    assert np.array_equiv(x, b)
+    assert seen == [3]  # None keeps the solver's own setting
+
+    # PARDISO keeps the count until its interface exists, which then starts with it
+    pardiso = SolverPardiso("")
+    pardiso.set_nthreads(4)
+    assert pardiso.nthreads == 4 and pardiso.solver is None
+
+
+# [Written by Claude]
+def test_sparta_nthreads(monkeypatch):
+    """SPARTA takes the thread count in analyze() and analyzes again when it changes. A count set on the
+    solver itself survives a solve without nthreads."""
+    import pytest
+    from emerge._emerge.solvers import sparta as solver_module
+
+    if not solver_module.AVAILABLE:
+        pytest.skip("SPARTA not installed")
+    sparta = solver_module.sparta
+    if solver_module.Version(sparta.__version__) < solver_module.Version("0.3.0"):
+        pytest.skip("SPARTA < 0.3.0 has no thread count")
+
+    calls = []
+    analyze = sparta.analyze
+    monkeypatch.setattr(sparta, "analyze", lambda *a, **kw: calls.append(kw.get("threads")) or analyze(*a, **kw))
+
+    n = 400
+    A = (eye(n) * 4 + eye(n, k=1) + eye(n, k=-1)).tocsc().astype(np.complex128)
+    rhs = np.ones((n, 1), dtype=np.complex128)
+    routine = AutomaticRoutine()
+    routine.set_solver(SolverSparta)
+    routine.forced_solver[0].set_options("CPU")
+    for nthreads in (2, 2, 1, None):
+        x, report = routine.solve(A, rhs, np.arange(n), nthreads=nthreads)
+        assert report.solver == "SolverSparta"
+        assert np.allclose(A @ x, rhs)
+    routine.reset()
+    assert calls == [2, 1]
+
+    solver = routine.forced_solver[0].set_nthreads(3)
+    routine.solve(A, rhs, np.arange(n))
+    routine.reset()
+    assert solver.nthreads == 3 and calls[-1] == 3
+
+
+# [Written by Claude]
 def test_pardiso_non_symmetric_csc():
     """PARDISO solves A x = b (not A^T x = b) for a non-symmetric CSC matrix, as periodic boundaries give."""
-    from emerge._emerge.solver import SolverPardiso
+    import pytest
+    from emerge._emerge.solvers import pardiso as solver_module
+    from emerge._emerge.solvers import SolverPardiso
+
+    if not solver_module.AVAILABLE:
+        pytest.skip("PARDISO (MKL) not available")
     A = csc_matrix(np.array([[4, 1, 0], [3, 5, 2], [0, 1, 6]], dtype=np.complex128))
     rhs = np.array([[1], [2], [3]], dtype=np.complex128)
     solver = SolverPardiso("")
@@ -128,3 +187,27 @@ def test_pardiso_non_symmetric_csc():
 if __name__ == "__main__":
     test_solver_choice()
     test_basic_function()
+
+
+# [Written by Claude]
+def test_solver_selection_by_class(monkeypatch):
+    """Solvers are selected by class; the removed EMSolver enum and missing solvers give clear errors."""
+    import pytest
+    import emerge as em
+
+    sim = em.Simulation("SolverSelection", loglevel="ERROR")
+    solver = sim.set_solver(em.solvers.SuperLU)
+    assert isinstance(solver, em.solvers.SuperLU) and sim.get_solver(em.solvers.SuperLU) is solver
+    assert sim.mw.solveroutine.forced_solver == [solver]
+    assert em.solvers.SuperLU in em.solvers.available()
+
+    monkeypatch.setattr(em.solvers.Pardiso, "available", False)
+    with pytest.raises(RuntimeError, match="PARDISO solver is not available on this system. It requires"):
+        sim.set_solver(em.solvers.Pardiso)
+    assert em.solvers.Pardiso not in em.solvers.available()
+
+    with pytest.raises(RuntimeError, match=r"Replace em.EMSolver.PARDISO with em.solvers.Pardiso"):
+        sim.set_solver(em.EMSolver.PARDISO)
+    with pytest.raises(RuntimeError, match=r"Replace em.EMSolver.SUPERLU with em.solvers.SuperLU"):
+        sim.set_solver(em.EMSolver["SUPERLU"])
+    em.cleanup()

@@ -18,6 +18,10 @@
   the port absorbed but the S-parameters did not count. These DoFs are now pinned to zero on the faces of
   `ModalPort`s and `WavePort`s and in their mode analysis; the volume keeps the complete basis. On the TEM test
   line the S21 phase error stays about 3.5× smaller than with the mixed basis.
+- **Port mode search in overmoded guides** (#99). The search target used the minimum of εr and μr over the
+  whole material tensor, which is 0 for an isotropic material (the off-diagonal entries), so the search started
+  at k0/√2. In WR-90 at 40 GHz a two-mode `WavePort` found two higher-order modes instead of TE10 and TE20. The
+  minimum is now taken over the diagonal.
 
 ## 3.0.5 — changes since 3.0.4
 

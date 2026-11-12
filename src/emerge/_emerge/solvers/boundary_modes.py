@@ -127,7 +127,12 @@ class SolverARPACK_BMA(EigSolver):
             sigma = float(np.mean(cluster))
             k = min(max(len(cluster), nmodes // len(clusters)) + extra, n - 2)
             try:
-                lu = splu((A - sigma * B).tocsc(), permc_spec="MMD_AT_PLUS_A")
+                # [Written by Claude] A - sigma*B is symmetric: SuperLU's symmetric mode keeps the fill-reducing
+                # ordering and pivots on the diagonal where it can. With the default (partial pivoting,
+                # threshold 1) a row swap can destroy the ordering: the microstrip port of a 16k-DoF line
+                # model filled to 132 M entries (199 s) instead of 1.2 M (0.17 s), same residual (1e-11).
+                lu = splu((A - sigma * B).tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.01,
+                          options=dict(SymmetricMode=True))
             except RuntimeError as err:  # singular: the shift is an eigenvalue
                 logger.debug(f"{_pfx(self.pre)} SuperLU failed at β² = {-sigma:.1f}: {err}")
                 continue

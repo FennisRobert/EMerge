@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.7 — changes since 3.0.6
+
+### Bug fixes
+
+- **Slow port mode analysis in 3.0.6** (#105). Since the port mode analysis uses the basis functions of the
+  simulation (#98), the sparse LU factorization of its shift-invert step could lose its fill-reducing ordering
+  through partial pivoting. On a microstrip port the factors grew from 1.2 M to 132 M entries (199 s instead of
+  0.17 s). The matrix is symmetric, so SuperLU now runs in symmetric mode with diagonal pivoting; the accuracy
+  is unchanged.
+- **`WavePort.get_beta` between solved frequencies** (#102). At a frequency where the port modes were not
+  solved, β of the nearest solved frequency was returned unchanged, so `is_propagating()` missed a cutoff in
+  between (WR-90 TE20 solved at 20 and 30 GHz read as propagating at 12 GHz). β is now extrapolated like
+  `ModalPort.get_beta`. The S-parameters of a sweep did not change: every sweep frequency has its own modes.
+
 ## 3.0.6 — changes since 3.0.5
 
 ### Changed behaviour
@@ -547,7 +561,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.6")`.
+1. Update the version check: `model.check_version("3.0.7")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

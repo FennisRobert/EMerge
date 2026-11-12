@@ -25,7 +25,7 @@ L = 60 * mm               # waveguide length
 ############################################################
 
 with em.Simulation("MultimodeStraight") as model:
-    model.check_version("3.0.6")  # Checks version compatibility
+    model.check_version("3.0.7")  # Checks version compatibility
 
     # The waveguide runs along the Z-axis from z = 0 to z = L
     guide = em.geo.Box(a, b, L)
@@ -64,7 +64,7 @@ with em.Simulation("MultimodeStraight") as model:
 ############################################################
 
 with em.Simulation("MultimodePost") as model:
-    model.check_version("3.0.6")  # Checks version compatibility
+    model.check_version("3.0.7")  # Checks version compatibility
 
     guide = em.geo.Box(a, b, L)
 

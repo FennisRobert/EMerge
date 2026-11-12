@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.6 — changes since 3.0.6
+## 3.0.6 — changes since 3.0.5
 
 ### Changed behaviour
 
@@ -19,7 +19,7 @@
   `ModalPort`s and `WavePort`s and in their mode analysis; the volume keeps the complete basis. On the TEM test
   line the S21 phase error stays about 3.5× smaller than with the mixed basis.
 
-## 3.0.6 — changes since 3.0.4
+## 3.0.5 — changes since 3.0.4
 
 ### New features
 

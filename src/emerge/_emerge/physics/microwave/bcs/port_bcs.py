@@ -1081,8 +1081,20 @@ class WavePort(ModalPort, Saveable):
         return modes[min(mode_nr, len(modes)) - 1]
 
     def get_beta(self, k0: float, mode_nr: int = 1) -> complex:
-        """The propagation constant of port mode mode_nr (1-based) at k0. Evanescent modes have β = -jα."""
-        return self._mode(k0, mode_nr).beta
+        """The propagation constant of port mode mode_nr (1-based) at k0. Evanescent modes have β = -jα.
+
+        [Written by Claude] At a frequency where the modes were not solved, β is extrapolated from the mode of the
+        nearest solved frequency like ModalPort.get_beta: β ∝ k0 for TEM modes, else β² = β0² + εr·μr (k0² - k0_0²),
+        exact for a homogeneous port face. Before, the β of the nearest solved frequency was returned unchanged,
+        so is_propagating() missed a cutoff between solved frequencies.
+        """
+        mode = self._mode(k0, mode_nr)
+        if abs(k0 - mode.k0) <= 1e-9 * abs(mode.k0):
+            return mode.beta
+        if mode.modetype == "TEM":
+            return mode.beta / mode.k0 * k0
+        beta = np.emath.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
+        return np.conj(beta) if np.imag(beta) > 0 else beta
 
     def portZ0(self, k0: float, mode_nr: int = 1) -> complex | float | None:
         return self._mode(k0, mode_nr).Z0

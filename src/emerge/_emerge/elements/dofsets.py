@@ -94,6 +94,22 @@ class DoFSet(Saveable):
     def __str__(self):
         return self.name
 
+    def unmatched_gradients(self) -> tuple[list[int], list[int]]:
+        """The positions of the cubic gradient DoFs, edge DoF 3 ∇(LiLj(Li-Lj)) and face DoF 6 ∇(LiLjLk), among the
+        edge and face DoFs of this set.
+
+        The boundary mode analysis has no cubic Lagrange partner for them, so on port faces they are pinned to zero,
+        both in the mode analysis and in the 3D system. Without that, the 3D field carries a gradient part on the port
+        face that is not in the mode, which the port absorbs but the S-parameters do not count (power is lost).
+
+        Returns:
+            tuple[list[int], list[int]]: The edge DoF positions and the face DoF positions.
+        """
+        s = self.set3d
+        edge = [i for i, code in enumerate(s.codes[:s.n_edge_dofs_tot:6]) if code == 64 + 3]
+        face = [i for i, code in enumerate(s.codes[s.n_edge_dofs_tot::4]) if code == 128 + 6]
+        return edge, face
+
 class ElementSpace(Enum):
     FIRST_ORDER_MIXED = 0
     FIRST_ORDER_COMPLETE = 1

@@ -134,7 +134,7 @@ pub fn ned2_tet_stiff_mass(
 }
 
 /// Writes the COO row/col indices of a dense (n, n) element block with global indices into row-major slots.
-pub fn write_block_rowcol(indices: &[i64], rows: &mut [i64], cols: &mut [i64]) {
+pub fn write_block_rowcol<T: Copy>(indices: &[T], rows: &mut [T], cols: &mut [T]) {
     let n = indices.len();
     for a in 0..n {
         for b in 0..n {
@@ -144,9 +144,13 @@ pub fn write_block_rowcol(indices: &[i64], rows: &mut [i64], cols: &mut [i64]) {
     }
 }
 
-type CooC = (Array1<c64>, Array1<c64>, Array1<i64>, Array1<i64>);
+type CooC = (Array1<c64>, Array1<c64>, Array1<i32>, Array1<i32>);
 
 /// Assembles the COO (dataE, dataB, rows, cols) curl-curl and mass entries of all tets in tetids.
+///
+/// [Written by Claude] rows and cols are i32 (global DoF indices, the caller checks n_field < 2^31). With
+/// with_indices false they are returned empty: a caller that already has the COO→CSC mapping of this assembly
+/// only needs the values.
 #[allow(clippy::too_many_arguments)]
 pub fn _matrix_builder(
     nodes: &ArrayView2<f64>,
@@ -160,6 +164,7 @@ pub fn _matrix_builder(
     er: &ArrayView3<c64>,
     tetids: &ArrayView1<i64>,
     dofcodes: &ArrayView1<i64>,
+    with_indices: bool,
 ) -> CooC {
     crate::pool::install(|| {
         let codes = dofcodes.to_vec();
@@ -167,12 +172,25 @@ pub fn _matrix_builder(
         let nsq = ndof * ndof;
         let nnz = tetids.len() * nsq;
         let (typearry, indexarry) = parse_dofcode(&codes);
-        let mut rows = vec![0i64; nnz];
-        let mut cols = vec![0i64; nnz];
+        let nidx = if with_indices { nnz } else { 0 };
+        let mut rows = vec![0i32; nidx];
+        let mut cols = vec![0i32; nidx];
         let mut data_e = vec![c64::new(0.0, 0.0); nnz];
         let mut data_b = vec![c64::new(0.0, 0.0); nnz];
-        rows.par_chunks_mut(nsq.max(1))
-            .zip(cols.par_chunks_mut(nsq.max(1)))
+        // Without indices every tet gets an empty row/col chunk, so the zip still pairs tets with their values.
+        let chunk = if with_indices { nsq.max(1) } else { 1 };
+        let mut empty_r: Vec<Vec<i32>> = Vec::new();
+        let mut empty_c: Vec<Vec<i32>> = Vec::new();
+        let (row_chunks, col_chunks): (Vec<&mut [i32]>, Vec<&mut [i32]>) = if with_indices {
+            (rows.chunks_mut(chunk).collect(), cols.chunks_mut(chunk).collect())
+        } else {
+            empty_r.resize(tetids.len(), Vec::new());
+            empty_c.resize(tetids.len(), Vec::new());
+            (empty_r.iter_mut().map(|v| v.as_mut_slice()).collect(), empty_c.iter_mut().map(|v| v.as_mut_slice()).collect())
+        };
+        row_chunks
+            .into_par_iter()
+            .zip(col_chunks.into_par_iter())
             .zip(data_e.par_chunks_mut(nsq.max(1)))
             .zip(data_b.par_chunks_mut(nsq.max(1)))
             .enumerate()
@@ -193,8 +211,10 @@ pub fn _matrix_builder(
                     &typearry,
                     &indexarry,
                 );
-                let indices: Vec<i64> = (0..ndof).map(|f| tet_to_field[[f, itet]]).collect();
-                write_block_rowcol(&indices, r, c);
+                if with_indices {
+                    let indices: Vec<i32> = (0..ndof).map(|f| tet_to_field[[f, itet]] as i32).collect();
+                    write_block_rowcol(&indices, r, c);
+                }
                 for (k, (e, b)) in esub.iter().zip(bsub.iter()).enumerate() {
                     de[k] = *e;
                     db[k] = *b;
@@ -205,7 +225,7 @@ pub fn _matrix_builder(
 }
 
 #[pyfunction]
-#[pyo3(name = "_matrix_builder")]
+#[pyo3(name = "_matrix_builder", signature = (nodes, tets, tris, edges, tet_to_field, tet_to_edge, tet_to_tri, ur, er, tetids, dofcodes, with_indices = true))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn py_matrix_builder<'py>(
     py: Python<'py>,
@@ -220,16 +240,17 @@ fn py_matrix_builder<'py>(
     er: PyReadonlyArray3<c64>,
     tetids: PyReadonlyArray1<i64>,
     dofcodes: PyReadonlyArray1<i64>,
+    with_indices: bool,
 ) -> (
     Bound<'py, PyArray1<c64>>,
     Bound<'py, PyArray1<c64>>,
-    Bound<'py, PyArray1<i64>>,
-    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
 ) {
     let (no, te, tr, ed) = (nodes.as_array(), tets.as_array(), tris.as_array(), edges.as_array());
     let (tf, tte, ttt) = (tet_to_field.as_array(), tet_to_edge.as_array(), tet_to_tri.as_array());
     let (u, e, ti, dc) = (ur.as_array(), er.as_array(), tetids.as_array(), dofcodes.as_array());
-    let r = py.allow_threads(|| _matrix_builder(&no, &te, &tr, &ed, &tf, &tte, &ttt, &u, &e, &ti, &dc));
+    let r = py.allow_threads(|| _matrix_builder(&no, &te, &tr, &ed, &tf, &tte, &ttt, &u, &e, &ti, &dc, with_indices));
     (
         r.0.into_pyarray_bound(py),
         r.1.into_pyarray_bound(py),

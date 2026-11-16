@@ -62,6 +62,8 @@ def tet_mass_stiffness_matrices(
     tet_to_edge = field.mesh.tet_to_edge
     tet_to_tri = field.mesh.tet_to_tri
 
+    if field.n_field >= 2**31:
+        raise ValueError(f"{field.n_field} degrees of freedom: the assembly indexes DoFs with int32 (at most 2^31 - 1).")
     tet_assy = np.arange(tets.shape[1])
     if conductor_tets.shape[0] > 0:
         tet_assy = np.delete(tet_assy, conductor_tets)
@@ -78,6 +80,7 @@ def tet_mass_stiffness_matrices(
         er,
         tet_assy,
         field.dofcodes3d,
+        cscmap is None,  # [Written by Claude] rows/cols (int32) only to build a new COO→CSC mapping
     )
     #logger.debug(f' - Assembly speed: {(field.ntets -len(conductor_tets))/(t1-t0):.1f} tets/s')
 
@@ -130,6 +133,7 @@ def tet_mass_stiffness_matrices_subdom(
         er,
         tet_assy,
         field.dofcodes3d,
+        cscmap is None,  # [Written by Claude] rows/cols (int32) only to build a new COO→CSC mapping
     )
     #logger.debug(f' - Assembly speed: {(field.ntets -len(conductor_tets))/(t1-t0):.1f} tets/s')
 

@@ -385,18 +385,22 @@ class ModalPort(PortBC, Saveable):
             raise ValueError(f"target_neff must be positive, not {target_neff}.")
         self.target_neff: float | None = target_neff
         self.initialized: bool = False
-        self._first_k0: float | None = None
         self._last_k0: float | None = None
         # [Written by Claude] Set by the modal analysis: whether the port face has a single (isotropic) material,
         # and its εr·μr (the mean over the face otherwise).
         self._homogeneous: bool = False
         self._ermur: complex = 1.0
         self._ermur_max: float = 1.0
-        self._nmodes_solved: int = 0
-        # [Written by Claude] Whether the modes of k0 = _k0_ref are scaled to the other frequencies instead of solved
-        # (Microwave3D._port_scalable, _scale_port_modes). None: not decided yet.
+        # [Written by Claude] The mode set (Microwave3D._port_modes): fixed at k0 = _k0_ref, then scaled to the other
+        # frequencies (_scalable, see Microwave3D._port_scalable) or followed by solving (the tracks: per mode the
+        # (k0, β²) history and the transverse field). _scalable None: no mode set yet.
         self._scalable: bool | None = None
         self._k0_ref: float | None = None
+        self._tracks: list[dict] = []
+        # Per frequency the field overlap (CMAC) of each tracked mode with the mode at the previous frequency
+        self._track_quality: dict[float, np.ndarray] = {}
+        # WavePort(number_of_modes=None): every mode that propagates at the reference frequency
+        self._all_propagating: bool = False
         # The surface basis, μr and inward normal of the last port solve
         self._mode_basis: tuple | None = None
 
@@ -457,11 +461,7 @@ class ModalPort(PortBC, Saveable):
         """Clear all computed modes. The terminal assignment (.set_terminals) is kept."""
         self._island_cache = None
         self._last_k0 = None
-        self._first_k0 = None
-        self.available_modes: dict[float, list[PortMode]] = dict()
-        self.initialized: bool = False
-        self._scalable = None
-        self._k0_ref = None
+        self.clear_modes()
 
     def portZ0(self, k0: float) -> complex | float | None:
         return self.get_modes(k0)[0].Z0
@@ -499,11 +499,6 @@ class ModalPort(PortBC, Saveable):
             *axes (tuple | np.ndarray | Axis): The alignment vectors.
         """
         self.alignment_vectors = [_parse_axis(ax) for ax in axes]
-
-    def _get_alignment_vector(self, index: int) -> np.ndarray | None:
-        if len(self.alignment_vectors) > index:
-            return self.alignment_vectors[index].np
-        return None
 
     def set_terminals(
         self,
@@ -572,44 +567,39 @@ class ModalPort(PortBC, Saveable):
                     + f"propagation constants are suppored. Betas are {str_betas}"
                 )
 
-    def sort_modes(self) -> None:
-        """Sorts the port modes: by the alignment vectors if given, else by the distance of their effective
-        index to target_neff if given, else by propagation constant."""
+    # [Written by Claude]
+    def _candidate_key(self, mode: PortMode, k0: float) -> float:
+        """The order of the candidate modes of a modal analysis: by the distance of their effective index to
+        target_neff if given, else by propagation constant (largest first)."""
+        if self.target_neff is not None:
+            return abs(np.real(mode.beta) / k0 - self.target_neff)
+        return -np.real(mode.beta)
 
-        if len(self.alignment_vectors) > 0:
-            logger.trace(
-                f"Sorting modes based on alignment vectors: {self.alignment_vectors}"
-            )
-            X, Y, Z = self.selection.sample(5)
-            X = X.flatten()
-            Y = Y.flatten()
-            Z = Z.flatten()
-            for k0, modes in self.available_modes.items():
-                logger.trace(f"Aligning modes for k0={k0:.3f} rad/m")
-                new_modes = []
-                for ax in self.alignment_vectors:
-                    logger.trace(f".mode vector {ax}")
-                    integrals = [
-                        _inner_product(m.E_function, X, Y, Z, ax) for m in modes
-                    ]
-                    integral, opt_mode = sorted(
-                        [pair for pair in zip(integrals, modes)],
-                        key=lambda x: abs(x[0]),
-                        reverse=True,
-                    )[0]
-                    opt_mode.polarity = np.sign(integral.real)
-                    logger.trace(
-                        f"Optimal mode = {opt_mode} ({integral}), polarization alignment = {opt_mode.polarity}"
-                    )
-                    new_modes.append(opt_mode)
-
-                self.available_modes[k0] = new_modes
+    # [Written by Claude]
+    def _order_candidates(self, k0: float, align: bool = False) -> None:
+        """Orders the modes stored at k0 (_candidate_key). With align, the modes that match the alignment vectors
+        (.align_modes) come first, in the order of the vectors, each with a positive inner product with its vector
+        unless a positive terminal voltage already set its sign (PortMode.voltage_signed)."""
+        modes = sorted(self.available_modes.get(k0, []), key=lambda m: self._candidate_key(m, k0))
+        if not modes:
+            self.available_modes.pop(k0, None)
             return
-        for k0, modes in self.available_modes.items():
-            if self.target_neff is not None:
-                self.available_modes[k0] = sorted(modes, key=lambda m: abs(np.real(m.beta) / k0 - self.target_neff))
-            else:
-                self.available_modes[k0] = sorted(modes, key=lambda m: m.beta, reverse=True)
+        if align and self.alignment_vectors:
+            X, Y, Z = (c.flatten() for c in self.selection.sample(5))
+            chosen: list[PortMode] = []
+            for ax in self.alignment_vectors:
+                # identity, not ==: PortMode is a dataclass with array fields
+                rest = [m for m in modes if not any(m is c for c in chosen)]
+                if not rest:
+                    break
+                integrals = [_inner_product(m.E_function, X, Y, Z, ax) for m in rest]
+                i = int(np.argmax(np.abs(integrals)))
+                if np.real(integrals[i]) < 0 and not rest[i].voltage_signed:
+                    logger.debug(f"{self}: mode {len(chosen) + 1} inverted to align with {ax}")
+                    rest[i].flip_polarity()
+                chosen.append(rest[i])
+            modes = chosen + [m for m in modes if not any(m is c for c in chosen)]
+        self.available_modes[k0] = modes
 
     def get_modes(self, k0: float) -> list[PortMode]:
         """Returns a list of mode solution in the form of a PortMode object for a specific k0.
@@ -715,11 +705,13 @@ class ModalPort(PortBC, Saveable):
             return modef
 
     def clear_modes(self) -> None:
-        """Clear all port mode data"""
+        """Clear all port mode data, also the mode set and its tracks."""
         self.available_modes = dict()
         self.initialized = False
         self._scalable = None
         self._k0_ref = None
+        self._tracks = []
+        self._track_quality = {}
 
     # [Written by Claude]
     def _discard_modes_at(self, k0: float) -> None:
@@ -758,23 +750,9 @@ class ModalPort(PortBC, Saveable):
         if mode.energy * np.real(beta) < 1e-8:
             logger.debug(f"Ignoring mode due to a low mode energy or no propagation: energy {mode.energy}, beta {beta}")
             return None
-
-        if k0 not in self.available_modes:
-            self.available_modes[k0] = [mode]
-        else:
-            self.available_modes[k0].append(mode)
-
+        self.available_modes.setdefault(k0, []).append(mode)
         self.initialized = True
-
         self._last_k0 = k0
-        if self._first_k0 is None:
-            self._first_k0 = k0
-        else:
-            ref_field = self.get_modes(self._first_k0)[-1].modefield
-            polarity = np.sign(np.sum(field * ref_field).real)
-            logger.debug(f".. Mode polarity relative to other modes = {polarity}")
-            mode.polarity = polarity
-
         return mode
 
     def get_basis(self) -> np.ndarray:
@@ -783,18 +761,108 @@ class ModalPort(PortBC, Saveable):
     def get_inv_basis(self) -> np.ndarray:
         return self.cs._basis_inv
 
-    def get_beta(self, k0: float) -> float:
-        mode = self.get_modes(k0)[0]
-        if mode.modetype == "TEM":
-            beta = mode.beta / mode.k0 * k0
-        else:
-            # [Written by Claude] β² = εr·μr·k0² - kc² of a homogeneously filled port. This used to leave out εr·μr,
-            # which gave the wrong β for dielectric-filled waveguides away from the frequency of the modal analysis.
-            beta = np.emath.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
-            # [Written by Claude] Below cutoff β² < 0: take β = -jα, the mode that decays away from the port.
-            # np.sqrt picked +jα or -jα by the sign of the zero imaginary part of β², which differs between ports.
-            beta = np.conj(beta) if np.imag(beta) > 0 else beta
-        return beta
+    ############################################################
+    #                   MODE SET AND TRACKING                  #
+    ############################################################
+
+    @property
+    def solved_frequencies(self) -> list[float]:
+        """The frequencies at which the port modes have been computed."""
+        return [k * 299792458 / (2 * np.pi) for k in self.available_modes]
+
+    def _set_number_of_modes(self, n: int) -> None:
+        """Sets the number of port modes (and their S-matrix indices)."""
+        self._desired_number_of_modes = n
+        self.port_modes = {
+            i: [1.0 + 0.0j if j == i - 1 else 0.0 + 0.0j for j in range(n)] for i in range(1, n + 1)
+        }
+
+    def _fix_mode_set(self, k0: float) -> None:
+        """Fixes the port modes from the candidate modes at k0 (the reference frequency) and starts their tracks:
+        the modes that match the alignment vectors, then the first by _candidate_key, number_of_modes in total.
+
+        Args:
+            k0 (float): The free space propagation constant of the candidate modes
+        """
+        self._order_candidates(k0, align=True)
+        cands = self.available_modes.get(k0, [])
+        if self._all_propagating:
+            self._set_number_of_modes(max(sum(np.real(m.beta**2) > 0 for m in cands), 1))
+        N = self._desired_number_of_modes
+        if len(cands) > N and abs(cands[N].beta**2 - cands[N - 1].beta**2) < 1e-3 * self._ermur_max * k0**2:
+            logger.warning(
+                f"{self}: port modes {N} and {N + 1} have the same propagation constant. With only one of them "
+                f"the port cannot absorb all fields of this β; include both (number_of_modes={N + 1})."
+            )
+        chosen = cands[:N]
+        self.available_modes[k0] = chosen
+        self._k0_ref = k0
+        self._tracks = [{k0: (complex(m.beta**2), m.modefield[: m._nxy].copy())} for m in chosen]
+        for i, m in enumerate(chosen):
+            logger.info(f"{self}: mode {i + 1} = {m.modetype}, β = {complex(m.beta):.2f} rad/m")
+
+    def _predict_beta2(self, k0: float) -> np.ndarray:
+        """Per tracked mode the β² at k0 predicted with the secant in k0² through the two nearest computed
+        frequencies. With one frequency the slope is εr·μr, which is exact for a homogeneous port face."""
+        preds = []
+        for track in self._tracks:
+            ks = sorted(track, key=lambda k: abs(k - k0))
+            k1 = ks[0]
+            b1 = track[k1][0]
+            slope = (b1 - track[ks[1]][0]) / (k1**2 - ks[1] ** 2) if len(ks) > 1 else self._ermur
+            preds.append(b1 + slope * (k0**2 - k1**2))
+        return np.array(preds)
+
+    def _continue_tracks(self, k0: float, preds: np.ndarray) -> None:
+        """Matches the candidate modes at k0 to the tracked modes and makes them the port modes at k0.
+
+        Every tracked mode is assigned a candidate by the overlap of the transverse fields with the mode at
+        the nearest computed frequency (CMAC) and the distance to the predicted β². The phase of each mode
+        is aligned with that mode, so the modes, and the S-parameters, vary smoothly with frequency.
+
+        Args:
+            k0 (float): The free space propagation constant of the candidate modes
+            preds (np.ndarray): The predicted β² of the tracked modes (_predict_beta2)
+        """
+        from scipy.optimize import linear_sum_assignment
+
+        cands = self.available_modes[k0]
+        refs = [track[min(track, key=lambda k: abs(k - k0))][1] for track in self._tracks]
+        vecs = [m.modefield[: m._nxy] for m in cands]
+        overlap = np.array([[np.vdot(r, v) for v in vecs] for r in refs])
+        norms = np.outer([np.linalg.norm(r) for r in refs], [np.linalg.norm(v) for v in vecs])
+        cmac = np.abs(overlap) ** 2 / norms**2
+        b2 = np.array([complex(m.beta**2) for m in cands])
+        distance = np.abs(b2[None, :] - preds[:, None]) / (self._ermur_max * k0**2)
+        rows, cols = linear_sum_assignment(-cmac + 0.5 * distance)
+
+        chosen = []
+        for m_i, c_i in zip(rows, cols):
+            mode = cands[c_i]
+            if cmac[m_i, c_i] < 0.7:
+                logger.warning(
+                    f"{self}: mode {m_i + 1} at k0 = {k0:.2f} overlaps only {cmac[m_i, c_i]:.2f} with the mode at "
+                    "the previous frequency. Use more frequency points if the S-parameters jump."
+                )
+            phase = np.conj(overlap[m_i, c_i]) / abs(overlap[m_i, c_i])
+            mode.E_function.constant *= phase
+            mode.H_function.constant *= phase
+            chosen.append(mode)
+            self._tracks[m_i][k0] = (complex(mode.beta**2), mode.modefield[: mode._nxy] * phase)
+            logger.debug(
+                f"{self}: mode {m_i + 1}: β² = {b2[c_i]:.1f} (predicted {preds[m_i]:.1f}), CMAC {cmac[m_i, c_i]:.3f}"
+            )
+        self.available_modes[k0] = chosen
+        self._track_quality[k0] = cmac[rows, cols]
+
+    def _mode(self, k0: float, mode_nr: int) -> PortMode:
+        modes = self.get_modes(k0)
+        return modes[min(mode_nr, len(modes)) - 1]
+
+    def get_beta(self, k0: float, mode_nr: int = 1) -> complex:
+        """The propagation constant of port mode mode_nr (1-based) at k0, from the mode of the nearest frequency
+        with PortMode.beta_at: also between solved frequencies, and β = -jα below cutoff."""
+        return self._mode(k0, mode_nr).beta_at(k0, self._ermur)
 
     def get_gamma(self, k0: float) -> complex:
         # [Written by Claude] The Robin coefficient of the first mode times 1/μr of the port face: jβ for TE and TEM
@@ -931,38 +999,13 @@ class WavePort(ModalPort, Saveable):
         # Per frequency the field overlap (CMAC) of each mode with the mode at the previous frequency
         self._track_quality: dict[float, np.ndarray] = {}
 
-    def reset(self) -> None:
-        super().reset()
-        self.clear_modes()
-
-    def clear_modes(self) -> None:
-        super().clear_modes()
-        self._tracks = []
-        self._track_quality = {}
-
-    @property
-    def solved_frequencies(self) -> list[float]:
-        """The frequencies at which the port modes have been computed."""
-        return [k * 299792458 / (2 * np.pi) for k in self.available_modes]
-
     def _check_mode_betas(self) -> None:
         """Modes with different propagation constants are supported by this port."""
         return
 
-    def _set_number_of_modes(self, n: int) -> None:
-        """Sets the number of port modes (and their S-matrix indices)."""
-        self._desired_number_of_modes = n
-        self.port_modes = {
-            i: [1.0 + 0.0j if j == i - 1 else 0.0 + 0.0j for j in range(n)] for i in range(1, n + 1)
-        }
-
-    def sort_modes(self) -> None:
-        """The mode order is set by the mode tracking (Microwave3D._wave_port_modes)."""
-        return
-
-    ############################################################
-    #                   MODE SET AND TRACKING                  #
-    ############################################################
+    def _candidate_key(self, mode: PortMode, k0: float) -> float:
+        """Candidates by β² (largest first), evanescent modes included."""
+        return -np.real(mode.beta**2)
 
     def _has_mode_set(self, k0: float) -> bool:
         """Whether the candidate modes at k0 contain the full mode set: number_of_modes modes, or with
@@ -972,95 +1015,6 @@ class WavePort(ModalPort, Saveable):
         if self._all_propagating:
             return len(cands) > sum(np.real(m.beta**2) > 0 for m in cands)
         return len(cands) >= self._desired_number_of_modes
-
-    def _fix_mode_set(self, k0: float) -> None:
-        """Fixes the port modes from the candidate modes at k0 (the highest frequency): the number_of_modes
-        modes with the largest β², or the modes that match the alignment vectors. Starts the mode tracks.
-
-        Args:
-            k0 (float): The free space propagation constant of the candidate modes
-        """
-        cands = sorted(self.available_modes.get(k0, []), key=lambda m: -np.real(m.beta**2))
-        if self._all_propagating:
-            self._set_number_of_modes(max(sum(np.real(m.beta**2) > 0 for m in cands), 1))
-        N = self._desired_number_of_modes
-        if len(cands) > N and abs(cands[N].beta**2 - cands[N - 1].beta**2) < 1e-3 * self._ermur_max * k0**2:
-            logger.warning(
-                f"{self}: port modes {N} and {N + 1} have the same propagation constant. With only one of them "
-                f"the port cannot absorb all fields of this β; include both (number_of_modes={N + 1})."
-            )
-        if self.alignment_vectors:
-            X, Y, Z = (c.flatten() for c in self.selection.sample(5))
-            chosen: list[PortMode] = []
-            for ax in self.alignment_vectors[:N]:
-                rest = [m for m in cands if m not in chosen]
-                integrals = [_inner_product(m.E_function, X, Y, Z, ax.np) for m in rest]
-                i = int(np.argmax(np.abs(integrals)))
-                if np.real(integrals[i]) < 0:
-                    rest[i].flip_polarity()
-                chosen.append(rest[i])
-            chosen += [m for m in cands if m not in chosen][: N - len(chosen)]
-        else:
-            chosen = cands[:N]
-        self.available_modes[k0] = chosen
-        self._k0_ref = k0
-        self._tracks = [{k0: (complex(m.beta**2), m.modefield[: m._nxy].copy())} for m in chosen]
-        for i, m in enumerate(chosen):
-            logger.info(f"{self}: mode {i + 1} = {m.modetype}, β = {complex(m.beta):.2f} rad/m")
-
-    def _predict_beta2(self, k0: float) -> np.ndarray:
-        """Per tracked mode the β² at k0 predicted with the secant in k0² through the two nearest computed
-        frequencies. With one frequency the slope is εr·μr, which is exact for a homogeneous port face."""
-        preds = []
-        for track in self._tracks:
-            ks = sorted(track, key=lambda k: abs(k - k0))
-            k1 = ks[0]
-            b1 = track[k1][0]
-            slope = (b1 - track[ks[1]][0]) / (k1**2 - ks[1] ** 2) if len(ks) > 1 else self._ermur
-            preds.append(b1 + slope * (k0**2 - k1**2))
-        return np.array(preds)
-
-    def _continue_tracks(self, k0: float, preds: np.ndarray) -> None:
-        """Matches the candidate modes at k0 to the tracked modes and makes them the port modes at k0.
-
-        Every tracked mode is assigned a candidate by the overlap of the transverse fields with the mode at
-        the nearest computed frequency (CMAC) and the distance to the predicted β². The phase of each mode
-        is aligned with that mode, so the modes, and the S-parameters, vary smoothly with frequency.
-
-        Args:
-            k0 (float): The free space propagation constant of the candidate modes
-            preds (np.ndarray): The predicted β² of the tracked modes (_predict_beta2)
-        """
-        from scipy.optimize import linear_sum_assignment
-
-        cands = self.available_modes[k0]
-        refs = [track[min(track, key=lambda k: abs(k - k0))][1] for track in self._tracks]
-        vecs = [m.modefield[: m._nxy] for m in cands]
-        overlap = np.array([[np.vdot(r, v) for v in vecs] for r in refs])
-        norms = np.outer([np.linalg.norm(r) for r in refs], [np.linalg.norm(v) for v in vecs])
-        cmac = np.abs(overlap) ** 2 / norms**2
-        b2 = np.array([complex(m.beta**2) for m in cands])
-        distance = np.abs(b2[None, :] - preds[:, None]) / (self._ermur_max * k0**2)
-        rows, cols = linear_sum_assignment(-cmac + 0.5 * distance)
-
-        chosen = []
-        for m_i, c_i in zip(rows, cols):
-            mode = cands[c_i]
-            if cmac[m_i, c_i] < 0.7:
-                logger.warning(
-                    f"{self}: mode {m_i + 1} at k0 = {k0:.2f} overlaps only {cmac[m_i, c_i]:.2f} with the mode at "
-                    "the previous frequency. Use more frequency points if the S-parameters jump."
-                )
-            phase = np.conj(overlap[m_i, c_i]) / abs(overlap[m_i, c_i])
-            mode.E_function.constant *= phase
-            mode.H_function.constant *= phase
-            chosen.append(mode)
-            self._tracks[m_i][k0] = (complex(mode.beta**2), mode.modefield[: mode._nxy] * phase)
-            logger.debug(
-                f"{self}: mode {m_i + 1}: β² = {b2[c_i]:.1f} (predicted {preds[m_i]:.1f}), CMAC {cmac[m_i, c_i]:.3f}"
-            )
-        self.available_modes[k0] = chosen
-        self._track_quality[k0] = cmac[rows, cols]
 
     def try_add_mode(
         self,
@@ -1091,29 +1045,7 @@ class WavePort(ModalPort, Saveable):
         self.available_modes.setdefault(k0, []).append(mode)
         self.initialized = True
         self._last_k0 = k0
-        if self._first_k0 is None:
-            self._first_k0 = k0
         return mode
-
-    def _mode(self, k0: float, mode_nr: int) -> PortMode:
-        modes = self.get_modes(k0)
-        return modes[min(mode_nr, len(modes)) - 1]
-
-    def get_beta(self, k0: float, mode_nr: int = 1) -> complex:
-        """The propagation constant of port mode mode_nr (1-based) at k0. Evanescent modes have β = -jα.
-
-        [Written by Claude] At a frequency where the modes were not solved, β is extrapolated from the mode of the
-        nearest solved frequency like ModalPort.get_beta: β ∝ k0 for TEM modes, else β² = β0² + εr·μr (k0² - k0_0²),
-        exact for a homogeneous port face. Before, the β of the nearest solved frequency was returned unchanged,
-        so is_propagating() missed a cutoff between solved frequencies.
-        """
-        mode = self._mode(k0, mode_nr)
-        if abs(k0 - mode.k0) <= 1e-9 * abs(mode.k0):
-            return mode.beta
-        if mode.modetype == "TEM":
-            return mode.beta / mode.k0 * k0
-        beta = np.emath.sqrt(mode.beta**2 + self._ermur * (k0**2 - mode.k0**2))
-        return np.conj(beta) if np.imag(beta) > 0 else beta
 
     def portZ0(self, k0: float, mode_nr: int = 1) -> complex | float | None:
         return self._mode(k0, mode_nr).Z0

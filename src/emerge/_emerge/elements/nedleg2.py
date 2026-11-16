@@ -319,8 +319,6 @@ class NedelecLegrange2(FEMBasis, Saveable):
         
         ##
         self._field: np.ndarray = None
-        self._rows: np.ndarray = None
-        self._cols: np.ndarray = None
 
     def __call__(self, **kwargs) -> NedelecLegrange2:
         self._field = self.fielddata(**kwargs)

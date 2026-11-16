@@ -38,6 +38,7 @@ from ..physics_generic import GenericPhysics3D
 from .bcs.boundary_condition_set import MWBoundaryConditionSet
 from .bcs.boundary_conditions import PEC, ThinConductor, ScatteredField
 from .bcs.port_bcs import ModalPort, LumpedPort, PortBC, WavePort, UserDefinedPort, FloquetPort, BoundaryConditionError
+from .bcs.port_bcs import _inner_product
 from .bcs.portmode import PortMode
 from .bcs.mode_gauge import GAUGE_QUALITY_WARNING, canonical_mode_factor, port_face_quadrature
 
@@ -1184,90 +1185,115 @@ class Microwave3D(GenericPhysics3D):
         for bc in self.bc.oftype(FloquetPort):
             bc._prepare(2 * np.pi * max(max(self.frequencies), freq) / 299792458, self.mesh)
         for bc in self.bc.oftype(ModalPort):
-            if isinstance(bc, WavePort):
-                # [Written by Claude] a fixed set of modes, followed over the frequency range
-                self._wave_port_modes(bc, freq)
-                continue
-            self._modal_port_modes(bc, freq)
+            self._port_modes(bc, freq)
+
+    ############################################################
+    #               PORT MODE SET OVER FREQUENCY               #
+    ############################################################
 
     # [Written by Claude]
-    def _modal_port_modes(self, port: ModalPort, freq: float) -> None:
-        """Make sure a ModalPort has its modes at freq, with as few modal analyses as possible.
+    def _port_modes(self, port: ModalPort, freq: float) -> None:
+        """Make sure a ModalPort or WavePort has its modes at freq. One routine for both port types:
 
-        The first modes of the port (of the first frequency the sweep asks for, or of a modal_analysis call of the
-        user) decide whether the modes hold at every frequency (_port_scalable, the same rule as for a WavePort).
-        If they do, the modes at freq are scaled from them (_scale_port_modes), otherwise they are solved at freq.
-
-        Args:
-            port (ModalPort): The modal port
-            freq (float): The frequency at which the modes are needed
-        """
-        k0 = 2 * np.pi * freq / 299792458
-        if k0 in port.available_modes:
-            self._check_modal_port_count(port, freq)
-            return
-        if port._scalable is None and port.available_modes:
-            # Modes of another frequency exist already: decide on the modes of the last modal analysis
-            self._decide_modal_port_scaling(port, port._last_k0)
-        if port._scalable:
-            self._scale_port_modes(port, k0, freq)
-            self._check_modal_port_count(port, freq)
-            return
-
-        nmodes, TEM = max(port._desired_number_of_modes, port._nmodes_solved), port.forced_modetype == "TEM"
-        if port.available_modes:
-            self.modal_analysis(port, nmodes, direct=False, freq=freq, TEM=TEM)
-        else:
-            # [Written by Claude] the first modes of the port: if freq is below cutoff, take them from a higher frequency
-            self._modal_port_modes_below_cutoff(port, nmodes, freq, TEM)
-        port._check_mode_betas()
-        if port._scalable is None:
-            # the k0 the modes were solved at (above freq, if freq is below cutoff)
-            self._decide_modal_port_scaling(port, port._last_k0)
-        self._check_modal_port_count(port, freq)
-
-    # [Written by Claude]
-    def _modal_port_modes_below_cutoff(self, port: ModalPort, nmodes: int, freq: float, TEM: bool,
-                                       steps: int = 8, factor: float = 1.5) -> None:
-        """Modal analysis of a ModalPort without modes at freq. If freq is below the cutoff of its modes (the
-        analysis keeps propagating modes only, so it finds none), it is repeated at freq * factor^n until the modes
-        propagate. modal_analysis stores them under freq too: their shape is kept, and ModalPort.get_beta gives
-        the decaying β = -jα at freq, so the port absorbs and excites the decaying mode.
+        1. The mode set is fixed once, at a reference frequency (_select_port_modes): for a ModalPort the frequency
+           of its first modal analysis (the mean of the sweep, or the user's .modal_analysis), for a WavePort the
+           highest frequency.
+        2. A homogeneous port face (_port_scalable) scales those modes to every other frequency (_scale_port_modes).
+           Otherwise they are followed by solving, one sweep frequency at a time (_track_port_step), so every
+           S-matrix index belongs to the same physical mode, with a continuous phase.
 
         Args:
             port (ModalPort): The port
-            nmodes (int): The number of modes to solve
-            freq (float): The simulation frequency
-            TEM (bool): Whether the port mode is forced to be TEM
-            steps (int): The number of higher frequencies tried. Defaults to 8 (up to 25.6 x freq).
-            factor (float): The frequency step. Defaults to 1.5.
+            freq (float): The frequency at which the modes are needed
         """
-        f = freq
-        for i in range(steps + 1):
-            try:
-                self.modal_analysis(port, nmodes, direct=False, freq=f, TEM=TEM)
-            except BoundaryConditionError:
-                if i == steps:
-                    raise
-                f *= factor
-                continue
-            if i > 0:
-                k0 = 2 * np.pi * freq / 299792458
-                port.available_modes[k0] = port.get_modes(k0)
-                logger.warning(
-                    f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz (below cutoff); mode shape "
-                    f"from {f / 1e9:.4g} GHz, decaying with α = {abs(np.imag(port.get_beta(k0))):.4g} Np/m"
-                )
-            return
+        k0 = 2 * np.pi * freq / 299792458
+        if not port._tracks:
+            self._select_port_modes(port, freq)
+        if k0 not in port.available_modes:
+            if port._scalable:
+                self._scale_port_modes(port, k0, freq)
+            else:
+                start = min(port.solved_frequencies, key=lambda f: abs(f - freq))
+                lo, hi = sorted((start, freq))
+                path = sorted({f for f in self.frequencies if lo < f < hi} | {freq}, key=lambda f: abs(f - start))
+                for f in path:
+                    if 2 * np.pi * f / 299792458 not in port.available_modes:
+                        self._track_port_step(port, f)
+        if not isinstance(port, WavePort):
+            self._check_modal_port_count(port, freq)
 
     # [Written by Claude]
-    def _decide_modal_port_scaling(self, port: ModalPort, k0: float) -> None:
-        """Decides from the modes at k0 whether a ModalPort is scaled to the other frequencies."""
+    def _select_port_modes(self, port: ModalPort, freq: float) -> None:
+        """Fixes the mode set of a port (ModalPort._fix_mode_set) and decides whether it is scaled.
+
+        ModalPort: the modes of the user's modal analysis if there is one, else solved at freq, propagating modes
+        only. If none propagates there (below cutoff), the analysis is repeated at 1.5, 2.25, ... (at most 25.6)
+        times freq; frequencies below cutoff then keep the mode shape with the decaying β = -jα.
+
+        WavePort: solved at the highest frequency for more modes, and further below in β², until the candidates
+        contain number_of_modes modes (or every propagating mode and an evanescent one).
+        """
+        if isinstance(port, WavePort):
+            freq = max(max(self.frequencies), freq)
+            port.available_modes = dict()
+            N = port._desired_number_of_modes
+            shifts = [np.inf]
+            for attempt in range(8):
+                nreq = (8 if port._all_propagating else N) + 4 + 4 * attempt
+                self.modal_analysis(port, nreq, direct=False, freq=freq, neff2_shifts=shifts)
+                if port._has_mode_set(2 * np.pi * freq / 299792458):
+                    break
+                shifts = shifts + [-(0.5 + 1.5 * attempt) * port._ermur_max]
+            k0 = 2 * np.pi * freq / 299792458
+            nfound = len(port.available_modes.get(k0, []))
+            if nfound < (1 if port._all_propagating else N):
+                raise SimulationError(f"{port}: found {nfound} port modes at {freq / 1e9:.3f} GHz, {N} were requested.")
+        elif port.available_modes:
+            k0 = port._last_k0
+        else:
+            nmodes, TEM, f = port._desired_number_of_modes, port.forced_modetype == "TEM", freq
+            for i in range(9):
+                if self.modal_analysis(port, nmodes, direct=False, freq=f, TEM=TEM) > 0:
+                    break
+                if i == 8:
+                    raise BoundaryConditionError(
+                        f"ModalPort {port.port_number} could find no propagating mode up to {f / 1e9:.4g} GHz. "
+                        "Check the materials and the geometry of the port face."
+                    )
+                f *= 1.5
+            if f != freq:
+                logger.warning(f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz (below cutoff); "
+                               f"mode shape from {f / 1e9:.4g} GHz, decaying with its dispersion")
+            k0 = 2 * np.pi * f / 299792458
         port._scalable = self._port_scalable(port, k0)
-        if port._scalable:
-            port._k0_ref = k0
-        logger.debug(f"{port}: modes {'scaled from' if port._scalable else 'solved at every frequency, first at'} "
+        port._fix_mode_set(k0)
+        port._check_mode_betas()
+        logger.debug(f"{port}: modes {'scaled from' if port._scalable else 'solved at every frequency, tracked from'} "
                      f"{k0 * 299792458 / (2 * np.pi) / 1e9:.3f} GHz")
+
+    # [Written by Claude]
+    def _track_port_step(self, port: ModalPort, freq: float) -> None:
+        """Solves the modes of a port at freq around the β² it predicts from the nearest solved frequencies, and
+        matches them to the tracked modes (ModalPort._continue_tracks).
+
+        A ModalPort only holds propagating modes: if a tracked mode is (predicted) below cutoff at freq, the port
+        keeps the modes of the nearest frequency, whose β decays there (PortMode.beta_at).
+        """
+        N = len(port._tracks)
+        k0 = 2 * np.pi * freq / 299792458
+        preds = port._predict_beta2(k0)
+        modal = not isinstance(port, WavePort)
+        if not (modal and np.any(np.real(preds) <= 0)):
+            self.modal_analysis(port, 2 * N + 4, direct=False, freq=freq, neff2_shifts=list(np.real(preds) / k0**2))
+            if len(port.available_modes.get(k0, [])) >= N:
+                port._continue_tracks(k0, preds)
+                return
+            if not modal:
+                raise SimulationError(f"{port}: lost track of the port modes at {freq / 1e9:.3f} GHz.")
+        port._discard_modes_at(k0)
+        port.available_modes[k0] = port.get_modes(k0)
+        logger.debug(f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz, the modes of the nearest "
+                     "frequency decay with the propagation constant of their dispersion")
 
     # [Written by Claude]
     def _check_modal_port_count(self, port: ModalPort, freq: float) -> None:
@@ -1290,82 +1316,6 @@ class Microwave3D(GenericPhysics3D):
             f"number_of_modes={requested}. A ModalPort only supports propagating modes. Lower number_of_modes, "
             f"or use a WavePort, which also includes modes below cutoff."
         )
-
-    # [Written by Claude]
-    def _wave_port_modes(self, port: WavePort, freq: float) -> None:
-        """Make sure a WavePort has its modes at freq.
-
-        The set of modes is fixed at the highest frequency (the number_of_modes modes with the largest β², see
-        _select_wave_port_modes). From there the modes are followed through the sweep frequencies down (or up)
-        to freq, one frequency at a time (_track_wave_port_step), so every S-matrix index belongs to the same
-        physical mode at every frequency, also where the mode is below cutoff.
-
-        Args:
-            port (WavePort): The wave port
-            freq (float): The frequency at which the modes are needed
-        """
-        k0 = 2 * np.pi * freq / 299792458
-        if port._tracks and k0 in port.available_modes:
-            return
-        if not port._tracks:
-            port.available_modes = dict()
-            self._select_wave_port_modes(port, max(max(self.frequencies), freq))
-        if port._scalable:
-            # A homogeneous port face: the modes of the highest frequency hold at every frequency
-            if k0 not in port.available_modes:
-                self._scale_port_modes(port, k0, freq)
-            return
-
-        def kof(f: float) -> float:
-            return 2 * np.pi * f / 299792458
-
-        done = port.solved_frequencies
-        f_start = min(done, key=lambda f: abs(f - freq))
-        lo, hi = sorted((f_start, freq))
-        path = sorted(
-            {f for f in self.frequencies if lo < f < hi and kof(f) not in port.available_modes} | {freq},
-            key=lambda f: abs(f - f_start),
-        )
-        for f in path:
-            if kof(f) not in port.available_modes:
-                self._track_wave_port_step(port, f)
-
-    # [Written by Claude]
-    def _select_wave_port_modes(self, port: WavePort, freq: float) -> None:
-        """Solves the modes of a WavePort at freq (the highest frequency) and lets the port fix its mode set.
-
-        The eigenproblem is solved for more modes, and further below in β², until the candidates contain
-        number_of_modes modes, or all propagating modes plus an evanescent one.
-        """
-        k0 = 2 * np.pi * freq / 299792458
-        N = port._desired_number_of_modes
-        shifts = [np.inf]
-        for attempt in range(8):
-            nreq = (8 if port._all_propagating else N) + 4 + 4 * attempt
-            self.modal_analysis(port, nreq, direct=False, freq=freq, neff2_shifts=shifts)
-            if port._has_mode_set(k0):
-                break
-            # Search below the modes found so far: further evanescent modes
-            shifts = shifts + [-(0.5 + 1.5 * attempt) * port._ermur_max]
-        nfound = len(port.available_modes.get(k0, []))
-        if nfound < (1 if port._all_propagating else N):
-            raise SimulationError(f"{port}: found {nfound} port modes at {freq / 1e9:.3f} GHz, {N} were requested.")
-        port._scalable = self._port_scalable(port, k0)
-        logger.debug(f"{port}: modes {'scaled from' if port._scalable else 'solved at every frequency, tracked from'} "
-                     f"{freq / 1e9:.3f} GHz")
-        port._fix_mode_set(k0)
-
-    # [Written by Claude]
-    def _track_wave_port_step(self, port: WavePort, freq: float) -> None:
-        """Solves the modes of a WavePort at freq around the β² the port predicts from the nearest computed
-        frequencies, and lets the port match them to its tracked modes (WavePort._continue_tracks)."""
-        N = len(port._tracks)
-        k0 = 2 * np.pi * freq / 299792458
-        preds = port._predict_beta2(k0)
-        self.modal_analysis(port, 2 * N + 4, direct=False, freq=freq, neff2_shifts=list(np.real(preds) / k0**2))
-        if len(port.available_modes.get(k0, [])) < N:
-            raise SimulationError(f"{port}: lost track of the port modes at {freq / 1e9:.3f} GHz.")
-        port._continue_tracks(k0, preds)
 
     # [Written by Claude]
     def _port_field_triangles(self, itri_port: np.ndarray, cond: np.ndarray) -> np.ndarray:
@@ -1430,6 +1380,61 @@ class Microwave3D(GenericPhysics3D):
             if not (np.allclose(er1[:, :, tris], er2[:, :, tris]) and np.allclose(ur1[:, :, tris], ur2[:, :, tris])):
                 return False
         return True
+
+    # [Written by Claude]
+    def _align_degenerate_modes(self, port: ModalPort, k0: float) -> None:
+        """Rotates every group of degenerate TE or TM modes at k0 onto the alignment vectors of the port.
+
+        The eigen solver returns any basis of a degenerate group (TE10/TE01 of a square guide, the TE11 pair of a
+        round guide), so picking modes by alignment alone cannot set their polarization. Here the first alignment
+        vector gets the combination of the group with the largest inner product ∬ E·a dS, the next vector the best
+        one orthogonal to it, and so on. The rotation is orthogonal, so the modes stay power normalized and
+        orthogonal. TEM groups are left alone: their combinations change the terminal voltages (Z0).
+        """
+        modes = port.available_modes.get(k0, [])
+        if not port.alignment_vectors or len(modes) < 2 or port._mode_basis is None:
+            return
+        tol = 1e-3 * port._ermur_max * k0**2
+        X, Y, Z = (c.flatten() for c in port.selection.sample(5))
+        done: set[int] = set()
+        for i, m in enumerate(modes):
+            if i in done or m.modetype == "TEM":
+                continue
+            group = [j for j in range(i, len(modes)) if j not in done and modes[j].modetype == m.modetype
+                     and abs(modes[j].beta**2 - m.beta**2) < tol]
+            done.update(group)
+            if len(group) < 2:
+                continue
+            g = len(group)
+            A = np.array([[np.real(_inner_product(modes[j].E_function, X, Y, Z, ax)) for j in group]
+                          for ax in port.alignment_vectors])
+            cols: list[np.ndarray] = []
+            for row in A:
+                v = row - sum((c @ row) * c for c in cols)
+                if len(cols) == g or np.linalg.norm(v) < 0.1 * np.linalg.norm(row) or not np.any(row):
+                    continue
+                cols.append(v / np.linalg.norm(v))
+            if not cols:
+                continue
+            Q, _ = np.linalg.qr(np.column_stack(cols + [np.eye(g)[:, k] for k in range(g)]))
+            R = Q[:, :g].copy()  # orthonormal; its first columns span cols, the rest completes the group
+            R[:, :len(cols)] = np.column_stack(cols)
+            F = np.array([modes[j].modefield * modes[j].E_function.constant for j in group]).T
+            for k, j in enumerate(group):
+                old = modes[j]
+                new = self._make_port_mode(port, F @ R[:, k], old.beta, k0, old.freq, old.modetype)
+                new.Z0 = old.Z0
+                modes[j] = new
+            logger.debug(f"{port}: degenerate {m.modetype} modes {group} rotated onto the alignment vectors")
+
+    # [Written by Claude]
+    def _gauge_mode_field(
+        self, port: ModalPort, nlf, field: np.ndarray, normal: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """The mode coefficients in the canonical gauge (bcs/mode_gauge.py) and the gauge quality."""
+        quad = port_face_quadrature(self.mesh.nodes, self.mesh.tris[:, self.mesh.get_triangles(port.tags)], normal)
+        factor, quality = canonical_mode_factor(nlf.interpolate_Ef(field)(*quad.points), quad)
+        return field * factor, quality
 
     # [Written by Claude]
     def _make_port_mode(
@@ -1543,6 +1548,7 @@ class Microwave3D(GenericPhysics3D):
                         overlap = compute_modal_power_flux(nlf, prev.E_function, mode.H_function, normal) / mode.norm_factor
                         self_product = compute_modal_power_flux(nlf, prev.E_function, prev.H_function, normal)
                         field = field - overlap / self_product * prev.modefield * prev.E_function.constant
+                    field, _ = self._gauge_mode_field(port, nlf, field, normal)
                     made.append(self._make_port_mode(port, field, beta, k0, group[0].freq, modetype))
                 pure += made
         port.available_modes[k0] = pure
@@ -1563,11 +1569,7 @@ class Microwave3D(GenericPhysics3D):
         k_ref = port._k0_ref
         modes = []
         for ref in port.available_modes[k_ref]:
-            if ref.modetype == "TEM":
-                beta = ref.beta * k0 / k_ref
-            else:
-                beta = np.emath.sqrt(ref.beta**2 + port._ermur * (k0**2 - k_ref**2))
-                beta = np.conj(beta) if np.imag(beta) > 0 else beta
+            beta = ref.beta_at(k0, port._ermur)
             if not isinstance(port, WavePort) and not np.real(beta**2) > 0:
                 # [Written by Claude] Below cutoff a ModalPort keeps the propagating reference mode: its power
                 # normalization holds, and ModalPort.get_beta gives the decaying β = -jα at k0.
@@ -1852,8 +1854,12 @@ class Microwave3D(GenericPhysics3D):
         target_neff: float | None = None,
         freq: float | None = None,
         neff2_shifts: list[float] | None = None,
-    ) -> None:
+    ) -> int:
         """Execute a modal analysis on a given ModalPort boundary condition.
+
+        The modes found are stored on the port at this frequency, in the order of the port (ModalPort: by β, or by
+        the distance to target_neff, the modes that match .align_modes(...) first). The sweep fixes its mode set
+        from them (Microwave3D._port_modes).
 
         Args:
             port (ModalPort): The port object to execute the analysis for.
@@ -1873,11 +1879,12 @@ class Microwave3D(GenericPhysics3D):
                 neff² = β²/k0² (negative for evanescent modes, np.inf for the largest εr·μr of the port face)
                 instead of around target_kz. Evanescent modes are kept. Used by the mode tracking of WavePort.
                 Defaults to None.
+
+        Returns:
+            int: The number of modes found (propagating modes only for a ModalPort)
         """
         T0 = time.time()
         logger.info(f"Port {port.port_number}: Starting Mode Analysis for port {port}.")
-        # [Written by Claude] The number of modes to solve for when the modes are recomputed at other frequencies
-        port._nmodes_solved = max(port._nmodes_solved, nmodes) if neff2_shifts is None else port._nmodes_solved
 
         # First check if the boundary conditions are initialized.
 
@@ -2017,13 +2024,6 @@ class Microwave3D(GenericPhysics3D):
 
         nmodes_found = eigen_values.shape[0]
 
-        # Quadrature of the port face for the canonical mode gauge (see bcs/mode_gauge.py)
-        gauge_quad = port_face_quadrature(
-            self.mesh.nodes,
-            self.mesh.tris[:, itri_port],
-            inward_normal,
-        )
-
         # [Written by Claude] The eigen solver returns an arbitrary basis of the modes of one eigenvalue.
         eigen_modes = self._orthogonalize_degenerate_modes(
             nlf, eigen_values, eigen_modes, solve_ids, k0, ur[:, :, itri_port], inward_normal
@@ -2052,49 +2052,16 @@ class Microwave3D(GenericPhysics3D):
             Emode[: nlf.n_xy] = Emode[: nlf.n_xy] / beta
             Emode[nlf.n_xy :] = Emode[nlf.n_xy :] * 1j
 
-            # Phase correct for a phase of 0 degree at the port maximum.
-            Emode = Emode * np.exp(
-                -1j * np.angle(Emode[np.argmax(np.abs(Emode[: nlf.n_xy]))])
-            )
-
-            # If alignement vectors are defined (ask the port to be aligned positively in some direction.)
-            if port._get_alignment_vector(i) is not None:
-                # Compute the E-field, check in which direction it points on average and make sure the dot-product is positive.
-                vec = port._get_alignment_vector(i)
-                xyz_centers = self.mesh.tri_centers[
-                    :, self.mesh.get_triangles(port.tags)
-                ]
-                E_centers = np.mean(
-                    nlf.interpolate_Ef(Emode)(
-                        xyz_centers[0, :], xyz_centers[1, :], xyz_centers[2, :]
-                    ),
-                    axis=1,
+            # [Written by Claude] The sign and phase of the eigenvector are arbitrary: the canonical gauge fixes them
+            # mesh independently. A positive terminal voltage (TEM, below), the alignment vectors of the port (the
+            # mode set, ModalPort._order_candidates) and the phase of a tracked mode (_continue_tracks) take precedence.
+            Emode, quality = self._gauge_mode_field(port, nlf, Emode, inward_normal)
+            if quality < GAUGE_QUALITY_WARNING and neff2_shifts is None and not port.alignment_vectors:
+                logger.warning(
+                    f"{port}: mode {i + 1} has a very small overlap with the gauge test field "
+                    f"(quality {quality:.1e}); its sign may not be consistent between meshes. "
+                    "Define the polarization with port.align_modes(...) to be sure."
                 )
-                EdotVec = (
-                    vec[0] * E_centers[0]
-                    + vec[1] * E_centers[1]
-                    + vec[2] * E_centers[2]
-                )
-                if EdotVec.real < 0:
-                    logger.debug(
-                        f"Mode polarization along alignment axis {vec} = {EdotVec.real:.3f}, inverting."
-                    )
-                    Emode = -Emode
-            else:
-                # Without an alignment vector, fix the sign (and residual phase) with the mesh-independent
-                # canonical gauge, so the mode does not flip between frequencies or mesh refinement passes.
-                # TEM ports with terminals are still flipped to a positive voltage further below.
-                E_gauge = nlf.interpolate_Ef(Emode)(*gauge_quad.points)
-                factor, quality = canonical_mode_factor(E_gauge, gauge_quad)
-                # [Written by Claude] WavePort aligns the phase of its modes by tracking them over frequency
-                if quality < GAUGE_QUALITY_WARNING and not isinstance(port, WavePort):
-                    logger.warning(
-                        f"{port}: mode {i + 1} has a very small overlap with the gauge test field "
-                        f"(quality {quality:.1e}); its sign may not be consistent between meshes. "
-                        "Define the polarization with port.align_modes(...) to be sure."
-                    )
-                logger.debug(f"Canonical mode gauge: factor {factor:.3f}, quality {quality:.3f}")
-                Emode = Emode * factor
 
             # These return field interpolation class objects.
             portfE = nlf.interpolate_Ef(Emode)
@@ -2270,6 +2237,7 @@ class Microwave3D(GenericPhysics3D):
                 # Align mode polarity to positive voltage
                 if voltage < 0:
                     mode.flip_polarity()
+                mode.voltage_signed = "V" in impedance_type
 
                 logger.debug(
                     f".. U={voltage:.3f}[V], I={1000 * current:.3f}[mA], Power={power:.3F}[W]"
@@ -2287,22 +2255,17 @@ class Microwave3D(GenericPhysics3D):
 
                 logger.info(f"Port Z0 = {mode.Z0:.1f} Ω ({impedance_type})")
 
-        # [Written by Claude] A ModalPort without a propagating mode at this frequency (below cutoff), while modes of
-        # other frequencies exist: it keeps the modes of the nearest one, with the decaying β of ModalPort.get_beta,
-        # so the excitation, absorption and S-parameters of this frequency all use the same mode.
-        if not isinstance(port, WavePort) and k0 not in port.available_modes and port.available_modes:
-            port.available_modes[k0] = port.get_modes(k0)
-            logger.debug(f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz, the modes of the "
-                         "nearest frequency decay with the propagation constant of their dispersion")
-
-        # Sort the port modes on propagation constant.
-        port.sort_modes()
-
-        logger.info(f"Port {port.port_number}: Modal analysis defined {port.nmodes} port modes.")
+        # [Written by Claude] In the order of the port; a user's analysis (no shifts) also by the alignment vectors
+        self._align_degenerate_modes(port, k0)
+        port._order_candidates(k0, align=neff2_shifts is None)
+        found = len(port.available_modes.get(k0, []))
+        if found == 0 and not isinstance(port, WavePort):
+            logger.warning(f"Port {port.port_number}: no propagating mode at {freq / 1e9:.4g} GHz.")
+        logger.info(f"Port {port.port_number}: Modal analysis defined {found} port modes.")
 
         T2 = time.time()
         logger.info(f"Elapsed time = {(T2 - T0):.2f} seconds.")
-        return None
+        return found
 
     # [Written by Claude] run_sweep / run_scattered solve one frequency point at a time; the *_distributed versions
     # solve several at once. The old positional order of both, for scripts that still pass parallel=True.

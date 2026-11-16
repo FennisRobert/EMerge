@@ -310,8 +310,10 @@ class CNOSDDAssembler:
         """Assembles a Robin-type surface integral over tri_ids into a global CSC matrix."""
         from .emr_microwave import assemble_robin_bc
         field = self.assy_field
-        B = assemble_robin_bc(field, field.empty_tri_matrix(), tri_ids, gamma)
-        return csc_matrix((B, (field._rows, field._cols)), shape=(field.n_field, field.n_field), dtype=np.complex128)
+        # [Written by Claude] current assemble_robin_bc API: compact (values, rows, cols) for just these triangles
+        gammas = np.ascontiguousarray(np.broadcast_to(gamma, tri_ids.shape[0]), dtype=np.complex128)
+        B, rows, cols = assemble_robin_bc(field, tri_ids, gammas)
+        return csc_matrix((B, (rows, cols)), shape=(field.n_field, field.n_field), dtype=np.complex128)
 
     def _get_robin_mat(self, bc: RobinBC) -> csc_matrix:
         from .emr_microwave import assemble_robin_bc_bvec
@@ -339,9 +341,10 @@ class CNOSDDAssembler:
 
         if bc._isabc and bc.order == 2:
             logger.debug("    - Implementing second order ABC correction.")
-            c2 = bc.get_abccorr(K0)
-            mat = abc_order_2_matrix(field, tri_ids, c2)
-            K = K + csc_matrix((mat, (field._rows, field._cols)), shape=K.shape, dtype=np.complex128)
+            c_curl, c_div = bc.get_abccorr(K0)
+            # [Written by Claude] current abc_order_2_matrix API: unit curl and div parts on these triangles
+            curl, div, rows, cols = abc_order_2_matrix(field, tri_ids)
+            K = K + csc_matrix((c_curl * curl + c_div * div, (rows, cols)), shape=K.shape, dtype=np.complex128)
 
         return K
 

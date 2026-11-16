@@ -141,37 +141,26 @@ class Mesh3D(Mesh, Saveable):
 
     def __init__(self):
 
-        # Because GMSH associates "tags" with each entity, in EMerge we link GMSH tag numbers with EMerge entiti indices in t2i and i2t notation.
+        # GMSH tags of mesh entities are only needed while building the mesh (_pre_update) and are not stored.
+        # Lookups by vertex indices (get_edge, get_tri, get_tet) search the index arrays instead of keeping
+        # dictionaries, which cost several hundred bytes per entity.
 
         # All spatial objects
         self.nodes: np.ndarray = np.array([])
-        self.n_i2t: dict = dict()
-        self.n_t2i: dict = dict()
 
         # tets colletions
         self.tets: np.ndarray = np.array([])
-        self.tet_i2t: dict = dict()
-        self.tet_t2i: dict = dict()
         self.centers: np.ndarray = np.array([])
 
         # triangles
         self.tris: np.ndarray = np.array([])
-        self.tri_i2t: dict = dict()
-        self.tri_t2i: dict = dict()
         self.areas: np.ndarray = np.array([])
         self.tri_centers: np.ndarray = np.array([])
 
         # edges
         self.edges: np.ndarray = np.array([])
-        self.edge_i2t: dict = dict()
-        self.edge_t2i: dict = dict()
         self.edge_centers: np.ndarray = np.array([])
         self.edge_lengths: np.ndarray = np.array([])
-
-        # Inverse mappings
-        self.inv_edges: dict = dict()
-        self.inv_tris: dict = dict()
-        self.inv_tets: dict = dict()
 
         # Mappings
 
@@ -182,8 +171,6 @@ class Mesh3D(Mesh, Saveable):
         self.tet_to_tri: np.ndarray = np.array([])
         self.tri_to_tet: np.ndarray = np.array([])
         self.tri_to_edge: np.ndarray = np.array([])
-        self.edge_to_tri: defaultdict | dict = defaultdict()
-        self.node_to_edge: defaultdict | dict = defaultdict()
 
         # Physics mappings
         # TODO: These should be removable.
@@ -206,7 +193,6 @@ class Mesh3D(Mesh, Saveable):
         # These quantities link more abstract geometric entities such as boxes/faces etc to their
         # respective triangles, nodes etc. They link GMSH tags to mesh indices
         self.ftag_to_tri: dict[int, list[int]] = dict()
-        self.ftag_to_node: dict[int, list[int]] = dict()
         self.ftag_to_edge: dict[int, list[int]] = dict()
         self.vtag_to_tet: dict[int, list[int]] = dict()
         self.etag_to_edge: dict[int, list[int]] = dict()
@@ -246,12 +232,29 @@ class Mesh3D(Mesh, Saveable):
         """Return the number of nodes"""
         return self.nodes.shape[1]
 
+    @property
+    def ftag_to_node(self) -> dict[int, list[int]]:
+        """[Written by Claude] The node indices of every face tag, derived from ftag_to_tri (not stored)."""
+        return {
+            tag: np.unique(self.tris[:, np.asarray(tris, dtype=np.int64)]).tolist()
+            for tag, tris in self.ftag_to_tri.items()
+        }
+
+    @ftag_to_node.setter
+    def ftag_to_node(self, value) -> None:
+        """Ignored: files saved before ftag_to_node was derived still restore it."""
+
+    @staticmethod
+    def _find(table: np.ndarray, *ids) -> int:
+        """[Written by Claude] Column of table holding the vertex set ids, or _MISSING_ID."""
+        query = np.array([[int(i)] for i in ids], dtype=np.int64)
+        return int(_emr_mesh.find_columns(np.ascontiguousarray(table, dtype=np.int64), query)[0])
+
     def get_edge(self, i1: int, i2: int, skip: bool = False) -> int:
         """Return the edge index given the two node indices"""
         if i1 == i2:
             raise MeshException("Edge cannot be formed by the same node.")
-        search = (min(int(i1), int(i2)), max(int(i1), int(i2)))
-        result = self.inv_edges.get(search, _MISSING_ID)
+        result = self._find(self.edges, i1, i2)
         if result == _MISSING_ID and not skip:
             raise MeshException(f"There is no edge with indices {i1}, {i2}")
         return result
@@ -259,8 +262,8 @@ class Mesh3D(Mesh, Saveable):
     def get_tri(self, i1, i2, i3) -> int:
         """Return the triangle index given the three node indices"""
         i11, i21, i31 = tuple(sorted((int(i1), int(i2), int(i3))))
-        output = self.inv_tris.get(tuple(sorted((int(i1), int(i2), int(i3)))), None)
-        if output is None:
+        output = self._find(self.tris, i1, i2, i3)
+        if output == _MISSING_ID:
             _GlobalHandler.active().debugcollector.add_report(
                 f"Mesh3D: The program is crashed due to a non existing triangle {i11}, {i21}, {i31}. This occurs often if surfaces stick out of the 3D domain.\n"
                 + "Only 3D volumes can be meshed. Parts or entire simulations that are two dimensional will cause this problem."
@@ -272,10 +275,8 @@ class Mesh3D(Mesh, Saveable):
 
     def get_tet(self, i1, i2, i3, i4) -> int:
         """Return the tetrahedron index given the four node indices"""
-        output = self.inv_tets.get(
-            tuple(sorted((int(i1), int(i2), int(i3), int(i4)))), None
-        )
-        if output is None:
+        output = self._find(self.tets, i1, i2, i3, i4)
+        if output == _MISSING_ID:
             raise MeshException(
                 f"There is no tetrahedron with indices {i1}, {i2}, {i3}, {i4}"
             )
@@ -431,19 +432,7 @@ class Mesh3D(Mesh, Saveable):
     def diagnose(self) -> None:
         """Executes a diagnosis for the mesh to make sure that it is properly defined."""
 
-        # Check 1: Make sure that all i2t bindings are complete
-        for i in range(self.n_nodes):
-            if i not in self.n_i2t:
-                raise MeshException(
-                    f"Node {i} is not referenced in the node-to-tet mapping. "
-                    f"This indicates an orphan node in the mesh."
-                )
-        for i in range(self.n_tets):
-            if i not in self.tet_i2t:
-                raise MeshException(
-                    f"Tetrahedron {i} is not referenced in the tet-to-tet mapping. "
-                    f"This indicates a disconnected element in the mesh."
-                )
+        # Every node and tet index has a GMSH tag by construction (they are enumerated from GMSH in _pre_update).
 
         # Check if the mesh is densely connected
         from scipy.sparse import csr_matrix
@@ -627,7 +616,7 @@ class Mesh3D(Mesh, Saveable):
             3: vol_dimtags,
         }
         _, edge_tags, edge_node_tags = gmsh.model.mesh.get_elements(1)
-        _, tri_tags, tri_node_tags = gmsh.model.mesh.get_elements(2)
+        _, _, tri_node_tags = gmsh.model.mesh.get_elements(2)
         _, tet_tags, tet_node_tags = gmsh.model.mesh.get_elements(3)
         _edge_entity_map = {
             t: gmsh.model.mesh.get_elements(1, t)[1]
@@ -666,8 +655,8 @@ class Mesh3D(Mesh, Saveable):
         # Vertices
         # -----------------------------------------------------------------------------
         self.nodes = lin_coords.reshape(-1, 3).T
-        self.n_i2t = dict(enumerate(np.asarray(nodes, dtype=np.int64).tolist()))
-        self.n_t2i = {t: i for i, t in self.n_i2t.items()}
+        # GMSH tag -> index mappings are local: nothing needs them once the mesh is built.
+        n_t2i = {t: i for i, t in enumerate(np.asarray(nodes, dtype=np.int64).tolist())}
 
         logger.trace(f"Total of {self.nodes.shape[1]} nodes imported.")
 
@@ -679,12 +668,9 @@ class Mesh3D(Mesh, Saveable):
         # Hence the use of tri_node_tags[0] in the next line. If domains are missing.
         # Make sure to combine all the entries in the tri-node-tags list
 
-        tet_node_ids = _dict_lookup(self.n_t2i)(tet_node_tags[0])
-        tet_tags = np.squeeze(np.array(tet_tags))
+        tet_node_ids = _dict_lookup(n_t2i)(tet_node_tags[0])
 
         self.tets = tet_node_ids.reshape(-1, 4).T
-        self.tet_i2t = dict(enumerate(np.atleast_1d(tet_tags).astype(np.int64).tolist()))
-        self.tet_t2i = {t: i for i, t in self.tet_i2t.items()}
         self.centers = (
             self.nodes[:, self.tets[0, :]]
             + self.nodes[:, self.tets[1, :]]
@@ -705,7 +691,7 @@ class Mesh3D(Mesh, Saveable):
 
         for bc in periodic_bcs:
             logger.trace(f"reassigning ordered node numbers for periodic boundary {bc}")
-            nodemap, ids1, ids2 = self._pre_derive_node_map(bc)
+            nodemap, ids1, ids2 = self._pre_derive_node_map(bc, n_t2i)
             nodemap = {int(a): int(b) for a, b in nodemap.items()}
             self.nodes[:, ids2] = self.nodes[:, ids1]
             node_lut = np.arange(self.nodes.shape[1], dtype=np.int64)
@@ -713,8 +699,7 @@ class Mesh3D(Mesh, Saveable):
                 nodemap.values(), dtype=np.int64, count=len(nodemap)
             )
             self.tets = node_lut[self.tets]
-            self.n_t2i = {t: nodemap.get(i, i) for t, i in self.n_t2i.items()}
-            self.n_i2t = {t: i for i, t in self.n_t2i.items()}
+            n_t2i = {t: nodemap.get(i, i) for t, i in n_t2i.items()}
 
         # -----------------------------------------------------------------------------
         # Extracting Edges and Triangles
@@ -745,10 +730,6 @@ class Mesh3D(Mesh, Saveable):
         _sorted_edges = self.edges
         _sorted_tris = np.sort(self.tris, axis=0)
         _sorted_tets = np.sort(self.tets, axis=0)
-
-        self.inv_edges = dict(zip(map(tuple, _sorted_edges.T.tolist()), range(nE)))
-        self.inv_tris = dict(zip(map(tuple, _sorted_tris.T.tolist()), range(nR)))
-        self.inv_tets = dict(zip(map(tuple, _sorted_tets.T.tolist()), range(nT)))
 
         # -----------------------------------------------------------------------------
         # Constructucting Tet -> Edge/Tri mapping
@@ -789,8 +770,7 @@ class Mesh3D(Mesh, Saveable):
 
         # tri tags are all labels for all triangular elements in the Mesh
 
-        n_t2i_lookup = _dict_lookup(self.n_t2i)
-        tri_tags = np.array(tri_tags[0], dtype=int)
+        n_t2i_lookup = _dict_lookup(n_t2i)
         tri_nodes = n_t2i_lookup(tri_node_tags[0]).reshape(-1, 3)
 
         tri_ids = _emr_mesh.find_columns(_sorted_tris, tri_nodes.T)
@@ -798,14 +778,12 @@ class Mesh3D(Mesh, Saveable):
             missing = np.flatnonzero(tri_ids == _MISSING_ID)
             if missing.size > 0:
                 raise KeyError(tuple(np.sort(tri_nodes[missing[0], :]).tolist()))
-            self.tri_i2t = dict(zip(tri_ids.tolist(), tri_tags.tolist()))
         except KeyError as e:
             logger.error(e)
             _GlobalHandler.active().debugcollector.add_report(
                 "A missing key error usually indicates that there are flat geometries sticking out of the simulation domain.\nEMerge can only deal with volumetric data. Please check the geometry using .view(use_gmsh=True) before meshing to make sure no surfaces are sticking out of the domain."
             )
             raise e
-        self.tri_t2i = {t: i for i, t in self.tri_i2t.items()}
 
         # -----------------------------------------------------------------------------
         # Triangle -> Edge and Edge -> Tri
@@ -831,51 +809,6 @@ class Mesh3D(Mesh, Saveable):
         self.tri_to_edge[0] = _lookup_edge(_sorted_tris[0], _sorted_tris[1])
         self.tri_to_edge[1] = _lookup_edge(_sorted_tris[1], _sorted_tris[2])
         self.tri_to_edge[2] = _lookup_edge(_sorted_tris[0], _sorted_tris[2])
-
-        # This algorithm is optimized with help of Claude code.
-        # Because each edge may be part of multiple triangles, an efficient algorithm
-        # using numpy optimized functions is needed
-
-        flat_edges = self.tri_to_edge.ravel(order="F")
-        flat_tris = np.repeat(np.arange(nR, dtype=int), 3)
-        sort_idx = np.argsort(flat_edges, stable=True)
-        sorted_edges = flat_edges[sort_idx]
-        sorted_tris_e = flat_tris[sort_idx]
-        _, first_idx, counts = np.unique(
-            sorted_edges, return_index=True, return_counts=True
-        )
-        max_count = int(counts.max())
-        self.edge_to_tri = np.full((max_count, nE), _MISSING_ID, dtype=int)
-        for k in range(max_count):
-            mask = counts > k
-            self.edge_to_tri[k, sorted_edges[first_idx[mask]]] = sorted_tris_e[
-                first_idx[mask] + k
-            ]
-
-        # -----------------------------------------------------------------------------
-        # Node to Edge mapping
-        # -----------------------------------------------------------------------------
-
-        flat_nodes = self.edges.ravel(order="F")
-        flat_edges = np.repeat(np.arange(self.edges.shape[1], dtype=int), 2)
-
-        sort_idx = np.argsort(flat_nodes, stable=True)
-        sorted_nodes = flat_nodes[sort_idx]
-        sorted_edges = flat_edges[sort_idx]
-
-        _, first_idx, counts = np.unique(
-            sorted_nodes, return_index=True, return_counts=True
-        )
-        max_count = int(counts.max())
-
-        self.node_to_edge = np.full(
-            (max_count, self.nodes.shape[1]), _MISSING_ID, dtype=int
-        )
-        for k in range(max_count):
-            mask = counts > k
-            self.node_to_edge[k, sorted_nodes[first_idx[mask]]] = sorted_edges[
-                first_idx[mask] + k
-            ]
 
         # -----------------------------------------------------------------------------
         # Mesh Quantities
@@ -925,16 +858,13 @@ class Mesh3D(Mesh, Saveable):
         ent_ids = n_t2i_lookup(ent.reshape(-1)).reshape(2, nET)
         if np.any(ent_ids[0] == ent_ids[1]):
             raise MeshException("Edge cannot be formed by the same node.")
-        self.edge_t2i = dict(
+        edge_t2i = dict(
             zip(
                 edge_tags.astype(np.int64).tolist(),
                 _emr_mesh.find_columns(self.edges, ent_ids).tolist(),
             )
         )
-        self.edge_t2i = {
-            key: value for key, value in self.edge_t2i.items() if value != _MISSING_ID
-        }
-        self.edge_i2t = {i: t for t, i in self.edge_t2i.items()}
+        edge_t2i = {key: value for key, value in edge_t2i.items() if value != _MISSING_ID}
 
         # -----------------------------------------------------------------------------
         # OpenCASCADE Domain to Mesh mappings
@@ -950,9 +880,9 @@ class Mesh3D(Mesh, Saveable):
                 self.etag_to_edge[t] = []
                 continue
             self.etag_to_edge[t] = [
-                int(self.edge_t2i.get(tag, None))
+                int(edge_t2i[tag])
                 for tag in _edge_tags[0]
-                if tag in self.edge_t2i
+                if tag in edge_t2i
             ]
             self.geonodes.extend([int(i) for i in _edge_entity_map_2[t][0]])
 
@@ -972,7 +902,6 @@ class Mesh3D(Mesh, Saveable):
         face_offset = 0
         for _d, t in face_dimtags:
             node_ids = face_node_ids[t]
-            self.ftag_to_node[t] = node_ids.tolist()
             tri_ids = face_tri_ids[face_offset:face_offset + node_ids.shape[0] // 3]
             face_offset += node_ids.shape[0] // 3
             missing = np.flatnonzero(tri_ids == _MISSING_ID)
@@ -1016,7 +945,7 @@ class Mesh3D(Mesh, Saveable):
                 self.dimtag_to_edges[dt] = self._domain_edge(dt)
                 self.dimtag_to_nodes[dt] = np.array(
                     [
-                        self.n_t2i[gmsh.model.mesh.get_nodes(*dt)[0][0]]
+                        n_t2i[gmsh.model.mesh.get_nodes(*dt)[0][0]]
                         for dt in gmsh.model.get_boundary([dt], True, False, True)
                     ]
                 )
@@ -1030,7 +959,7 @@ class Mesh3D(Mesh, Saveable):
     ## Higher order functions
 
     def _pre_derive_node_map(
-        self, bc: Periodic
+        self, bc: Periodic, n_t2i: dict[int, int]
     ) -> tuple[dict[int, int], np.ndarray, np.ndarray]:
         """Computes an old to new node index mapping that preserves global sorting
 
@@ -1041,6 +970,7 @@ class Mesh3D(Mesh, Saveable):
 
         Args:
             bc (Periodic): The Periodic boundary condition
+            n_t2i (dict[int, int]): GMSH node tag to node index
 
         Returns:
             tuple[dict[int, int], np.ndarray, np.ndarray]: The node index mapping and the node index arrays
@@ -1055,7 +985,7 @@ class Mesh3D(Mesh, Saveable):
 
         for d, t in face_dimtags:
             domain_tag, f_tags, node_tags = gmsh.model.mesh.get_elements(2, t)
-            node_tags = [self.n_t2i[int(t)] for t in node_tags[0]]
+            node_tags = [n_t2i[int(t)] for t in node_tags[0]]
             if t in bc.face1.tags:
                 node_ids_1.extend(node_tags)
             if t in bc.face2.tags:

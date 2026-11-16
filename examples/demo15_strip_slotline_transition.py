@@ -33,7 +33,7 @@ Rcirc = 8  # Readius of the open circuit circle.
 # We will invoke the SimulationBeta class because it houses some specific
 # implementation details required for adaptive mesh refinement.
 model = em.Simulation("Transition")
-model.check_version("3.0.7")
+model.check_version("3.0.8")
 
 # Next we create the PCB designer class instance.
 pcb = em.geo.PCBNew(th, mm, material=em.lib.DIEL_RO4003C)
@@ -83,8 +83,8 @@ ground = pcb.plane(0)
 em.geo.subtract(ground, em.geo.unite(slot, disc))
 
 # We add two modal port surfaces at the nodes p1 and p2
-mp1 = pcb.modal_port("p1", 1, 5.0)
-mp2 = pcb.modal_port("p2", 2, height=(5.0, 5.0), width_multiplier=15)  # Wthe slot port width is 15 times the slot width.
+mp1 = pcb.modal_port("p1", 1, 5.0, assume_homogeneous=True)
+mp2 = pcb.modal_port("p2", 2, height=(5.0, 5.0), width_multiplier=15, assume_homogeneous=True)  # Wthe slot port width is 15 times the slot width.
 
 # Finally we generate the PCB, top air and bottom air.
 diel = pcb.generate_pcb()

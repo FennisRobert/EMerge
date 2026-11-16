@@ -102,13 +102,11 @@ fn two_tet_topology() {
     assert_eq!(find_columns(&tris.view(), &array![[0i64], [1], [4]].view())[0], -1234);
 }
 
-#[test]
-fn csc_pattern_sums_duplicates() {
-    let rows = array![0i64, 2, 0, 1, 2, 0];
-    let cols = array![0i64, 0, 0, 1, 1, 1];
-    let (indptr, indices, target, col_offsets, perm) = precompute_csc_pattern(&rows.view(), &cols.view(), 2);
-    assert_eq!(indptr.to_vec(), vec![0, 2, 5]);
-    assert_eq!(indices.to_vec(), vec![0, 2, 0, 1, 2]);
+fn check_csc_pattern<R: emr::mth::csc_cast::Idx, I: emr::mth::csc_cast::Idx + std::fmt::Debug>(rows: Array1<R>, cols: Array1<R>) {
+    let (indptr, indices, target, col_offsets, perm) = precompute_csc_pattern::<R, I>(&rows.view(), &cols.view(), 2);
+    let as_usize = |a: &Array1<I>| a.iter().map(|v| v.to_usize()).collect::<Vec<_>>();
+    assert_eq!(as_usize(&indptr), vec![0, 2, 5]);
+    assert_eq!(as_usize(&indices), vec![0, 2, 0, 1, 2]);
     let data = array![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let mut sorted = Array1::<f64>::zeros(6);
     let mut out = Array1::<f64>::zeros(5);
@@ -121,6 +119,15 @@ fn csc_pattern_sums_duplicates() {
         &mut out.view_mut(),
     );
     assert_eq!(out.to_vec(), vec![4.0, 2.0, 6.0, 4.0, 5.0]);
+}
+
+#[test]
+fn csc_pattern_sums_duplicates() {
+    // [Written by Claude] every input/output index width
+    check_csc_pattern::<i64, i64>(array![0i64, 2, 0, 1, 2, 0], array![0i64, 0, 0, 1, 1, 1]);
+    check_csc_pattern::<i64, i32>(array![0i64, 2, 0, 1, 2, 0], array![0i64, 0, 0, 1, 1, 1]);
+    check_csc_pattern::<i32, i32>(array![0i32, 2, 0, 1, 2, 0], array![0i32, 0, 0, 1, 1, 1]);
+    check_csc_pattern::<i32, i64>(array![0i32, 2, 0, 1, 2, 0], array![0i32, 0, 0, 1, 1, 1]);
 }
 
 #[test]

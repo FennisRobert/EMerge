@@ -31,7 +31,7 @@ def Cf(C):
 pack = "0603"  # package footprint for lumped components
 # Create simulation and PCB layouter with substrate thickness and material
 model = em.Simulation("LumpedFilter")
-model.check_version("3.0.7")  # Checks version compatibility.
+model.check_version("3.0.8")  # Checks version compatibility.
 
 th = 0.5  # substrate thickness (meters)
 Hair = 2.0
@@ -83,8 +83,8 @@ traces = pcb.compile_paths(merge=True)
 pcb.determine_bounds(leftmargin=0, topmargin=1, rightmargin=0, bottommargin=1)
 
 # --- Define modal ports and generate environment ------------------------
-mp1 = pcb.modal_port(pcb.load("p1"), 1, Hair)
-mp2 = pcb.modal_port(pcb.load("p2"), 2, Hair)
+mp1 = pcb.modal_port(pcb.load("p1"), 1, Hair, assume_homogeneous=True)
+mp2 = pcb.modal_port(pcb.load("p2"), 2, Hair, assume_homogeneous=True)
 diel = pcb.generate_pcb()  # substrate dielectric block
 air = pcb.generate_air(Hair)  # surrounding air block
 

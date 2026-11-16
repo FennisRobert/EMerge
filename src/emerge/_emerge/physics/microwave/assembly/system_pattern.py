@@ -134,7 +134,8 @@ class SystemPattern:
         """
         self.key: tuple = key
         self.N: int = field.n_field
-        self.volume_coo_to_csc: CSCMapping = volume_coo_to_csc
+        # None once the assembler cached E and B (frequency independent materials); rebuilt when needed again
+        self.volume_coo_to_csc: CSCMapping | None = volume_coo_to_csc
 
         # Volume matrices as system data arrays, cached by the assembler when materials are frequency independent
         self.cached_E: np.ndarray | None = None
@@ -172,12 +173,13 @@ class SystemPattern:
         terms = [*self._robin_terms.values(), *self._abc2_terms.values(), *self._wave_port_terms.values()]
 
         # Union pattern: unique volume entries + all boundary entries
-        volume_cols = np.repeat(np.arange(self.N, dtype=np.int64), np.diff(volume_coo_to_csc.indptr))
+        # [Written by Claude] int32 row/col indices: DoF indices are below 2^31 (checked in the volume assembly)
+        volume_cols = np.repeat(np.arange(self.N, dtype=np.int32), np.diff(volume_coo_to_csc.indptr))
         rows_all = [volume_coo_to_csc.indices] + [r for t in terms for r, _ in t.coo_indices]
         cols_all = [volume_cols] + [c for t in terms for _, c in t.coo_indices]
         union = CSCMapping.from_rowcol(
-            np.ascontiguousarray(np.concatenate(rows_all), dtype=np.int64),
-            np.ascontiguousarray(np.concatenate(cols_all), dtype=np.int64),
+            np.concatenate(rows_all, dtype=np.int32),
+            np.concatenate(cols_all, dtype=np.int32),
             self.N,
         )
 
@@ -197,6 +199,9 @@ class SystemPattern:
         for t in terms:
             t.data_indices = [locate_entries_in_pattern(self.indptr, self.indices, r, c) for r, c in t.coo_indices]
             t.coo_indices = []
+
+        # [Written by Claude] The pattern now lives in self.indices/self.indptr; the volume mapping only scatters.
+        volume_coo_to_csc.release_pattern()
 
     @staticmethod
     def compute_key(field: Nedelec2, conductor_tets: np.ndarray, robin_bcs: list[RobinBC]) -> tuple:

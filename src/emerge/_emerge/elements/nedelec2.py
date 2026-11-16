@@ -93,10 +93,6 @@ class Nedelec2(FEMBasis, Saveable):
         self._partitioned: bool = False
         self._split_tris: list[int] = []
         self.diagnose()
-
-        rows, cols = self.empty_tri_rowcol()
-        self._rows = rows
-        self._cols = cols
         
     def compute_global_dofcodes(self) -> np.ndarray:
         """Expand `field.dofcodes3d` (fixed-length, one entry per local basis-

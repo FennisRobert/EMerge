@@ -40,9 +40,6 @@ class FEMBasis(Saveable):
 
         self.tri_to_field: np.ndarray = np.array([])
 
-        self._rows: np.ndarray = np.array([])
-        self._cols: np.ndarray = np.array([])
-
     def empty_tet_matrix(self) -> np.ndarray:
         nnz = self.n_tets * self.n_tet_dofs**2
         matrix = np.empty((nnz,), dtype=np.complex128)
@@ -59,9 +56,6 @@ class FEMBasis(Saveable):
 
         rows = np.repeat(t2f, N, axis=0).ravel(order="F").astype(np.int64, copy=False)
         cols = np.tile(t2f, (N, 1)).ravel(order="F").astype(np.int64, copy=False)
-
-        self._rows = rows
-        self._cols = cols
         return rows, cols
 
     def tri_rowcol(
@@ -70,8 +64,7 @@ class FEMBasis(Saveable):
         """Row/col DOF index pairs for the given triangles.
 
         With tri_ids=None (default), returns the pairs for every triangle in
-        the mesh -- e.g. for the field._rows/_cols cache built once at basis
-        construction. Passing a subset returns a correspondingly compact
+        the mesh -- e.g. for a whole-mesh assembly. Passing a subset returns a correspondingly compact
         result, e.g. for a boundary condition that only touches a handful of
         the mesh's triangles.
         """

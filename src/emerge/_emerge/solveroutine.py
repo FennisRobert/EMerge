@@ -775,10 +775,10 @@ class AutomaticRoutine(SolveRoutine):
                 return self._try_solver(SolverCHOLMOD)
             if gpu is not None:
                 return gpu
-            if SolverPardiso.available:
-                return self._try_solver(SolverPardiso)
-            elif SolverSparta.available:
+            if SolverSparta.available:
                 return self._try_solver(SolverSparta)
+            elif SolverPardiso.available:
+                return self._try_solver(SolverPardiso)
             elif SolverAASDS.available:
                 return self._try_solver(SolverAASDS)
             elif SolverRSLAB.available:

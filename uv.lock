@@ -647,7 +647,7 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.0"
+version = "3.0.8"
 source = { editable = "." }
 dependencies = [
     { name = "emerge-aasds", marker = "sys_platform == 'darwin'" },
@@ -664,6 +664,7 @@ dependencies = [
     { name = "pyvista" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sparta-solver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or sys_platform == 'darwin'" },
 ]
 
 [package.optional-dependencies]
@@ -727,6 +728,7 @@ requires-dist = [
     { name = "pyvista", specifier = ">=0.45.2" },
     { name = "scikit-umfpack", marker = "sys_platform != 'win32' and extra == 'umfpack'" },
     { name = "scipy", specifier = ">=1.14.0" },
+    { name = "sparta-solver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or sys_platform == 'darwin'", specifier = ">=0.3.7,<0.4" },
     { name = "trame-pyvista", marker = "extra == 'spyder'" },
 ]
 provides-extras = ["umfpack", "cudss", "cudss12", "dxf", "cad", "spyder"]
@@ -2687,6 +2689,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "sparta-solver"
+version = "0.3.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/e0/4bdd88295fbed0276c9b72579e122bcb1a9364f181bd0414b408f4cf3841/sparta_solver-0.3.7.tar.gz", hash = "sha256:7489571e07b962d479bfccf7195ca321a0e12a9ba5a2504d2beff306ff5ca548", size = 718321, upload-time = "2026-11-16T11:15:11.322Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/e7/6bc57db52d8b1f2bbf0fc43ab1fe4c685604255bf30b5cf5b5cf7f96ddd1/sparta_solver-0.3.7-cp39-abi3-macosx_10_12_universal2.macosx_10_12_x86_64.macosx_11_0_arm64.whl", hash = "sha256:475b95f9f213dda9e7a544cd8da956a45e924dd71f9bd68863a8ba12d11b6946", size = 3501077, upload-time = "2026-11-16T11:14:57.953Z" },
+    { url = "https://files.pythonhosted.org/packages/db/e1/852c193433d24ff0104d5f0e892038c51a15d46eb81243fd48217ac65058/sparta_solver-0.3.7-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:79271fdf5f3f361db5caacc7d504ae9ffe596d692641f0a00caf777d86e8d4a0", size = 1792348, upload-time = "2026-11-16T11:15:00.907Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/73/b89424808ab9b3bc91b9e34788ef6751d8b30fbf200a0c9b833698eeaeea/sparta_solver-0.3.7-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:bf07050006257cc649991507880e5a4118ee812b8f0a5f56001a1fff2e091e63", size = 1800611, upload-time = "2026-11-16T11:15:03.124Z" },
+    { url = "https://files.pythonhosted.org/packages/27/c6/5490bf271cd82368caebdbeb46bf4526d959f63b2159731aae74beae2c8a/sparta_solver-0.3.7-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1f1b095acd10c4d3cd1fe910afe4434f20af03a392301ac262e9db5f77fcd9a6", size = 2094693, upload-time = "2026-11-16T11:15:05.183Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/90/df90ec1017adc5254ec489abe5bcb19cfa8a23ca9c0e49da5caa7d9cb3d9/sparta_solver-0.3.7-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:73237a11670a32d83313b541ad72a9fe2d1ac0ef55948ceb00c9a548f3da632b", size = 2129752, upload-time = "2026-11-16T11:15:07.509Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/f9/105e2f69394c6c90f024b8b3c0af1df5f733952a50030cf83be8effb3677/sparta_solver-0.3.7-cp39-abi3-win_amd64.whl", hash = "sha256:f9f48106b67cc592049352bdbc5ba967ff377605f04db4dfb9c9633403896797", size = 1965443, upload-time = "2026-11-16T11:15:09.208Z" },
 ]
 
 [[package]]

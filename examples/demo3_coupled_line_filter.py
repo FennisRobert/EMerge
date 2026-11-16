@@ -40,7 +40,7 @@ extra = 100  # extra margin (mil)
 
 # --- Simulation setup ----------------------------------------------------
 model = em.Simulation("CoupledLineFilter")
-model.check_version("3.0.7")  # Checks version compatibility.
+model.check_version("3.0.8")  # Checks version compatibility.
 
 # --- Material and layouter -----------------------------------------------
 mat = em.Material(er=3.55, color="#488343", opacity=0.4)
@@ -76,8 +76,8 @@ diel = pcb.generate_pcb()  # substrate dielectric block
 air = pcb.generate_air(4 * th)  # surrounding air box
 
 # --- Define ports for simulation ----------------------------------------
-p1 = pcb.modal_port(pcb["p1"], 1, width_multiplier=5, height=4 * th)
-p2 = pcb.modal_port(pcb["p2"], 2, width_multiplier=5, height=4 * th)
+p1 = pcb.modal_port(pcb["p1"], 1, width_multiplier=5, height=4 * th, assume_homogeneous=True)
+p2 = pcb.modal_port(pcb["p2"], 2, width_multiplier=5, height=4 * th, assume_homogeneous=True)
 
 # --- Solver settings -----------------------------------------------------
 model.mw.set_resolution(0.2)  # mesh density: fraction of wavelength

@@ -498,6 +498,10 @@ class Assembler:
             system = SystemPattern(key, field, volume_coo_to_csc, robin_bcs)
             self._system = system
             self._periodic_patterns = None
+        elif system.volume_coo_to_csc is None:
+            # [Written by Claude] Dropped after an earlier cached assembly; the volume pattern is the same.
+            volume_coo_to_csc.release_pattern()
+            system.volume_coo_to_csc = volume_coo_to_csc
 
         E = system.volume_coo_to_system_data(Evec)
         del Evec
@@ -506,6 +510,9 @@ class Assembler:
 
         if use_cache:
             system.cached_E, system.cached_B = E, B
+            # [Written by Claude] With E and B cached the COO→CSC mapping (two indices per COO entry, the largest
+            # object of the assembly) is not used again, unless the cache is bypassed; then it is rebuilt.
+            system.volume_coo_to_csc = None
         return system, E, B
 
     def _assemble_robin_terms(

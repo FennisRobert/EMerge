@@ -1,5 +1,58 @@
 # Changelog
 
+## 3.0.8 — changes since 3.0.7
+
+### New features
+
+- **SPARTA is installed with EMerge** on macOS, Windows (x86-64) and Linux (x86-64 and ARM64), the platforms
+  with SPARTA wheels. On other platforms it is skipped and EMerge uses its other solvers. EMerge also runs when
+  an installed SPARTA does not load: it warns and continues without it. To run without SPARTA, uninstall it
+  (`pip uninstall sparta-solver`) or set the environment variable `EMERGE_DISABLE_SPARTA=1`.
+- **`SolverSparta.config(**settings)`** sets SPARTA's own settings by name, e.g.
+  `model.set_solver(em.solvers.Sparta).config(supernodal=True)`. Its docstring describes every setting of
+  SPARTA 0.3.5. Settings that EMerge manages itself (`force_cpu`, `hybrid`, `mtype`, `threads`) are refused with
+  what to use instead, and a setting the installed SPARTA does not know raises an error that names its version.
+
+### Changed behaviour
+
+- **SPARTA is the first choice for sweeps.** Before, PARDISO was used where it is available (x86) and SPARTA
+  otherwise; now SPARTA comes first, then PARDISO, then Apple Accelerate (AASDS).
+- **Less memory, faster assembly.** On a 177k tetrahedra model (1.2M degrees of freedom), the memory still in
+  use after a sweep went from 7.7 to 3.4 GB and the peak from 21.5 to 17.6 GB (6 frequencies,
+  `frequency_groups=1`); the volume assembly is about 50 % faster. Most of it came from the COO to CSC mapping of
+  the system matrix, which now uses 32-bit indices, frees its buffers after use and is dropped once the volume
+  matrices are cached. The peak is now set by the factorization of the solver.
+- **`Mesh3D` stores less.** The dictionaries `inv_edges`, `inv_tris`, `inv_tets` and the GMSH tag mappings
+  (`n_i2t`, `n_t2i`, `tet_i2t`, `tet_t2i`, `tri_i2t`, `tri_t2i`, `edge_i2t`, `edge_t2i`) are removed, as are the
+  unused `edge_to_tri` and `node_to_edge`. `ftag_to_node` is now derived from `ftag_to_tri`. `get_edge`,
+  `get_tri` and `get_tet` still work. Result files of earlier versions still load.
+- **One procedure for the port modes of `ModalPort` and `WavePort`.** Both fix their modes at one frequency (a
+  `ModalPort` at its first modal analysis, a `WavePort` at the highest frequency) and then scale them to the
+  other frequencies (a homogeneous port face) or follow them by solving, matched by their field and with a
+  continuous phase. Before, a `ModalPort` on an inhomogeneous face re-sorted its modes by β at every frequency.
+  The S-parameters of the tested ports did not change. Related changes:
+  - A `ModalPort` keeps `number_of_modes` modes after a sweep (before, every mode its analyses had solved).
+  - Below cutoff a `ModalPort` no longer solves at the frequencies where its mode is predicted to be evanescent
+    (it kept the mode of the nearest frequency there anyway).
+  - `modal_analysis()` returns the number of modes it found, and warns instead of raising an error when no mode
+    propagates; the sweep still stops with an error if a `ModalPort` has fewer modes than `number_of_modes`.
+
+### Bug fixes
+
+- **Port boundary terms for TM modes and ports in magnetic material** (#106). A `ModalPort` used the Robin
+  coefficient γ = jβ for every mode, which is exact for TE and TEM modes only; a TM mode needs γ = jk²/β. Both
+  `ModalPort` and `WavePort` also left out the 1/μr of the port boundary term. An empty guide with PMC side walls
+  (a TM mode) reflected |S11| = 0.18 and a guide filled with μr = 4 reflected |S11| = 0.86; both are now below
+  0.001. The coefficient is now computed from the mode, so it is jβ for TE/TEM modes and jk²/β for TM modes.
+- **`align_modes()` did not set the polarization of degenerate modes**, such as TE10/TE01 of a square guide or
+  the TE11 pair of a round guide. The eigen solver returns any combination of such a pair, and the alignment only
+  picked from it: in a square guide each port mode was at about 45° to the axes, so a y-polarized wave was split
+  over both modes of the other port. A degenerate TE or TM pair is now rotated onto the alignment vectors.
+- **`WavePort` with `align_modes()` failed** with "'numpy.ndarray' object has no attribute 'x'".
+- **The sign of the modes from the TE/TM split** of a degenerate group (e.g. TE11/TM11 of a rectangular guide)
+  was arbitrary; they now get the canonical sign like the other modes.
+- **`solve_cnosdd`** used outdated signatures of the Robin and second order ABC assembly.
+
 ## 3.0.7 — changes since 3.0.6
 
 ### Bug fixes
@@ -561,7 +614,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.7")`.
+1. Update the version check: `model.check_version("3.0.8")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

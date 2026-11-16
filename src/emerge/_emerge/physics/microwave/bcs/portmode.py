@@ -22,10 +22,31 @@ class PortMode(Saveable):
     modetype: Literal["TEM", "TE", "TM"] = "TEM"
     # [Written by Claude] Cache of robin_gamma()
     _robin_gamma: complex | None = None
+    # [Written by Claude] The sign was set by a positive voltage between the port terminals (TEM modes): the
+    # alignment vectors of the port do not flip it again.
+    voltage_signed: bool = False
 
     @property
     def w0(self) -> float:
         return C0 * self.k0
+
+    # [Written by Claude]
+    def beta_at(self, k0: float, ermur: complex) -> complex:
+        """The propagation constant of this mode at another k0 (the one dispersion rule of all port modes).
+
+        TEM: β ∝ k0. TE, TM and hybrid modes: β² = β0² + εr·μr (k0² - k0_0²), exact for a homogeneous port face
+        (β² = εr·μr k0² - kc²). Below cutoff β = -jα, the mode that decays along its direction of propagation.
+
+        Args:
+            k0 (float): The free space propagation constant
+            ermur (complex): εr·μr of the port face (its mean for an inhomogeneous face)
+        """
+        if abs(k0 - self.k0) <= 1e-9 * abs(self.k0):
+            return self.beta
+        if self.modetype == "TEM":
+            return self.beta / self.k0 * k0
+        beta = np.emath.sqrt(self.beta**2 + ermur * (k0**2 - self.k0**2))
+        return np.conj(beta) if np.imag(beta) > 0 else beta
 
     def __post_init__(self):
         self.neff = self.beta / self.k0

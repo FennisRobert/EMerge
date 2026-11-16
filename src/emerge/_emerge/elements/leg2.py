@@ -86,8 +86,6 @@ class Legrange2(FEMBasis, Saveable):
 
         self.diagnose()
 
-        self.empty_tri_rowcol()
-
     def partition_dof(self, list_tags: list[list[int]]) -> None:
         """Partition_DOF splits the degrees of freedom for an input list of face tags."""
         tags: list[int] = []

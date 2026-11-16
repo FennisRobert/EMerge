@@ -59,22 +59,23 @@ solver automatically; `em.solvers.available()` lists the solvers installed on yo
 
 ### SPARTA (recommended)
 
-For the best performance, install SPARTA, the open source sparse direct solver made for EMerge. It is the fastest
-CPU solver for EMerge, and it can also run on the GPU: Apple silicon (Metal) and AMD (Vulkan).
+SPARTA is the open source sparse direct solver made for EMerge, and its recommended solver. It is the fastest CPU
+solver for EMerge, and it can also run on the GPU: Apple silicon (Metal) and AMD (Vulkan).
 
-Install the wheel of the [latest SPARTA release](https://github.com/FennisRobert/SPARTA/releases/latest), with
-the version of that release in the link. For example, for v0.3.2:
-
-```bash
-pip install sparta-solver --find-links https://github.com/FennisRobert/SPARTA/releases/expanded_assets/v0.3.2
-```
-
-Once installed, EMerge uses SPARTA on the CPU. Where PARDISO is available (x86) EMerge picks PARDISO for single
-sweeps; select SPARTA with `model.set_solver(em.solvers.Sparta)`. To run SPARTA on the GPU, set:
+SPARTA is installed with EMerge on macOS, Windows (x86-64) and Linux (x86-64 and ARM64). On other platforms it is
+skipped and EMerge uses its other solvers. Once installed, EMerge uses SPARTA on the CPU for every sweep (before
+3.0.8 PARDISO was preferred where available). To run SPARTA on the GPU, set:
 
 ```python
 model.set_device("GPU")     # or "HYBRID" for a combined GPU + CPU factorization
 ```
+
+If you run into a problem with SPARTA, EMerge works without it:
+
+- set the environment variable `EMERGE_DISABLE_SPARTA=1` to run EMerge as if SPARTA were not installed, or
+- remove it with `pip uninstall sparta-solver`.
+
+Please report the problem at the [SPARTA issues](https://github.com/FennisRobert/SPARTA/issues).
 
 ### Threads
 

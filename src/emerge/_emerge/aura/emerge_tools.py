@@ -79,11 +79,7 @@ def build_topology(mesh: Any, nodes: np.ndarray, tets: np.ndarray) -> None:
     tris, t_inv = np.unique(pt, axis=0, return_inverse=True)
     mesh.tris = tris.T.copy()
     mesh.tet_to_tri = t_inv.reshape(4, nT)
-    nE, nR = mesh.edges.shape[1], mesh.tris.shape[1]
-
-    mesh.inv_edges = {(a, b): i for i, (a, b) in enumerate(edges.tolist())}
-    mesh.inv_tris = {(a, b, c): i for i, (a, b, c) in enumerate(tris.tolist())}
-    mesh.inv_tets = {tuple(t): i for i, t in enumerate(np.sort(tets, axis=0).T.tolist())}
+    nR = mesh.tris.shape[1]
 
     # Tri -> Tet (same algorithm as _pre_update)
     flat_tris = mesh.tet_to_tri.ravel(order="F")
@@ -108,30 +104,6 @@ def build_topology(mesh: Any, nodes: np.ndarray, tets: np.ndarray) -> None:
     mesh.tri_to_edge[0] = _lookup_edge(mesh.tris[0], mesh.tris[1])
     mesh.tri_to_edge[1] = _lookup_edge(mesh.tris[1], mesh.tris[2])
     mesh.tri_to_edge[2] = _lookup_edge(mesh.tris[0], mesh.tris[2])
-
-    # Edge -> Tri
-    flat_edges = mesh.tri_to_edge.ravel(order="F")
-    flat_tris = np.repeat(np.arange(nR, dtype=int), 3)
-    sort_idx = np.argsort(flat_edges, stable=True)
-    sorted_edges, sorted_tris_e = flat_edges[sort_idx], flat_tris[sort_idx]
-    _, first_idx, counts = np.unique(sorted_edges, return_index=True, return_counts=True)
-    max_count = int(counts.max())
-    mesh.edge_to_tri = np.full((max_count, nE), MISSING, dtype=int)
-    for k in range(max_count):
-        m = counts > k
-        mesh.edge_to_tri[k, sorted_edges[first_idx[m]]] = sorted_tris_e[first_idx[m] + k]
-
-    # Node -> Edge
-    flat_nodes = mesh.edges.ravel(order="F")
-    flat_edges = np.repeat(np.arange(nE, dtype=int), 2)
-    sort_idx = np.argsort(flat_nodes, stable=True)
-    sorted_nodes, sorted_edges = flat_nodes[sort_idx], flat_edges[sort_idx]
-    _, first_idx, counts = np.unique(sorted_nodes, return_index=True, return_counts=True)
-    max_count = int(counts.max())
-    mesh.node_to_edge = np.full((max_count, nN), MISSING, dtype=int)
-    for k in range(max_count):
-        m = counts > k
-        mesh.node_to_edge[k, sorted_nodes[first_idx[m]]] = sorted_edges[first_idx[m] + k]
 
     # Derived quantities
     t = mesh.tris
@@ -180,6 +152,19 @@ def mesh_to_aura_inputs(mesh: Any, periodic: Periodic | None = None) -> dict[str
     )
 
 
+def _find_columns(table: np.ndarray, rows: np.ndarray) -> np.ndarray:
+    """[Written by Claude] Column of table (K, N) for every vertex tuple in rows (M, K); raises if one is missing."""
+    from emr import mesh3d as _emr_mesh
+    from ..mesh3d import _MISSING_ID as _MISSING
+
+    rows = np.asarray(rows, dtype=np.int64).reshape(-1, table.shape[0])
+    ids = _emr_mesh.find_columns(np.ascontiguousarray(table, dtype=np.int64), np.ascontiguousarray(rows.T))
+    missing = np.flatnonzero(ids == _MISSING)
+    if missing.size:
+        raise KeyError(tuple(rows[missing[0]].tolist()))
+    return ids
+
+
 def refine_mesh3d(mesh: Any, result: RefineResult) -> Any:
     """Return a new Mesh3D equal to ``mesh`` refined according to ``result``.
 
@@ -192,17 +177,6 @@ def refine_mesh3d(mesh: Any, result: RefineResult) -> Any:
         setattr(new, attr, val.copy() if hasattr(val, "copy") else val)
 
     build_topology(new, result.nodes.T, result.tets.T)
-    nN, nT = new.nodes.shape[1], new.tets.shape[1]
-
-    # Node ids are stable (new nodes are appended), so node tags carry over.
-    new.n_i2t = dict(mesh.n_i2t)
-    next_tag = max(mesh.n_i2t.values(), default=0) + 1
-    for i in range(mesh.nodes.shape[1], nN):
-        new.n_i2t[i] = next_tag
-        next_tag += 1
-    new.n_t2i = {t: i for i, t in new.n_i2t.items()}
-    new.tet_i2t = {i: i + 1 for i in range(nT)}
-    new.tet_t2i = {t: i for i, t in new.tet_i2t.items()}
 
     # Volumes: every tet carries the volume tag it was refined/flipped within.
     region = np.asarray(result.tet_region)
@@ -210,22 +184,17 @@ def refine_mesh3d(mesh: Any, result: RefineResult) -> Any:
 
     # Faces
     ftags = np.asarray(result.face_tri_tags)
-    tri_ids = np.array([new.inv_tris[tuple(f)] for f in result.face_tris.tolist()], dtype=np.int64)
-    new.ftag_to_tri, new.ftag_to_node, new.ftag_to_edge = {}, {}, {}
+    tri_ids = _find_columns(new.tris, result.face_tris)
+    new.ftag_to_tri, new.ftag_to_edge = {}, {}
     for tag in mesh.ftag_to_tri:
         ids = tri_ids[ftags == tag]
         new.ftag_to_tri[tag] = ids.tolist()
-        new.ftag_to_node[tag] = new.tris[:, ids].T.ravel().tolist()
         new.ftag_to_edge[tag] = sorted(np.unique(new.tri_to_edge[:, ids]).tolist())
-    new.tri_i2t = {int(i): k + 1 for k, i in enumerate(np.unique(tri_ids))}
-    new.tri_t2i = {t: i for i, t in new.tri_i2t.items()}
 
     # Curves
     ctags = np.asarray(result.curve_edge_tags)
-    edge_ids = np.array([new.inv_edges[tuple(e)] for e in result.curve_edges.tolist()], dtype=np.int64)
+    edge_ids = _find_columns(new.edges, result.curve_edges)
     new.etag_to_edge = {tag: edge_ids[ctags == tag].tolist() for tag in mesh.etag_to_edge}
-    new.edge_i2t = {int(i): k + 1 for k, i in enumerate(np.unique(edge_ids))}
-    new.edge_t2i = {t: i for i, t in new.edge_i2t.items()}
     curve_nodes = new.edges[:, edge_ids].ravel() if edge_ids.size else np.zeros(0, dtype=int)
     new.geonodes = sorted(set(mesh.geonodes) | set(curve_nodes.tolist()))
 

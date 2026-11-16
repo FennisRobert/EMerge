@@ -20,6 +20,8 @@ class PortMode(Saveable):
     neff: float = 1
     Z0: float = 50.0
     modetype: Literal["TEM", "TE", "TM"] = "TEM"
+    # [Written by Claude] Cache of robin_gamma()
+    _robin_gamma: complex | None = None
 
     @property
     def w0(self) -> float:
@@ -51,6 +53,51 @@ class PortMode(Saveable):
         self.E_function.constant *= self.norm_factor
         self.H_function.constant *= self.norm_factor
         logger.debug(f".. setting port mode amplitude to: {self.norm_factor:.2f} ")
+
+    # [Written by Claude]
+    def urinv_t(self) -> complex:
+        """The transverse inverse relative permeability 1/μr of the port face (area weighted mean).
+
+        The port boundary condition sets (1/μr) n×∇×E, the tangential magnetic field, so every port term
+        carries this factor. It is 1 for a port face without magnetic material.
+        """
+        hf = self.H_function
+        d = hf.diadic
+        if d is None:
+            return 1.0
+        p = hf.nodes[:2, hf.tris]
+        area = 0.5 * np.abs((p[0, 1] - p[0, 0]) * (p[1, 2] - p[1, 0]) - (p[0, 2] - p[0, 0]) * (p[1, 1] - p[1, 0]))
+        return complex(np.sum(area * 0.5 * (d[0, 0, :] + d[1, 1, :])) / np.sum(area))
+
+    # [Written by Claude]
+    def robin_gamma(self) -> complex:
+        """The Robin coefficient γ of the mode: n×∇×E_t = -γ E_t for the mode leaving through the port.
+
+        γ = ∫ (jβ e_t + ∇e_z)·e_t dS / ∫ e_t·e_t dS. It is jβ for TE and TEM modes (e_z = 0) and j k²/β for TM
+        modes (∇e_z = -j kc²/β e_t, k² = εr μr k0²), so a Robin port terminates a TM mode without reflection
+        too. For a hybrid mode it is the best single coefficient.
+        """
+        if self._robin_gamma is not None:
+            return self._robin_gamma
+        from ....mth.integrals import surface_integral
+
+        efunc = self.E_function
+        nodes = np.array(efunc.cs.in_global_cs(efunc.nodes[0], efunc.nodes[1], efunc.nodes[2]))
+        const = np.ones((efunc.tris.shape[1],), dtype=np.complex128)
+
+        def w_dot_e(xs, ys, zs):
+            w = efunc.calc_eff_modeprofile(xs, ys, zs)
+            e = efunc.calcExy(xs, ys, zs)
+            return w[0] * e[0] + w[1] * e[1] + w[2] * e[2]
+
+        def e_dot_e(xs, ys, zs):
+            e = efunc.calcExy(xs, ys, zs)
+            return e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
+
+        num = surface_integral(nodes, efunc.tris, w_dot_e, const, gq_order=5)
+        den = surface_integral(nodes, efunc.tris, e_dot_e, const, gq_order=5)
+        self._robin_gamma = complex(num / den) if abs(den) > 0 else 1j * self.beta
+        return self._robin_gamma
 
     def compute_kappa(self, nodes: np.ndarray, tris: np.ndarray) -> complex:
         """Computes the kappa_m coefficient for Wave Port Boundary Conditions"""

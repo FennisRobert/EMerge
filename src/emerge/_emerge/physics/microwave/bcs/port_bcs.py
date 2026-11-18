@@ -2262,7 +2262,7 @@ class LumpedPort(PortBC, Saveable):
         height: float | None = None,
         direction: Axis | tuple[float, float, float] | None = None,
         power: float = 1,
-        Z0: float = 50,
+        Z0: complex | None = None,
     ):
         """Generates a lumped power boundary condition.
 
@@ -2279,7 +2279,9 @@ class LumpedPort(PortBC, Saveable):
             height (float): The port height (meters).
             direction (Axis | tuple[float, float, float] | None): The port direction as an Axis object (em.Axis(..) or em.ZAX)
             power (float, optional): The port output power. Defaults to 1.
-            Z0 (float, optional): The port impedance. Defaults to 50.
+            Z0 (complex, optional): The port reference impedance; it may be complex (with a positive real part), the
+                S-parameters are then power wave S-parameters. Defaults to the impedance of a PCB lumped port face,
+                otherwise 50.
         """
         super().__init__(face)
 
@@ -2292,11 +2294,19 @@ class LumpedPort(PortBC, Saveable):
                 width = attr.width
                 height = attr.height
                 direction = attr.direction
+        # [Written by Claude] The impedance of a PCB lumped port face (pcb.lumped_port(..., impedance=...))
+        if Z0 is None and isinstance(face, GeoObject) and (attr := face.properties.get(LumpedPortAttribute)):
+            Z0 = attr.z0
+        if Z0 is None:
+            Z0 = 50
 
         if width is None or height is None or direction is None:
             raise ValueError(
                 f"The width, height and direction could not be extracted from {face}"
             )
+        # [Written by Claude] A source with Re(Z0) <= 0 has no defined available power
+        if np.real(Z0) <= 0:
+            raise ValueError(f"The port impedance must have a positive real part, got Z0={Z0}")
 
         logger.debug(
             f"Lumped port: width={1000 * width:.1f}mm, height={1000 * height:.1f}mm, direction={direction}"
@@ -2304,7 +2314,7 @@ class LumpedPort(PortBC, Saveable):
         self.port_number: int = port_number
         self.active: bool = False
         self.power: float = power
-        self.Z0: float = Z0
+        self.Z0: complex = Z0
 
         self.width: float = abs(width)
         self.height: float = abs(height)  # type: ignore
@@ -2314,6 +2324,8 @@ class LumpedPort(PortBC, Saveable):
         # self.cs = Axis(self.selection.normal).construct_cs()  # type: ignore
         self.cs = GCS
         self.voltage_integration_line: list[Line] = []
+        # [Written by Claude] The weight of every integration line in the port voltage (None: equal weights)
+        self.voltage_integration_weights: list[float] | None = None
         self.v_integration = True
 
         # Sanity checks
@@ -2337,12 +2349,36 @@ class LumpedPort(PortBC, Saveable):
 
     @property
     def voltage(self) -> float:
-        """The Port voltage required for the provided output power (time average)
+        """The incident voltage V⁺ = Vs/2 of the port (peak).
+
+        The port is a source Vs = 2V⁺ in series with Z0. V⁺ = √(2 P Re Z0) makes the available power of the source
+        |Vs|²/(8 Re Z0) equal to the port power P, also for a complex Z0. [Written by Claude]
 
         Returns:
-            float: The port voltage
+            float: The incident voltage
         """
-        return np.sqrt(2 * self.power * self.Z0)
+        return np.sqrt(2 * self.power * np.real(self.Z0))
+
+    # [Written by Claude]
+    def power_waves(self, V: complex, active: bool) -> tuple[complex, complex]:
+        """The power waves a and b (Kurokawa) of the port for the port voltage V, with |a|² the incident power.
+
+        a = (V + Z0 I) / (2√(2 Re Z0)), b = (V - Z0* I) / (2√(2 Re Z0)), with I the current into the structure:
+        I = (Vs - V) / Z0 when the port is driven and -V / Z0 when it is not. For a real Z0, b/a is the voltage
+        reflection coefficient; for a complex Z0 it is zero at conjugate match, and 1 - |b/a|² is the accepted power.
+
+        Args:
+            V (complex): The port voltage
+            active (bool): Whether this port is driven
+
+        Returns:
+            tuple[complex, complex]: a and b in √W
+        """
+        Z = complex(self.Z0)
+        Vs = 2 * self.voltage if active else 0.0
+        current = (Vs - V) / Z
+        norm = 2 * np.sqrt(2 * Z.real)
+        return (V + Z * current) / norm, (V - np.conj(Z) * current) / norm
 
     def get_basis(self) -> np.ndarray:
         return self.cs._basis

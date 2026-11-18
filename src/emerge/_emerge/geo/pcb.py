@@ -2447,7 +2447,7 @@ class PCB:
         stripline: StripLine | str,
         port_number: int,
         ground_layer: int = 0,
-        impedance: float = 50.0,
+        impedance: complex = 50.0,
         name: str | None = "LumpedPort",
     ) -> GeoPolygon:
         """Generate a lumped-port object to be created.
@@ -2468,7 +2468,7 @@ class PCB:
             stripline (StripLine | str): The stripline object or a reference to the stripline object
             port_number (int): The port number assigned to the lumped port
             ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
-            impedance (float, optional): The port impedance in Ohm. Defaults to 50.0.
+            impedance (complex, optional): The port reference impedance in Ohm (may be complex). Defaults to 50.0.
             name (str | None, optional): The name for the resultant object. Defaults to 'LumpedPort'.
 
         Returns:
@@ -2530,7 +2530,7 @@ class PCB:
         layer: int,
         port_number: int,
         ground_layer: int = 0,
-        impedance: float = 50.0,
+        impedance: complex = 50.0,
         name: str | None = "LumpedPort",
     ) -> GeoPolygon:
         """Generate a lumped-port object to be created.
@@ -2543,7 +2543,7 @@ class PCB:
             layer (int): The PCB layer the port starts at
             port_number (int): The port number assigned to the lumped port
             ground_layer (int, optional): The PCB layer the port is extruded down to (the ground). Defaults to 0.
-            impedance (float, optional): The port impedance in Ohm. Defaults to 50.0.
+            impedance (complex, optional): The port reference impedance in Ohm (may be complex). Defaults to 50.0.
             name (str | None, optional): The name for the resultant object. Defaults to 'LumpedPort'.
 
         Returns:

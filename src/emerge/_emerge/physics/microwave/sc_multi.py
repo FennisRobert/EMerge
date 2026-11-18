@@ -106,10 +106,12 @@ def farfield_ports(
 
     excitation = field.excitation
     ehfields = []
+    pincs = []
     try:
         for p in ports:
             field.excite_port(p)
             ehfields.append(field.interpolate(xs, ys, zs, mapping=mapping))
+            pincs.append(field.incident_power)
     finally:
         field.excitation = excitation
 
@@ -135,6 +137,7 @@ def farfield_ports(
         # Ptot of the simulated part already is the power of the full structure at 1 W (as in _farfield)
 
     out = dict()
-    for p, E, H, Pt in zip(ports, Effs, Hffs, Ptots):
+    for p, E, H, Pt, Pinc in zip(ports, Effs, Hffs, Ptots, pincs):
         out[p] = EHFieldFF(E.reshape((3,) + T.shape), H.reshape((3,) + T.shape), T, P, Pt, freq=field.freq)
+        out[p].Pinc = Pinc  # [Written by Claude] the reference of the gain
     return out

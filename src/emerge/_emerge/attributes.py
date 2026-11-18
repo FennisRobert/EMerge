@@ -382,7 +382,7 @@ class LumpedPortAttribute(PhysicalAttribute):
                  direction: tuple[float, float, float] | Axis, 
                  width: float,
                  height: float,
-                 impedance: float = 50.0):
+                 impedance: complex = 50.0):
         """Mark a surface as a lumped port.
 
         Args:
@@ -390,13 +390,13 @@ class LumpedPortAttribute(PhysicalAttribute):
             direction (tuple[float, float, float] | Axis): The direction of the port excitation
             width (float): The port width
             height (float): The port height (along the direction)
-            impedance (float, optional): The port impedance. Defaults to 50.0.
+            impedance (complex, optional): The port reference impedance (may be complex). Defaults to 50.0.
         """
         self.port_number: int = port_number
         self.width: float = width
         self.height: float = height
         self.direction: Axis = _parse_axis(direction)
-        self.z0: float = impedance
+        self.z0: complex = impedance
     
     def __descr__(self):
         return f'{self.port_number},{format_length(self.width)}x{format_length(self.height)}, {self.direction}, {self.z0:.1f}Ω'

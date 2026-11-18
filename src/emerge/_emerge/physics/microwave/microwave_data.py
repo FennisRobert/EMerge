@@ -692,6 +692,29 @@ class MWField(Saveable):
             )
 
 
+    # [Written by Claude]
+    @property
+    def incident_power(self) -> float:
+        """The power incident on the ports for the current excitation (W): the sum of |c|² P of all excited ports.
+
+        The field of a port at excitation coefficient c carries |c|² times its port power P. This is the reference
+        of the (realized) gain of a far field. Fields without port excitation (background fields) give 1.
+        """
+        if self._mode_field is not None or len(self.port_modes) == 0:
+            return 1.0
+        total = 0.0
+        for pm in self.port_modes:
+            coeff = self.excitation.get(pm.smat_index, 0.0)
+            total += abs(coeff) ** 2 * (1.0 if pm.Pout is None else float(pm.Pout))
+        return total if total > 0 else 1.0
+
+    # [Written by Claude]
+    def _ffield(self, E, H, theta, phi, Ptot, **kwargs) -> EHFieldFF:
+        """An EHFieldFF with the incident power of the excitation as the reference of its gain."""
+        ff = EHFieldFF(E, H, theta, phi, Ptot, **kwargs)
+        ff.Pinc = self.incident_power
+        return ff
+
     @property
     def relative(self) -> MWField:
         """ Returns the same MWField object but with the relative flag turned on
@@ -1505,9 +1528,7 @@ class MWField(Saveable):
         theta, phi = arc_on_plane(refdir, plane_normal_parsed, ang_range, Npoints)
         E, H, Ptot = self._farfield(theta, phi, faces, origin, syms=syms)
         angs = np.linspace(*ang_range, Npoints) * np.pi / 180
-        return EHFieldFF(
-            _E=E, _H=H, theta=theta, phi=phi, Ptot=Ptot, ang=angs, freq=self.freq
-        )
+        return self._ffield(E, H, theta, phi, Ptot, ang=angs, freq=self.freq)
 
     def farfield_3d(
         self,
@@ -1543,7 +1564,7 @@ class MWField(Saveable):
         E = E.reshape((3,) + T.shape)
         H = H.reshape((3,) + T.shape)
 
-        return EHFieldFF(E, H, T, P, Ptot, freq=self.freq)
+        return self._ffield(E, H, T, P, Ptot, freq=self.freq)
 
     # [Written by Claude]
     def farfield_3d_ports(
@@ -1672,7 +1693,7 @@ class MWField(Saveable):
         E = E.reshape((3,) + theta.shape)
         H = H.reshape((3,) + theta.shape)
 
-        return EHFieldFF(E, H, theta, phi, Ptot, freq=self.freq)
+        return self._ffield(E, H, theta, phi, Ptot, freq=self.freq)
         
     def _farfield(
         self,

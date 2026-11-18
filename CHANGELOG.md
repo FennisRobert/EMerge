@@ -1,5 +1,43 @@
 # Changelog
 
+## 3.0.9 — changes since 3.0.8
+
+### Changed behaviour
+
+- **Lumped port S-parameters are power waves** (Kurokawa), also for a complex `Z0`. For a real `Z0` the
+  definition is unchanged. For a complex `Z0`, S11 is now zero at conjugate match, 1 − |S11|² is the power the
+  structure accepts, and `renormalise_s` gives correct results. Before, S11 was the voltage reflection coefficient
+  (Zin − Z0)/(Zin + Z0). S-parameters of lumped ports with a complex `Z0` therefore differ from 3.0.8.
+- **A lumped port with a complex `Z0` delivers its port power.** Its source voltage was set from √(2 P Z0) with
+  the complex `Z0`, so the available power was P·|Z0|/Re(Z0): 1.14 W instead of 1 W for 73 ± 40j Ω. The source is
+  now 2·√(2 P Re Z0). A `Z0` with a real part ≤ 0 raises an error.
+- **The port voltage of a lumped port is a width weighted mean.** It averages the voltage along lines across the
+  port. The lines at the corners of a rectangular port were missed (an exact floating point comparison) and every
+  line had the same weight, so a mesh refined near the edges biased the voltage (about 1 % on a dipole feed).
+  Each line now has the weight of its part of the port edge. Lumped port S-parameters change slightly
+  (≈ 0.1–0.5 % in |S11| on the tested dipole).
+- **Gain is relative to the incident power.** `EHFieldFF.gain` divided the far field by the field of 1 W
+  isotropic, so a port with `power=2` gave 3 dB more gain. Far fields now carry the incident power of the
+  excitation (`EHFieldFF.Pinc`, Σ |c|² P over the excited ports, from the new `MWField.incident_power`), and the
+  gain is relative to it: the realized gain. This needs emsutil with `EHFieldFF.Pinc`; with an older emsutil the
+  gain is relative to 1 W as before. A `ModalPort` now records `Pout = 1` in the result data, because its modes
+  are always normalized to 1 W.
+
+### Bug fixes
+
+- **Lumped ports with a complex `Z0` gave wrong S-parameters and impedances**, most visibly on antennas (e.g. a
+  dipole fed with 73 + 40j Ω). Besides the two causes above, the S-parameter caps (`mw_cap_sp_single`,
+  `mw_cap_sp_col`, on by default) assume power waves: a voltage reflection coefficient above 1 (possible for a
+  complex `Z0`) was scaled down. A short dipole driven from 73 + 40j Ω read as Zin = 380 − 254j Ω instead of
+  10 − 457j Ω.
+- **`pcb.lumped_port(..., impedance=...)` ignored the impedance**: the port was always 50 Ω. A `LumpedPort`
+  on a PCB lumped port face now takes the impedance of the face unless `Z0` is given.
+- **S-parameters between lumped ports with a different `power`** were relative to the power of the receiving
+  port instead of the driven port.
+- **`uv add emerge[cudss]` failed on Windows**: `nvidia-cublas-cu12` 12.9.3.13 has no Windows wheel, and uv
+  resolves one version for all platforms (pip, which resolves for the current platform only, was not affected). The `cudss` extras now exclude that version on Windows
+  and install the CUDA packages on Linux and Windows only (there are no macOS wheels).
+
 ## 3.0.8 — changes since 3.0.7
 
 ### New features
@@ -614,7 +652,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.8")`.
+1. Update the version check: `model.check_version("3.0.9")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

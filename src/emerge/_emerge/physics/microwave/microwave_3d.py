@@ -55,7 +55,6 @@ from typing import Callable, Literal, Any
 from contextlib import nullcontext
 from functools import partial
 import multiprocessing as mp
-from cmath import sqrt as csqrt
 from itertools import product
 import numpy as np
 import threading
@@ -785,7 +784,7 @@ class Microwave3D(GenericPhysics3D):
                     logger.info(f'   - {attr}')
 
             if wpattr := geometry.properties.get(LumpedPortAttribute):
-                self.bc.LumpedPort(geometry, wpattr.port_number, width=wpattr.width, height=wpattr.height, direction=wpattr.direction)
+                self.bc.LumpedPort(geometry, wpattr.port_number, width=wpattr.width, height=wpattr.height, direction=wpattr.direction, Z0=wpattr.z0)
                 for attr in geometry.properties:
                     logger.info(f'   - {attr}')
 
@@ -915,7 +914,34 @@ class Microwave3D(GenericPhysics3D):
 
         dotprod = xs * field_axis[0] + ys * field_axis[1] + zs * field_axis[2]
 
-        start_id = np.argwhere(dotprod == np.min(dotprod)).flatten()
+        # [Written by Claude] The nodes of the start edge of the port. An exact comparison missed nodes that lie
+        # on it within the round-off of the mesh (the corners of a rectangular port).
+        on_edge = dotprod <= np.min(dotprod) + 1e-6 * port.height
+        start_id = np.argwhere(on_edge).flatten()
+
+        # [Written by Claude] Each line stands for the part of the start edge around its node: half of every port
+        # triangle edge along the start edge that ends in the node. The port voltage is the width weighted mean
+        # of the line voltages, so a mesh refined near the corners does not bias it.
+        start_nodes = points[start_id]
+        local = {int(n): i for i, n in enumerate(start_nodes)}
+        tris = self.mesh.tris[:, self.mesh.get_triangles(port.tags)]
+        weights = np.zeros(start_nodes.shape[0])
+        seen: set[tuple[int, int]] = set()
+        for c0, c1 in ((0, 1), (1, 2), (2, 0)):
+            for n0, n1 in zip(tris[c0], tris[c1]):
+                n0, n1 = int(n0), int(n1)
+                if n0 in local and n1 in local:
+                    key = (min(n0, n1), max(n0, n1))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    length = np.linalg.norm(self.mesh.nodes[:, n0] - self.mesh.nodes[:, n1])
+                    weights[local[n0]] += length / 2
+                    weights[local[n1]] += length / 2
+        if weights.sum() > 0:
+            port.voltage_integration_weights = list(weights / weights.sum())
+        else:
+            port.voltage_integration_weights = None
 
         xs = xs[start_id]
         ys = ys[start_id]
@@ -3282,9 +3308,14 @@ class Microwave3D(GenericPhysics3D):
                     continue
 
                 port_tets = self.mesh.get_face_tets(active_port.tags)
+                # [Written by Claude] The incident power wave of the driven port: lumped ports drive their power P,
+                # the mode of the other ports is normalized to 1 W.
+                a_incident_j = np.sqrt(active_port.power) if isinstance(active_port, LumpedPort) else 1.0
 
                 port_beta = active_port.mode_beta(k0, mode_nr_j)
                 port_Z0 = active_port.mode_Z0(k0, mode_nr_j)
+                # [Written by Claude] The power the port drives: the modes of a ModalPort are normalized to 1 W
+                port_power = 1.0 if isinstance(active_port, ModalPort) else active_port.power
 
                 fielddata.add_port_properties(
                     active_port.port_number,
@@ -3293,7 +3324,7 @@ class Microwave3D(GenericPhysics3D):
                     k0=k0,
                     beta=port_beta,
                     Z0=port_Z0,
-                    Pout=active_port.power,
+                    Pout=port_power,
                 )
 
                 scalardata.add_port_properties(
@@ -3303,7 +3334,7 @@ class Microwave3D(GenericPhysics3D):
                     k0=k0,
                     beta=port_beta,
                     Z0=port_Z0,
-                    Pout=active_port.power,
+                    Pout=port_power,
                 )
 
                 solution = job._solutions_dict[smat_index_j]
@@ -3339,6 +3370,7 @@ class Microwave3D(GenericPhysics3D):
                         k0,
                         ertri[:, :, tris],
                         urtri[:, :, tris],
+                        a_incident=a_incident_j,
                     )
                     bi = EdotF_pas / (EdotE_pas)
                     logger.debug(
@@ -3468,6 +3500,7 @@ class Microwave3D(GenericPhysics3D):
         k0: float,
         erp: np.ndarray,
         urp: np.ndarray,
+        a_incident: complex = 1.0,
     ) -> tuple[complex, complex]:
         """Computes the S-parameter data for a given boundary condition and field function.
 
@@ -3478,6 +3511,8 @@ class Microwave3D(GenericPhysics3D):
             k₀ (float): The simulation phase constant
             erp (np.ndarray): The εᵣ of the port face triangles
             urp (np.ndarray): The μᵣ of the port face triangles.
+            a_incident (complex, optional): The incident power wave √P of the driven port, the reference of the
+                S-parameters of a passive lumped port. Defaults to 1.
 
         Returns:
             tuple[complex, complex]: _description_
@@ -3511,27 +3546,18 @@ class Microwave3D(GenericPhysics3D):
             ctr = 0
             V = 0
             Nlines = len(bc.voltage_integration_line)
-            for line in bc.voltage_integration_line:
+            weights = getattr(bc, "voltage_integration_weights", None)
+            if weights is None or len(weights) != Nlines:
+                weights = [1 / Nlines] * Nlines
+            for line, weight in zip(bc.voltage_integration_line, weights):
                 npts = line.xs.shape[0]
                 slc = slice(ctr, ctr + npts)
                 ctr += npts
-                V += line.line_integral_precalc(Ex[slc], Ey[slc], Ez[slc]) / Nlines
+                V += line.line_integral_precalc(Ex[slc], Ey[slc], Ez[slc]) * weight
 
-            if active:
-                if bc.voltage is None:
-                    raise ValueError(
-                        "Cannot compute port S-paramer with a None port voltage."
-                    )
-                a = bc.voltage
-                b = V - bc.voltage
-            else:
-                a = bc.voltage
-                b = V
-
-            a_sig = a * csqrt(1 / (2 * bc.Z0))
-            b_sig = b * csqrt(1 / (2 * bc.Z0))
-
-            return b_sig, a_sig
+            # [Written by Claude] Power waves: S_ij = b_i / a_j, with a_j the incident wave of the driven port
+            a_own, b_sig = bc.power_waves(V, active)
+            return b_sig, (a_own if active else a_incident)
         else:
             const = np.ones_like(erp[0, 0, :].squeeze(), dtype=np.complex128)
 

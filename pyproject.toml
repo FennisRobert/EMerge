@@ -1,6 +1,6 @@
 [project]
 name = "emerge"
-version = "3.0.8"
+version = "3.0.9"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"
@@ -27,15 +27,20 @@ dependencies = [
 umfpack = [
   "scikit-umfpack; sys_platform != 'win32'",
 ]
+# [Written by Claude] CUDA wheels exist for Linux and Windows only
 cudss = [
-  "nvidia-cudss-cu12==0.5.0.16",
-  "nvmath-python[cu12]==0.5.0",
-  "cupy-cuda12x"
+  "nvidia-cudss-cu12==0.5.0.16; sys_platform == 'linux' or sys_platform == 'win32'",
+  "nvmath-python[cu12]==0.5.0; sys_platform == 'linux' or sys_platform == 'win32'",
+  "cupy-cuda12x; sys_platform == 'linux' or sys_platform == 'win32'",
+  # nvidia-cublas-cu12 12.9.3.13 has no Windows wheel: a uv lock (one version for all platforms) failed to install on Windows
+  "nvidia-cublas-cu12!=12.9.3.13; sys_platform == 'win32'",
 ]
 cudss12 = [
-  "nvidia-cudss-cu12==0.5.0.16",
-  "nvmath-python[cu12]==0.5.0",
-  "cupy-cuda12x"
+  "nvidia-cudss-cu12==0.5.0.16; sys_platform == 'linux' or sys_platform == 'win32'",
+  "nvmath-python[cu12]==0.5.0; sys_platform == 'linux' or sys_platform == 'win32'",
+  "cupy-cuda12x; sys_platform == 'linux' or sys_platform == 'win32'",
+  # nvidia-cublas-cu12 12.9.3.13 has no Windows wheel: a uv lock (one version for all platforms) failed to install on Windows
+  "nvidia-cublas-cu12!=12.9.3.13; sys_platform == 'win32'",
 ]
 dxf = [
   "ezdxf"

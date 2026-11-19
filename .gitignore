@@ -62,3 +62,6 @@ emr/target/
 # Compiled EMR extension placed in-tree by editable installs
 src/emr/*.so
 src/emr/*.pyd
+
+# Local working files (benchmarks, slide decks): never committed
+local_files/

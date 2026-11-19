@@ -77,6 +77,26 @@ If you run into a problem with SPARTA, EMerge works without it:
 
 Please report the problem at the [SPARTA issues](https://github.com/FennisRobert/SPARTA/issues).
 
+### CORVID (less memory)
+
+CORVID is the iterative solver of EMerge. It needs far less memory than a direct solve: it factors only the
+first-order (Whitney) part of the system, about a fifth of the unknowns, and solves the full second-order system
+iteratively on top of it. Use it when a model does not fit in memory with a direct solver, or to run larger
+models on the same machine. Install it with:
+
+```bash
+pip install emerge[corvid]
+```
+
+and select it for a model:
+
+```python
+model.set_solver(em.solvers.Corvid)
+```
+
+A direct solver is usually faster on models that fit in memory. CORVID's own documentation is at
+[github.com/FennisRobert/Corvid](https://github.com/FennisRobert/Corvid).
+
 ### Threads
 
 Set the number of CPU threads with:
@@ -207,6 +227,7 @@ The optional extras are only installed when you ask for them.
 
 Installed with `pip install emerge[<extra>]`:
 
+- `corvid`: the CORVID iterative solver (less memory, see [CORVID](#corvid-less-memory))
 - `cudss`: the NVIDIA cuDSS GPU solver
 - `dxf`: ezdxf
 - `cad`: emcad and pygerber (Gerber and ODB++)

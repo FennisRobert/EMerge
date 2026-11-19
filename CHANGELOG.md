@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.10 — changes since 3.0.9
+
+### New features
+
+- **`pip install emerge[corvid]`** installs the CORVID iterative solver (`corvid-solver` 0.5.3 or later, wheels
+  for macOS, Linux and Windows). Select it with `model.set_solver(em.solvers.Corvid)` or
+  `model.mw.set_method("iterative")`. CORVID factors only the first-order (Whitney) part of the system, about a
+  fifth of the unknowns, and solves the full second-order system iteratively on top of it, so it needs far less
+  memory than a direct solve. On four demo models (0.15M to 1.25M unknowns, `frequency_groups=1`, 8 threads) the
+  peak memory of the whole run was 20 to 69 % lower than with SPARTA, with S-parameters within 2·10⁻⁷ of it.
+  SPARTA stays the default: it is usually faster when a model fits in memory. The README has a new CORVID section.
+
 ## 3.0.9 — changes since 3.0.8
 
 ### Changed behaviour
@@ -652,7 +664,7 @@
 
 ### Migrating a 2.8.9 script
 
-1. Update the version check: `model.check_version("3.0.9")`.
+1. Update the version check: `model.check_version("3.0.10")`.
 2. Replace `em.geo.PCBNew` with `em.geo.PCB`, and `pcb.z(i)` arguments with layer indices.
 3. Give `pcb.modal_port()`/`pcb.lumped_port()` a port number, delete the matching
    `model.mw.bc.ModalPort(...)`/`LumpedPort(...)` calls, and use `model.mw.bc.get_port(n)`.

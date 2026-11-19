@@ -1,6 +1,6 @@
 [project]
 name = "emerge"
-version = "3.0.9"
+version = "3.0.10"
 description = "An open source EM FEM simulator in Python"
 readme = "README.md"
 requires-python = ">=3.10, <3.14"
@@ -41,6 +41,10 @@ cudss12 = [
   "cupy-cuda12x; sys_platform == 'linux' or sys_platform == 'win32'",
   # nvidia-cublas-cu12 12.9.3.13 has no Windows wheel: a uv lock (one version for all platforms) failed to install on Windows
   "nvidia-cublas-cu12!=12.9.3.13; sys_platform == 'win32'",
+]
+# [Written by Claude] The CORVID iterative solver (less memory than a direct solve)
+corvid = [
+  "corvid-solver>=0.5.3",
 ]
 dxf = [
   "ezdxf"

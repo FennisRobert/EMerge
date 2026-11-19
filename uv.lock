@@ -448,6 +448,25 @@ wheels = [
 ]
 
 [[package]]
+name = "corvid-solver"
+version = "0.5.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/51/c6/b1fd100dcbfd708e8361f2ad8d68dccfc7e7affad960f0f961ecb6012ce6/corvid_solver-0.5.3.tar.gz", hash = "sha256:fb232db26f981c7db6cae6ba46858a4293b7617b2f0043e5bd82db05680d1c96", size = 120829, upload-time = "2026-11-19T09:15:25.071Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/2e/063bb90edc42c1acf8c3b2aa32721d4140b12c9fec6f1c3db09682cd14d4/corvid_solver-0.5.3-cp39-abi3-macosx_10_12_universal2.macosx_10_12_x86_64.macosx_11_0_arm64.whl", hash = "sha256:61f4f22f56f7cd8d8a751f36e556963a324cdd97cf0a0f9747b21203ede9631b", size = 2926855, upload-time = "2026-11-19T09:15:15.506Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/71/eff093e77c68b937643b84edbc05e8f4825bd70c5ee1e398d82262067c0b/corvid_solver-0.5.3-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:d2d2aa785f4afcb4f52cf8a0ed6a103f69e860ce6bdc5e731aa2f3dce539c7e7", size = 1569112, upload-time = "2026-11-19T09:15:17.273Z" },
+    { url = "https://files.pythonhosted.org/packages/25/fd/156ce01c479815f6fe66ef12a674fb68b57efb9a1cd8d03afcead40e01f2/corvid_solver-0.5.3-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:24a64f28361a00938e6328fc018ec101ad0d59b4a02606e277f891a83e43db74", size = 1446134, upload-time = "2026-11-19T09:15:18.987Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/7f/4983fb317bca0ae384950174ac193f1c24f51ae849ca6d93f3c7a3e471ef/corvid_solver-0.5.3-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:11d0a8c85deec4ef2765e4157823e4b87cddf45c4b5f65f8bf1ada1146bbc95d", size = 1483321, upload-time = "2026-11-19T09:15:20.433Z" },
+    { url = "https://files.pythonhosted.org/packages/61/a5/af867edcab6e98c6a9e28d13ef62316517914093c5b77a1a96b939a8ca86/corvid_solver-0.5.3-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ae46b095fa93b68d96aa45e8696e46a37922c664b8aa5dc11553fab62f23b00e", size = 1632508, upload-time = "2026-11-19T09:15:22.048Z" },
+    { url = "https://files.pythonhosted.org/packages/91/7e/a12ff566e3d8625497069f2e1f4e08457f4fd1af7849eb79e83c4949e4db/corvid_solver-0.5.3-cp39-abi3-win_amd64.whl", hash = "sha256:4cc83a0b71c5578796be45690b5abb27e9097a36b8f6b31296cd13a1a59e14f4", size = 1638777, upload-time = "2026-11-19T09:15:23.837Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "46.0.6"
 source = { registry = "https://pypi.org/simple" }
@@ -647,7 +666,7 @@ wheels = [
 
 [[package]]
 name = "emerge"
-version = "3.0.8"
+version = "3.0.10"
 source = { editable = "." }
 dependencies = [
     { name = "emerge-aasds", marker = "sys_platform == 'darwin'" },
@@ -671,6 +690,9 @@ dependencies = [
 cad = [
     { name = "emcad" },
     { name = "pygerber" },
+]
+corvid = [
+    { name = "corvid-solver" },
 ]
 cudss = [
     { name = "cupy-cuda12x", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -705,6 +727,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "corvid-solver", marker = "extra == 'corvid'", specifier = ">=0.5.3" },
     { name = "cupy-cuda12x", marker = "(sys_platform == 'linux' and extra == 'cudss') or (sys_platform == 'win32' and extra == 'cudss')" },
     { name = "cupy-cuda12x", marker = "(sys_platform == 'linux' and extra == 'cudss12') or (sys_platform == 'win32' and extra == 'cudss12')" },
     { name = "emcad", marker = "extra == 'cad'", specifier = ">=0.2,<0.3" },
@@ -735,7 +758,7 @@ requires-dist = [
     { name = "sparta-solver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or sys_platform == 'darwin'", specifier = ">=0.3.7,<0.4" },
     { name = "trame-pyvista", marker = "extra == 'spyder'" },
 ]
-provides-extras = ["umfpack", "cudss", "cudss12", "dxf", "cad", "spyder"]
+provides-extras = ["umfpack", "cudss", "cudss12", "corvid", "dxf", "cad", "spyder"]
 
 [package.metadata.requires-dev]
 dev = [
